@@ -118,17 +118,24 @@ r.get('/kpis', async (req, res) => {
 
   // NEW: allow selecting the bond sum window via query (24h|48h|72h|rolling72)
   const bondWindow = (req.query.bondWindow || '24h').toLowerCase();
-  const bondDates = windowDates(bondWindow);
-  const rawBond = await bondByCountyForDates(db, bondDates);
+  let bondDates = windowDates(bondWindow);
+  let rawBond = await bondByCountyForDates(db, bondDates);
+
+  let bondWindowUsed = bondWindow;
+  if (bondWindow === '24h' && rawBond.reduce((sum, r) => sum + (r.value || 0), 0) === 0) {
+    bondDates = windowDates('48h');
+    rawBond = await bondByCountyForDates(db, bondDates);
+    bondWindowUsed = '48h';
+  }
 
   // Normalize to include all counties with 0s so the UI always has 5 rows.
   const counties = COUNTY_COLLECTIONS.map(c => c.replace('simple_', ''));
   const bondMap = new Map(rawBond.map(r => [r.county, r.value]));
-  const perCountyBondToday = counties.map(county => ({
+  const perCountyBond = counties.map(county => ({
     county,
     value: bondMap.get(county) || 0,
   }));
-  const bondTodayTotal = perCountyBondToday.reduce((sum, r) => sum + (r.value || 0), 0);
+  const bondTotal = perCountyBond.reduce((sum, r) => sum + (r.value || 0), 0);
 
   // optional: last pull timestamps if you record jobs
   let perCountyLastPull = [];
@@ -148,8 +155,12 @@ r.get('/kpis', async (req, res) => {
       last7d: c7,              // rolling 7 days (calendar)
       last30d: c30             // rolling 30 days (calendar)
     },
-    perCountyBondToday,
-    bondTodayTotal,
+    perCountyBond,
+    bondTotal,
+    // backward compatibility
+    perCountyBondToday: perCountyBond,
+    bondTodayTotal: bondTotal,
+    bondWindowUsed,
     perCountyLastPull
   });
 });
@@ -220,15 +231,35 @@ r.get('/new', async (req, res) => {
 });
 
 // ---------- RECENT (48–72h by booking_date → yesterday + twoDaysAgo) ----------
-r.get('/recent', async (_req, res) => {
+r.get('/recent', async (req, res) => {
   const db = mongoose.connection.db;
+  const limitRaw = parseInt(req.query.limit || '10', 10);
+  const limit = Math.min(Math.max(limitRaw, 1), 200);
   const dates = [dayShift(1), dayShift(2)];
+
+  async function sumBondForDates(dts) {
+    if (!dts.length) return 0;
+    const first = COUNTY_COLLECTIONS[0];
+    const rows = await db.collection(first).aggregate([
+      ...unionAll({ booking_date: { $in: dts } }, { bond_amount: 1 }),
+      { $group: { _id: null, total: { $sum: { $ifNull: ['$bond_amount', 0] } } } },
+      { $project: { _id: 0, total: 1 } }
+    ]).toArray();
+    return rows.length ? rows[0].total : 0;
+  }
+
+  const count48h = await countByBookingDates(db, [dayShift(1)]);
+  const count72h = await countByBookingDates(db, [dayShift(2)]);
+  const totalCount = count48h + count72h;
+  const bond48h = await sumBondForDates([dayShift(1)]);
+  const bond72h = await sumBondForDates([dayShift(2)]);
+  const bondTotal = bond48h + bond72h;
 
   const first = COUNTY_COLLECTIONS[0];
   const items = await db.collection(first).aggregate([
     ...unionAll({ booking_date: { $in: dates } }, P),
     { $sort: { booking_date: -1, bond_amount: -1 } },
-    { $limit: 100 },
+    { $limit: limit },
     {
       $project: {
         _id: 0,
@@ -242,7 +273,17 @@ r.get('/recent', async (_req, res) => {
     }
   ]).toArray();
 
-  res.json({ items });
+  res.json({
+    items,
+    summary: {
+      totalCount,
+      count48h,
+      count72h,
+      bond48h,
+      bond72h,
+      bondTotal
+    }
+  });
 });
 
 // ---------- TRENDS (per-county daily counts & bond totals over last N days) ----------
@@ -328,10 +369,11 @@ r.get('/per-county', async (req, res) => {
         last7d: m7.get(county) || 0,
         last30d: m30.get(county) || 0,
       },
-        bondToday: mBondWindow.get(county) || 0,
+      bondValue: mBondWindow.get(county) || 0,
+      bondToday: mBondWindow.get(county) || 0, // backward compatibility
     }));
 
-    res.json({ items });
+    res.json({ items, windowUsed: bondWindow });
   } catch (err) {
     console.error('per-county error:', err);
     res.status(500).json({ error: String(err?.message || err) });
