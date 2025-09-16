@@ -9,7 +9,8 @@ const API_BASE =
   ).replace(/\/$/, '');
 
 async function getJSON(path) {
-  const res = await fetch(`${API_BASE}/dashboard${path}`);
+  const url = `${API_BASE}${path.startsWith('/') ? path : `/${path}`}`;
+  const res = await fetch(url);
   if (!res.ok) {
     const text = await res.text();
     throw new Error(`Request failed ${res.status}: ${text}`);
@@ -23,10 +24,10 @@ async function getJSON(path) {
  *  Backend: GET /kpis?bondWindow=(24h|48h|72h|rolling72|7d|30d)
  *  Returns: { newCountsBooked, perCountyBondToday, bondTodayTotal, perCountyLastPull }
  */
-export function useKpis(bondWindow = 'rolling72', options = {}) {
+export function useKpis(options = {}) {
   return useQuery({
-    queryKey: ['kpis', bondWindow],
-    queryFn: () => getJSON(`/kpis?bondWindow=${encodeURIComponent(bondWindow)}`),
+    queryKey: ['kpis'],
+    queryFn: () => getJSON('/health/kpis'),
     staleTime: 60_000,
     ...options,
   });
@@ -42,7 +43,7 @@ export function useTopByValue(window = '24h', limit = 10, options = {}) {
   return useQuery({
     queryKey: ['topByValue', window, limit],
     queryFn: () =>
-      getJSON(`/top?window=${encodeURIComponent(window)}&limit=${encodeURIComponent(limit)}`),
+      getJSON(`/dashboard/top?window=${encodeURIComponent(window)}&limit=${encodeURIComponent(limit)}`),
     staleTime: 60_000,
     ...options,
   });
@@ -59,7 +60,7 @@ export function useNewToday(scope = 'all', options = {}) {
   const qs = scope && scope !== 'all' ? `?county=${encodeURIComponent(scope)}` : '';
   return useQuery({
     queryKey: ['newToday', scope],
-    queryFn: () => getJSON(`/new${qs}`),
+    queryFn: () => getJSON(`/dashboard/new${qs}`),
     staleTime: 30_000,
     ...options,
   });
@@ -76,7 +77,7 @@ export function useRecent48to72(limit = 10, options = {}) {
   return useQuery({
     queryKey: ['recent48to72', limit],
     queryFn: async () => {
-      const data = await getJSON(`/recent?limit=${encodeURIComponent(limit)}`);
+      const data = await getJSON(`/dashboard/recent?limit=${encodeURIComponent(limit)}`);
       const items = Array.isArray(data?.items) ? data.items : [];
 
       if (data.summary) {
@@ -86,7 +87,7 @@ export function useRecent48to72(limit = 10, options = {}) {
       // Derive quick client summary (counts & totals) to show above the table.
       const totals = items.reduce(
         (acc, it) => {
-          const amount = Number(it.bond || 0) || 0;
+          const amount = Number(it.bond_amount ?? 0) || 0;
           acc.totalCount += 1;
           acc.totalBond += amount;
 
@@ -128,31 +129,15 @@ export function useCountyTrends(days = 7, options = {}) {
   return useQuery({
     queryKey: ['countyTrends', days],
     queryFn: async () => {
-      const data = await getJSON(`/trends?days=${encodeURIComponent(days)}`);
-      const dates = Array.isArray(data?.dates) ? data.dates : [];
-      const rows = Array.isArray(data?.rows) ? data.rows : [];
-
-      const counties = Array.from(new Set(rows.map((r) => r.county))).sort();
-      const indexByDate = new Map(dates.map((d, i) => [d, i]));
-
-      // Initialize matrices with zeros
-      const countSeries = Object.fromEntries(
-        counties.map((c) => [c, Array(dates.length).fill(0)])
-      );
-      const bondSeries = Object.fromEntries(
-        counties.map((c) => [c, Array(dates.length).fill(0)])
-      );
-
-      for (const r of rows) {
-        const i = indexByDate.get(r.date);
-        if (i == null) continue;
-        countSeries[r.county][i] = r.count || 0;
-        bondSeries[r.county][i] = r.bondSum || 0;
-      }
-
+      const data = await getJSON(`/health/trends?days=${encodeURIComponent(days)}`);
+      const series = Array.isArray(data?.series) ? data.series : [];
+      const labels = series.map((s) => s.date);
+      // Health/trends is overall (not per-county). Expose a single 'all' series for charts.
+      const countSeries = { all: series.map((s) => s.count || 0) };
+      const bondSeries = { all: series.map((s) => s.bond_sum ?? s.bondSum ?? 0) };
       return {
-        labels: dates,             // newest last (matches backend)
-        counties,
+        labels,
+        counties: ['all'],
         countSeries,
         bondSeries,
       };
@@ -171,7 +156,7 @@ export function useCountyTrends(days = 7, options = {}) {
 export function usePerCounty(window = 'rolling72', options = {}) {
   return useQuery({
     queryKey: ['perCounty', window],
-    queryFn: () => getJSON(`/per-county?window=${encodeURIComponent(window)}`),
+    queryFn: () => getJSON(`/dashboard/per-county?window=${encodeURIComponent(window)}`),
     staleTime: 60_000,
     ...options,
   });

@@ -19,10 +19,26 @@ const COUNTY_LABELS = {
   harris: 'Harris',
   jefferson: 'Jefferson',
 };
+
 const prettyCounty = (name) =>
   COUNTY_LABELS[name] || (name ? name.charAt(0).toUpperCase() + name.slice(1) : '');
 
-function MiniStackedBar({ new24, new48, new72, maxTotal }) {
+// Money formatting helper
+const money = (n) => {
+  const v = Number(n);
+  return Number.isFinite(v) ? `$${v.toLocaleString()}` : '$0';
+};
+
+// County key normalization helper
+const normCountyKey = (s) =>
+  String(s || '')
+    .toLowerCase()
+    .trim()
+    .replace(/\s+/g, '')
+    .replace(/county/g, '')
+    .replace(/[^a-z]/g, '');
+
+function MiniStackedBar({ new24, new48, new72 }) {
   const total = Math.max((new24 || 0) + (new48 || 0) + (new72 || 0), 0.0001);
   const p24 = (new24 / total) * 100;
   const p48 = (new48 / total) * 100;
@@ -44,9 +60,7 @@ function MiniStackedBar({ new24, new48, new72, maxTotal }) {
 }
 
 function Sparkline({ values = [] }) {
-  const width = 160,
-    height = 36,
-    pad = 2;
+  const width = 160, height = 36, pad = 2;
   if (!values.length) return <div className="h-9" />;
   const min = Math.min(...values);
   const max = Math.max(...values);
@@ -161,7 +175,7 @@ function CountyCard({ county, lastPull, new24, new48, new72, contacted24, bondVa
           <div className="text-slate-500">Contacted 24h</div>
         </div>
         <div>
-          <div className="font-semibold text-slate-800">${(bondValue || 0).toLocaleString()}</div>
+          <div className="font-semibold text-slate-800">{money(bondValue)}</div>
           <div className="text-slate-500">Bond value (window)</div>
         </div>
       </div>
@@ -191,10 +205,13 @@ export default function DashboardScreen() {
 
   // ── Normalize
   const perCountyItems = perCounty?.items ?? [];
-  const perCountyMap = useMemo(
-    () => new Map(perCountyItems.map((c) => [c.county, c])),
-    [perCountyItems]
-  );
+  const perCountyMap = useMemo(() => {
+    const m = new Map();
+    (perCountyItems || []).forEach((c) => {
+      m.set(normCountyKey(c.county), c);
+    });
+    return m;
+  }, [perCountyItems]);
 
   const top10List = Array.isArray(top10) ? top10 : [];
   const new24List = Array.isArray(new24h?.items)
@@ -208,20 +225,43 @@ export default function DashboardScreen() {
     ? recent48to72
     : [];
 
+  const new24ByCounty = useMemo(() => {
+    const m = new Map();
+    ALL_COUNTIES.forEach((c) => m.set(c, 0));
+    new24List.forEach((r) => {
+      const key = normCountyKey(r.county);
+      const v = Number(r.bond_amount ?? 0) || 0;
+      m.set(key, (m.get(key) || 0) + v);
+    });
+    return m;
+  }, [new24List]);
+
+  const recentByCounty = useMemo(() => {
+    const m = new Map();
+    ALL_COUNTIES.forEach((c) => m.set(c, 0));
+    recentList.forEach((r) => {
+      const key = normCountyKey(r.county);
+      const v = Number(r.bond_amount ?? 0) || 0;
+      m.set(key, (m.get(key) || 0) + v);
+    });
+    return m;
+  }, [recentList]);
+
   // Trends helpers
   const trendLabels = Array.isArray(countyTrends?.labels) ? countyTrends.labels : [];
   const seriesByCounty = useMemo(() => {
     const acc = {};
     if (Array.isArray(countyTrends?.bondSeriesArr)) {
       countyTrends.bondSeriesArr.forEach(({ name, data }) => {
-        acc[name] = Array.isArray(data) ? data : [];
+        const key = normCountyKey(name);
+        acc[key] = Array.isArray(data) ? data : [];
       });
     } else if (countyTrends?.bondSeries) {
       Object.entries(countyTrends.bondSeries).forEach(([name, data]) => {
-        acc[name] = Array.isArray(data) ? data : [];
+        const key = normCountyKey(name);
+        acc[key] = Array.isArray(data) ? data : [];
       });
     }
-    // ensure all counties exist
     ALL_COUNTIES.forEach((c) => {
       if (!acc[c]) acc[c] = Array(trendLabels.length).fill(0);
     });
@@ -245,7 +285,6 @@ export default function DashboardScreen() {
       new24: Number(pc.counts?.today || 0),
       new48: Number(pc.counts?.yesterday || 0),
       new72: Number(pc.counts?.twoDaysAgo || 0),
-      // keep today's value separately for the small 'Today: $' badge
       bondToday: Number(pc.bondToday || 0),
     };
   });
@@ -262,11 +301,6 @@ export default function DashboardScreen() {
 
   const loading =
     kpisLoading || topLoading || perCountyLoading || trendsLoading || new24Loading || recentLoading;
-
-  // For stacked bar scaling
-  const maxTotal = trendCards.length
-    ? Math.max(...trendCards.map((c) => (c.new24 || 0) + (c.new48 || 0) + (c.new72 || 0)))
-    : 1;
 
   if (loading) {
     return (
@@ -297,12 +331,50 @@ export default function DashboardScreen() {
     );
   }
 
-  // Compute county bond value **for selected window** using the trends series
+  // Compute county bond value **for selected window** with priority:
+  // per-county 'today' → live 24h map → trends series
   const bondValueForWindow = (county) => {
-    const arr = seriesByCounty[county] || [];
+    const key = normCountyKey(county);
+
+    if (valueWindow === '24h') {
+      const pc = perCountyMap.get(key);
+      if (pc && Number.isFinite(Number(pc.bondToday))) {
+        return Number(pc.bondToday);
+      }
+      const live = new24ByCounty.get(key);
+      if (Number.isFinite(Number(live))) {
+        return Number(live);
+      }
+    }
+
+    const arr = seriesByCounty[key] || [];
     if (trendIndex == null || trendIndex < 0 || trendIndex >= arr.length) return 0;
-    return Number(arr[trendIndex] || 0);
+    const v = Number(arr[trendIndex] || 0);
+    return Number.isFinite(v) ? v : 0;
   };
+
+  // County ticker component
+  const CountyTicker = ({ map, windowLabel }) => (
+    <div className="mb-3 flex flex-wrap gap-2">
+      {ALL_COUNTIES.map((c) => (
+        <button
+          key={c}
+          type="button"
+          onClick={() => navigate(`/cases?county=${encodeURIComponent(c)}&window=${windowLabel}`)}
+          className="text-xs px-2 py-1 rounded-full border bg-white hover:bg-gray-50"
+          title={`Open ${prettyCounty(c)} ${windowLabel}`}
+        >
+          <span className="mr-2">{prettyCounty(c)}</span>
+          <span className="font-semibold">{money(map.get(c) || 0)}</span>
+        </button>
+      ))}
+    </div>
+  );
+
+  // For stacked bar scaling
+  const maxTotal = trendCards.length
+    ? Math.max(...trendCards.map((c) => (c.new24 || 0) + (c.new48 || 0) + (c.new72 || 0)))
+    : 1;
 
   return (
     <div className="min-h-screen bg-gray-50">
@@ -336,7 +408,7 @@ export default function DashboardScreen() {
           <Panel
             className="lg:col-span-2"
             title={`Top 10 by Value (${valueWindow})`}
-            subtitle="Highest bond amount or assessment"
+            subtitle="Highest bond amount in selected window"
             to={`/cases?window=${valueWindow}&sort=value:desc`}
             right={<WindowSwitcher value={valueWindow} onChange={setValueWindow} />}
           >
@@ -349,9 +421,34 @@ export default function DashboardScreen() {
                       <div className="text-slate-500 text-xs">
                         {prettyCounty(x.county)} • Booked {x.booking_date || x.bookedAt || ''}
                       </div>
+                      {(x.offense || x.agency || x.facility) ? (
+                        <div className="text-[11px] text-slate-500 truncate max-w-[48ch]">
+                          {x.offense ? <span className="mr-2">{x.offense}</span> : null}
+                          {x.agency || x.facility ? (
+                            <span className="inline-block">• {(x.agency || x.facility)}</span>
+                          ) : null}
+                        </div>
+                      ) : null}
+                      {(x.sex || x.race) ? (
+                        <div className="mt-0.5 flex flex-wrap gap-1">
+                          {x.sex ? (
+                            <span className="inline-flex items-center rounded-md bg-slate-100 text-slate-700 text-[10px] px-1.5 py-0.5">
+                              {x.sex}
+                            </span>
+                          ) : null}
+                          {x.race ? (
+                            <span className="inline-flex items-center rounded-md bg-slate-100 text-slate-700 text-[10px] px-1.5 py-0.5">
+                              {x.race}
+                            </span>
+                          ) : null}
+                        </div>
+                      ) : null}
                     </div>
-                    <div className="font-semibold">
-                      ${Number(x.value || x.bond_amount || 0).toLocaleString()}
+                    <div className="text-right">
+                      {x.category ? (
+                        <div className="text-[10px] text-slate-500 mb-0.5">{x.category}</div>
+                      ) : null}
+                      <div className="font-semibold">{money(x.value || x.bond_amount || 0)}</div>
                     </div>
                   </li>
                 ))}
@@ -361,10 +458,10 @@ export default function DashboardScreen() {
             )}
           </Panel>
 
-          {/* County Bond Value (by selected window) derived from trends */}
+          {/* County Bond Value (by selected window) derived from priority chain */}
           <Panel
             title={`County Bond Value (${valueWindow})`}
-            subtitle="Sum of bond amounts for new bookings in the selected window"
+            subtitle="Sum of bond amounts for new bookings in the selected window (24h prefers per-county today, then live feed)"
             right={<WindowSwitcher value={valueWindow} onChange={setValueWindow} />}
           >
             <div className="grid grid-cols-2 gap-3">
@@ -373,7 +470,7 @@ export default function DashboardScreen() {
                 return (
                   <div key={name} className="rounded-xl border p-3">
                     <div className="text-sm font-semibold text-slate-800">{prettyCounty(name)}</div>
-                    <div className="text-slate-500 text-xs">${amount.toLocaleString()}</div>
+                    <div className="text-slate-500 text-xs">{money(amount)}</div>
                   </div>
                 );
               })}
@@ -388,16 +485,13 @@ export default function DashboardScreen() {
               <div key={c.county} className="rounded-2xl border p-4">
                 <div className="flex items-center justify-between">
                   <div className="font-semibold text-slate-800">{prettyCounty(c.county)}</div>
-                  <div className="text-xs text-slate-500">
-                    Today: ${Number(c.bondToday || 0).toLocaleString()}
-                  </div>
+                  <div className="text-xs text-slate-500">Today: {money(c.bondToday)}</div>
                 </div>
                 <div className="mt-3">
                   <MiniStackedBar
                     new24={c.new24 || 0}
                     new48={c.new48 || 0}
                     new72={c.new72 || 0}
-                    maxTotal={maxTotal}
                   />
                 </div>
                 <div className="mt-3 text-[10px] text-slate-500 flex items-center gap-3">
@@ -414,6 +508,7 @@ export default function DashboardScreen() {
 
         {/* New (24h) */}
         <Panel title="New Inmates (24h)" subtitle="Most recent bookings with contact status" to="/cases?window=24h">
+          <CountyTicker map={new24ByCounty} windowLabel="24h" />
           <div className="overflow-x-auto">
             <table className="min-w-full text-sm">
               <thead className="text-slate-500">
@@ -422,41 +517,67 @@ export default function DashboardScreen() {
                   <th className="py-2 pr-4 text-left font-semibold">County</th>
                   <th className="py-2 pr-4 text-left font-semibold">Booked</th>
                   <th className="py-2 pr-4 text-left font-semibold">Bond</th>
+                  <th className="py-2 pr-4 text-left font-semibold">Offense</th>
+                  <th className="py-2 pr-4 text-left font-semibold">Agency / Facility</th>
                   <th className="py-2 text-left font-semibold">Contacted</th>
                 </tr>
               </thead>
               <tbody className="divide-y">
-                {new24List.map((row) => (
-                  <tr key={row.id}>
-                    <td className="py-2 pr-4 font-medium text-slate-800">
-                      <Link to={`/cases/${row.id}`} className="text-blue-600 hover:text-blue-700">
-                        {row.person}
-                      </Link>
-                    </td>
-                    <td className="py-2 pr-4 text-slate-700">{prettyCounty(row.county)}</td>
-                    <td className="py-2 pr-4 text-slate-700">{row.booking_date || row.bookedAt || ''}</td>
-                    <td className="py-2 pr-4 text-slate-700">
-                      ${Number(row.bond || row.bond_amount || 0).toLocaleString()}
-                    </td>
-                    <td className="py-2">
-                      {row.contacted ? (
-                        <span className="inline-flex items-center rounded-md bg-green-50 text-green-700 text-xs px-2 py-1">
-                          Yes
-                        </span>
-                      ) : (
-                        <button
-                          onClick={() => navigate(`/messages?compose=initial&case=${row.id}`)}
-                          className="text-xs px-2 py-1 rounded-md border hover:bg-gray-50"
-                        >
-                          Send outreach
-                        </button>
-                      )}
-                    </td>
-                  </tr>
-                ))}
+                {new24List
+                  .slice()
+                  .sort(
+                    (a, b) =>
+                      (Number(b.bond_amount ?? 0) || 0) -
+                      (Number(a.bond_amount ?? 0) || 0)
+                  )
+                  .slice(0, 10)
+                  .map((row) => (
+                    <tr key={row.id}>
+                      <td className="py-2 pr-4 font-medium text-slate-800">
+                        <Link to={`/cases/${row.id}`} className="text-blue-600 hover:text-blue-700">
+                          {row.person}
+                        </Link>
+                        {(row.sex || row.race) ? (
+                          <div className="mt-0.5 flex flex-wrap gap-1">
+                            {row.sex ? (
+                              <span className="inline-flex items-center rounded-md bg-slate-100 text-slate-700 text-[10px] px-1.5 py-0.5">
+                                {row.sex}
+                              </span>
+                            ) : null}
+                            {row.race ? (
+                              <span className="inline-flex items-center rounded-md bg-slate-100 text-slate-700 text-[10px] px-1.5 py-0.5">
+                                {row.race}
+                              </span>
+                            ) : null}
+                          </div>
+                        ) : null}
+                      </td>
+                      <td className="py-2 pr-4 text-slate-700">{prettyCounty(row.county)}</td>
+                      <td className="py-2 pr-4 text-slate-700">{row.booking_date || row.bookedAt || ''}</td>
+                      <td className="py-2 pr-4 text-slate-700">{money(row.bond_amount || 0)}</td>
+                      <td className="py-2 pr-4 text-slate-700 truncate max-w-[36ch]">{row.offense || ''}</td>
+                      <td className="py-2 pr-4 text-slate-700 truncate max-w-[28ch]">
+                        {row.agency || row.facility || ''}
+                      </td>
+                      <td className="py-2">
+                        {row.contacted ? (
+                          <span className="inline-flex items-center rounded-md bg-green-50 text-green-700 text-xs px-2 py-1">
+                            Yes
+                          </span>
+                        ) : (
+                          <button
+                            onClick={() => navigate(`/messages?compose=initial&case=${row.id}`)}
+                            className="text-xs px-2 py-1 rounded-md border hover:bg-gray-50"
+                          >
+                            Send outreach
+                          </button>
+                        )}
+                      </td>
+                    </tr>
+                  ))}
                 {new24List.length === 0 && (
                   <tr>
-                    <td colSpan={5} className="py-6 text-center text-slate-500">
+                    <td colSpan={7} className="py-6 text-center text-slate-500">
                       No bookings in this window.
                     </td>
                   </tr>
@@ -468,11 +589,12 @@ export default function DashboardScreen() {
 
         {/* Recent (48–72h) */}
         <Panel title="Recent Inmates (48–72h)" subtitle="Focus on uncontacted & high value" to="/cases?window=48-72h">
+          <CountyTicker map={recentByCounty} windowLabel="48-72h" />
           {(() => {
             const list = Array.isArray(recentList) ? recentList : [];
             const withValue = list.map((r) => ({
               ...r,
-              _bondValue: Number(r.bond ?? r.bond_amount ?? 0) || 0,
+              _bondValue: Number(r.bond_amount ?? 0) || 0,
               _bookedDate: r.booking_date || r.bookedAt || null,
             }));
 
@@ -522,6 +644,7 @@ export default function DashboardScreen() {
                         <th className="py-2 pr-4 text-left font-semibold">County</th>
                         <th className="py-2 pr-4 text-left font-semibold">Booked</th>
                         <th className="py-2 pr-4 text-left font-semibold">Bond</th>
+                        <th className="py-2 pr-4 text-left font-semibold">Offense</th>
                         <th className="py-2 text-left font-semibold">Contacted</th>
                       </tr>
                     </thead>
@@ -532,10 +655,25 @@ export default function DashboardScreen() {
                             <Link to={`/cases/${row.id}`} className="text-blue-600 hover:text-blue-700">
                               {row.person}
                             </Link>
+                            {(row.sex || row.race) ? (
+                              <div className="mt-0.5 flex flex-wrap gap-1">
+                                {row.sex ? (
+                                  <span className="inline-flex items-center rounded-md bg-slate-100 text-slate-700 text-[10px] px-1.5 py-0.5">
+                                    {row.sex}
+                                  </span>
+                                ) : null}
+                                {row.race ? (
+                                  <span className="inline-flex items-center rounded-md bg-slate-100 text-slate-700 text-[10px] px-1.5 py-0.5">
+                                    {row.race}
+                                  </span>
+                                ) : null}
+                              </div>
+                            ) : null}
                           </td>
                           <td className="py-2 pr-4 text-slate-700">{prettyCounty(row.county)}</td>
-                          <td className="py-2 pr-4 text-slate-700">{row._bookedDate || ''}</td>
-                          <td className="py-2 pr-4 text-slate-700">${row._bondValue.toLocaleString()}</td>
+                          <td className="py-2 pr-4 text-slate-700">{row._bookedDate ? String(row._bookedDate) : ''}</td>
+                          <td className="py-2 pr-4 text-slate-700">{money(row._bondValue)}</td>
+                          <td className="py-2 pr-4 text-slate-700 truncate max-w-[36ch]">{row.offense || ''}</td>
                           <td className="py-2">
                             {row.contacted ? (
                               <span className="inline-flex items-center rounded-md bg-green-50 text-green-700 text-xs px-2 py-1">
@@ -551,7 +689,7 @@ export default function DashboardScreen() {
                       ))}
                       {top10.length === 0 && (
                         <tr>
-                          <td colSpan={5} className="py-6 text-center text-slate-500">
+                          <td colSpan={6} className="py-6 text-center text-slate-500">
                             No results in the 48–72h window.
                           </td>
                         </tr>
@@ -574,7 +712,7 @@ export default function DashboardScreen() {
                   key={name}
                   county={name}
                   label={prettyCounty(name)}
-                  lastPull={(kpiData?.perCountyLastPull || []).find((x) => x.county === name)?.lastPull || '—'}
+                  lastPull={(kpiData?.perCountyLastPull || []).find((x) => normCountyKey(x.county) === name)?.lastPull || '—'}
                   new24={c.counts?.today || 0}
                   new48={c.counts?.yesterday || 0}
                   new72={c.counts?.twoDaysAgo || 0}
