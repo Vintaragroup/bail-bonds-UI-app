@@ -1,0 +1,434 @@
+{
+  "openapi": "3.0.3",
+  "info": {
+    "title": "WarrantDB API",
+    "version": "1.0.0"
+  },
+  "servers": [
+    {
+      "url": "http://localhost:8080/api"
+    }
+  ],
+  "paths": {
+    "/health": {
+      "get": {
+        "summary": "Liveness / readiness",
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        }
+      }
+    },
+    "/health/kpis": {
+      "get": {
+        "summary": "Dashboard KPIs (normalized)",
+        "description": "Returns headline metrics computed over booking_date (YYYY-MM-DD) and bond_amount (Number).",
+        "responses": {
+          "200": {
+            "description": "KPI payload",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/KpiResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/health/trends": {
+      "get": {
+        "summary": "Daily trends (normalized)",
+        "description": "Returns daily counts and bond sums for the last N days.",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "days",
+            "schema": {
+              "type": "integer",
+              "default": 14,
+              "minimum": 1,
+              "maximum": 60
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Trend series",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TrendResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/dashboard/top": {
+      "get": {
+        "summary": "Top bookings by value",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "window",
+            "schema": {
+              "type": "string",
+              "enum": [
+                "24h",
+                "48h",
+                "72h",
+                "rolling72",
+                "7d",
+                "30d"
+              ],
+              "default": "24h"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "schema": {
+              "type": "integer",
+              "default": 10,
+              "minimum": 1,
+              "maximum": 100
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Top items",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/TopItem"
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/dashboard/new": {
+      "get": {
+        "summary": "New bookings “today”",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "county",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "description": "harris|galveston|brazoria|fortbend|jefferson"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "New items",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "items": {
+                      "type": "array",
+                      "items": {
+                        "$ref": "#/components/schemas/CaseListItem"
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/dashboard/recent": {
+      "get": {
+        "summary": "Bookings in the last 48–72h",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "limit",
+            "schema": {
+              "type": "integer",
+              "default": 10,
+              "minimum": 1,
+              "maximum": 200
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Recent items",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "items": {
+                      "type": "array",
+                      "items": {
+                        "$ref": "#/components/schemas/CaseListItem"
+                      }
+                    },
+                    "summary": {
+                      "type": "object",
+                      "additionalProperties": true
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/dashboard/per-county": {
+      "get": {
+        "summary": "Per-county snapshot",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "window",
+            "schema": {
+              "type": "string",
+              "enum": [
+                "24h",
+                "48h",
+                "72h",
+                "rolling72",
+                "7d",
+                "30d"
+              ],
+              "default": "rolling72"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Snapshot",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "items": {
+                      "type": "array",
+                      "items": {
+                        "$ref": "#/components/schemas/CountySnapshotItem"
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "schemas": {
+      "Money": {
+        "type": "number",
+        "format": "double",
+        "example": 15000
+      },
+      "DateYMD": {
+        "type": "string",
+        "description": "ISO date string in YYYY-MM-DD (UTC) format",
+        "example": "2025-09-16"
+      },
+      "KpiResponse": {
+        "type": "object",
+        "properties": {
+          "ok": {
+            "type": "boolean"
+          },
+          "today": {
+            "type": "object",
+            "properties": {
+              "count": {
+                "type": "integer"
+              },
+              "bond_sum": {
+                "$ref": "#/components/schemas/Money"
+              }
+            }
+          },
+          "yesterday": {
+            "type": "object",
+            "properties": {
+              "count": {
+                "type": "integer"
+              },
+              "bond_sum": {
+                "$ref": "#/components/schemas/Money"
+              }
+            }
+          },
+          "last72h": {
+            "type": "object",
+            "properties": {
+              "count": {
+                "type": "integer"
+              },
+              "bond_sum": {
+                "$ref": "#/components/schemas/Money"
+              }
+            }
+          },
+          "last7d": {
+            "type": "object",
+            "properties": {
+              "count": {
+                "type": "integer"
+              },
+              "bond_sum": {
+                "$ref": "#/components/schemas/Money"
+              }
+            }
+          },
+          "topCounties24h": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "county": {
+                  "type": "string"
+                },
+                "count": {
+                  "type": "integer"
+                },
+                "bond_sum": {
+                  "$ref": "#/components/schemas/Money"
+                }
+              }
+            }
+          },
+          "ts": {
+            "type": "string",
+            "format": "date-time"
+          }
+        }
+      },
+      "TrendPoint": {
+        "type": "object",
+        "properties": {
+          "date": {
+            "$ref": "#/components/schemas/DateYMD"
+          },
+          "count": {
+            "type": "integer"
+          },
+          "bond_sum": {
+            "$ref": "#/components/schemas/Money"
+          }
+        }
+      },
+      "TrendResponse": {
+        "type": "object",
+        "properties": {
+          "ok": {
+            "type": "boolean"
+          },
+          "start": {
+            "$ref": "#/components/schemas/DateYMD"
+          },
+          "end": {
+            "$ref": "#/components/schemas/DateYMD"
+          },
+          "series": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/TrendPoint"
+            }
+          },
+          "ts": {
+            "type": "string",
+            "format": "date-time"
+          }
+        }
+      },
+      "TopItem": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "county": {
+            "type": "string"
+          },
+          "booking_date": {
+            "$ref": "#/components/schemas/DateYMD"
+          },
+          "bond_amount": {
+            "$ref": "#/components/schemas/Money"
+          },
+          "value": {
+            "$ref": "#/components/schemas/Money"
+          }
+        }
+      },
+      "CaseListItem": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "person": {
+            "type": "string"
+          },
+          "county": {
+            "type": "string"
+          },
+          "booking_date": {
+            "$ref": "#/components/schemas/DateYMD"
+          },
+          "bond_amount": {
+            "$ref": "#/components/schemas/Money"
+          },
+          "contacted": {
+            "type": "boolean"
+          },
+          "offense": {
+            "type": "string"
+          },
+          "case_number": {
+            "type": "string"
+          }
+        }
+      },
+      "CountySnapshotItem": {
+        "type": "object",
+        "properties": {
+          "county": {
+            "type": "string"
+          },
+          "count": {
+            "type": "integer"
+          },
+          "bond_sum": {
+            "$ref": "#/components/schemas/Money"
+          },
+          "latest_booking_date": {
+            "$ref": "#/components/schemas/DateYMD"
+          }
+        }
+      }
+    }
+  }
+}

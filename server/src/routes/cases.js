@@ -1,6 +1,17 @@
 import { Router } from 'express';
 import Case from '../models/Case.js';
 
+// Per-file DB timeout for potentially expensive queries
+const MAX_DB_MS = 5000;
+
+// Helper to timeout a promise-returning DB operation so handlers don't hang
+function withTimeout(promise, ms = MAX_DB_MS) {
+  return Promise.race([
+    promise,
+    new Promise((_, rej) => setTimeout(() => rej(new Error('operation timed out')), ms)),
+  ]);
+}
+
 const r = Router();
 
 /**
@@ -14,6 +25,9 @@ const r = Router();
  *  - sortBy: 'booking_date' | 'bond_amount' (default: 'booking_date')
  *  - order: 'desc' | 'asc' (default: 'desc')
  *  - limit: number of docs to return (default: 25)
+ *  - timeBucket: filter by time_bucket field
+ *  - bondLabel: filter by bond_label field
+ *  - attention: if truthy, filter cases needing attention (refer to magistrate or letter suffix cases)
  *
  * Notes:
  *  - Uses normalized fields: booking_date (YYYY-MM-DD), bond_amount (Number).
@@ -32,7 +46,11 @@ r.get('/', async (req, res) => {
       sortBy = 'booking_date',
       order = 'desc',
       limit = 25,
+      attention,
+      timeBucket,
+      bondLabel,
     } = req.query;
+    const bondLabelAlias = req.query.bond_label;
 
     const filter = {};
 
@@ -59,6 +77,18 @@ r.get('/', async (req, res) => {
       if (!Number.isNaN(maxBondNum)) filter.bond_amount.$lte = maxBondNum;
     }
 
+    // Additional filters
+    if (timeBucket) filter.time_bucket = timeBucket;
+    const limitNum = Math.min(Number(limit) || 25, 500);
+    if (bondLabel || bondLabelAlias) filter.bond_label = bondLabel || bondLabelAlias;
+    if (attention === '1' || attention === 'true' || attention === true) {
+      filter.$or = [
+        { bond_label: { $regex: /^REFER TO MAGISTRATE$/i } },
+        { bond: { $regex: /^REFER TO MAGISTRATE$/i } },
+        { "_upsert_key.anchor": { $not: /^[0-9]+$/ } }
+      ];
+    }
+
     // Sorting
     const allowedSort = new Set(['booking_date', 'bond_amount']);
     const sortField = allowedSort.has(String(sortBy)) ? String(sortBy) : 'booking_date';
@@ -79,20 +109,66 @@ r.get('/', async (req, res) => {
       booking_number: 1,
       spn: 1,
       time_bucket: 1,        // optional: present from normalizer
+      charge: 1,
+      status: 1,
+      race: 1,
+      sex: 1,
+      tags: 1,
+      bond_label: 1,
+      "_upsert_key.anchor": 1,
       // Legacy fields kept only for back-compat view (not used for sorting/sums)
       bookedAt: 1,
       booking_date_iso: 1,
       bond: 1,
     };
 
-    const items = await Case
+    const qFind = Case
       .find(filter)
       .select(projection)
-      .sort({ [sortField]: sortDir, booking_date: -1 }) // tie-break by recent date
-      .limit(Number(limit))
+      .sort({ [sortField]: sortDir, booking_date: -1, _id: -1 })
+      .limit(limitNum)
       .lean();
 
-    res.json({ items });
+    const qCount = Case.countDocuments(filter);
+
+    // Apply maxTimeMS when the driver/query supports it, and wrap with a timeout
+    const items = await withTimeout((qFind.maxTimeMS ? qFind.maxTimeMS(MAX_DB_MS) : qFind), MAX_DB_MS).catch((e) => {
+      console.warn('cases: find timed out or failed', e?.message);
+      return [];
+    });
+    const count = await withTimeout((qCount.maxTimeMS ? qCount.maxTimeMS(MAX_DB_MS) : qCount), MAX_DB_MS).catch((e) => {
+      console.warn('cases: count timed out or failed', e?.message);
+      return 0;
+    });
+
+    // Map items for charge fallback and attention flags
+    const mappedItems = items.map(item => {
+      if ((!item.charge || item.charge === '') && item.offense) {
+        item.charge = item.offense;
+        delete item.offense;
+      }
+
+      let needs_attention = false;
+      const reasons = [];
+
+      if ((item.bond_label && /^REFER TO MAGISTRATE$/i.test(item.bond_label)) ||
+          (item.bond && /^REFER TO MAGISTRATE$/i.test(item.bond))) {
+        needs_attention = true;
+        reasons.push('refer_to_magistrate');
+      }
+
+      if (item._upsert_key?.anchor && !/^[0-9]+$/.test(item._upsert_key.anchor)) {
+        needs_attention = true;
+        reasons.push('letter_suffix_case');
+      }
+
+      item.needs_attention = needs_attention;
+      item.attention_reasons = reasons;
+
+      return item;
+    });
+
+    res.json({ items: mappedItems, count });
   } catch (err) {
     console.error('GET /cases error:', err);
     res.status(500).json({ error: 'Internal server error' });
@@ -105,7 +181,11 @@ r.get('/', async (req, res) => {
  */
 r.get('/:id', async (req, res) => {
   try {
-    const doc = await Case.findById(req.params.id).lean();
+    const qGet = Case.findById(req.params.id).lean();
+    const doc = await withTimeout((qGet.maxTimeMS ? qGet.maxTimeMS(MAX_DB_MS) : qGet), MAX_DB_MS).catch((e) => {
+      console.error('GET /cases/:id timed out or failed', e?.message);
+      return null;
+    });
     if (!doc) return res.status(404).json({ error: 'Not found' });
     res.json(doc);
   } catch (err) {

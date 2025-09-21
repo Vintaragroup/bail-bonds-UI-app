@@ -38,6 +38,45 @@ const normCountyKey = (s) =>
     .replace(/county/g, '')
     .replace(/[^a-z]/g, '');
 
+// Render a bond amount or a status badge when the value is non-numeric.
+function BondDisplay({ amount, status, raw }) {
+  const v = Number(amount ?? 0);
+  const isNumeric = Number.isFinite(v) && v > 0;
+
+  if (status === 'numeric' || isNumeric) {
+    return <div className="font-semibold">{money(v)}</div>;
+  }
+
+  // Map status -> label and tone
+  const map = {
+    refer_to_magistrate: { label: 'Refer to Magistrate', tone: 'warn' },
+    summons: { label: 'Summons', tone: 'default' },
+    unsecured: { label: 'Unsecured', tone: 'danger' },
+    no_bond: { label: 'No bond', tone: 'default' },
+    unknown_text: { label: 'Note', tone: 'default' },
+  };
+
+  const entry = map[status] || { label: String(status || 'Unknown'), tone: 'default' };
+
+  const toneClasses = {
+    default: 'bg-slate-100 text-slate-700',
+    success: 'bg-green-50 text-green-700',
+    warn: 'bg-amber-50 text-amber-700',
+    danger: 'bg-red-50 text-red-700',
+  };
+
+  return (
+    <div>
+      <span
+        title={String(raw || '')}
+        className={`inline-flex items-center rounded-md text-[11px] px-2 py-1 ${toneClasses[entry.tone]}`}
+      >
+        {entry.label}
+      </span>
+    </div>
+  );
+}
+
 function MiniStackedBar({ new24, new48, new72 }) {
   const total = Math.max((new24 || 0) + (new48 || 0) + (new72 || 0), 0.0001);
   const p24 = (new24 / total) * 100;
@@ -448,7 +487,9 @@ export default function DashboardScreen() {
                       {x.category ? (
                         <div className="text-[10px] text-slate-500 mb-0.5">{x.category}</div>
                       ) : null}
-                      <div className="font-semibold">{money(x.value || x.bond_amount || 0)}</div>
+                      <div className="font-semibold">
+                        <BondDisplay amount={x.value || x.bond_amount} status={x.bond_status} raw={x.bond_raw || x.bond} />
+                      </div>
                     </div>
                   </li>
                 ))}
@@ -554,7 +595,9 @@ export default function DashboardScreen() {
                       </td>
                       <td className="py-2 pr-4 text-slate-700">{prettyCounty(row.county)}</td>
                       <td className="py-2 pr-4 text-slate-700">{row.booking_date || row.bookedAt || ''}</td>
-                      <td className="py-2 pr-4 text-slate-700">{money(row.bond_amount || 0)}</td>
+                      <td className="py-2 pr-4 text-slate-700">
+                        <BondDisplay amount={row.bond_amount} status={row.bond_status} raw={row.bond_raw || row.bond} />
+                      </td>
                       <td className="py-2 pr-4 text-slate-700 truncate max-w-[36ch]">{row.offense || ''}</td>
                       <td className="py-2 pr-4 text-slate-700 truncate max-w-[28ch]">
                         {row.agency || row.facility || ''}
@@ -672,7 +715,13 @@ export default function DashboardScreen() {
                           </td>
                           <td className="py-2 pr-4 text-slate-700">{prettyCounty(row.county)}</td>
                           <td className="py-2 pr-4 text-slate-700">{row._bookedDate ? String(row._bookedDate) : ''}</td>
-                          <td className="py-2 pr-4 text-slate-700">{money(row._bondValue)}</td>
+                          <td className="py-2 pr-4 text-slate-700">
+                            <BondDisplay
+                              amount={row.bond_amount ?? row._bondValue}
+                              status={row.bond_status}
+                              raw={row.bond_raw || row.bond}
+                            />
+                          </td>
                           <td className="py-2 pr-4 text-slate-700 truncate max-w-[36ch]">{row.offense || ''}</td>
                           <td className="py-2">
                             {row.contacted ? (

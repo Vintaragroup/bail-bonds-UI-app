@@ -27,7 +27,7 @@ async function getJSON(path) {
 export function useKpis(options = {}) {
   return useQuery({
     queryKey: ['kpis'],
-    queryFn: () => getJSON('/health/kpis'),
+    queryFn: () => getJSON('/dashboard/kpis'),
     staleTime: 60_000,
     ...options,
   });

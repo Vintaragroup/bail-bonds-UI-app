@@ -3,16 +3,30 @@ import mongoose from 'mongoose';
 
 const r = Router();
 
+const MAX_DB_MS = 5000; // default max for individual DB operations in this file
+
+// Small helper to add a timeout to any promise-returning DB operation so
+// health/trends endpoints don't hang indefinitely when Atlas is slow.
+function withTimeout(promise, ms = 5000) {
+  return Promise.race([
+    promise,
+    new Promise((_, rej) => setTimeout(() => rej(new Error('operation timed out')), ms)),
+  ]);
+}
+
 // GET /health — pings MongoDB and summarizes simple_* collections
 r.get('/', async (_req, res) => {
   const started = Date.now();
   try {
     const conn = mongoose.connection;
+    if (!conn || !conn.db) {
+      return res.status(503).json({ ok: false, error: 'DB not configured', ts: new Date().toISOString() });
+    }
 
     // 1) Ping DB
-    const pingStart = Date.now();
-    await conn.db.admin().command({ ping: 1 });
-    const pingMs = Date.now() - pingStart;
+  const pingStart = Date.now();
+  await withTimeout(conn.db.admin().command({ ping: 1 }), 5000);
+  const pingMs = Date.now() - pingStart;
 
     // 2) Inspect key collections
     const names = [
@@ -27,27 +41,76 @@ r.get('/', async (_req, res) => {
     for (const name of names) {
       try {
         const col = conn.db.collection(name);
-        const [count, latestDoc] = await Promise.all([
-          col.estimatedDocumentCount(),
-          col
-            .find({}, { projection: { normalized_at: 1 } })
+
+        // counts — guard each call with maxTimeMS and a global timeout
+        const [count, latestNorm, latestBook] = await Promise.all([
+          withTimeout(col.estimatedDocumentCount(), 5000),
+          withTimeout(col
+            .find({ normalized_at: { $exists: true } }, { projection: { normalized_at: 1 } })
             .sort({ normalized_at: -1 })
             .limit(1)
-            .toArray(),
+            .maxTimeMS(3000)
+            .toArray(), 5000),
+          withTimeout(col
+            .find({ booking_date: { $exists: true } }, { projection: { booking_date: 1 } })
+            .sort({ booking_date: -1 }) // YYYY-MM-DD strings sort correctly
+            .limit(1)
+            .maxTimeMS(3000)
+            .toArray(), 5000),
         ]);
+
+        // light-weight field parity checks against our simple_* spec
+        const required = [
+          'case_number', 'charge', 'status', 'race', 'sex',
+          'booking_date', 'time_bucket', 'tags', 'bond', 'bond_amount', 'bond_label', 'full_name',
+        ];
+        const missingCounts = {};
+        await Promise.all(
+          required.map(async (f) => {
+            missingCounts[f] = await withTimeout(col.countDocuments({ [f]: { $exists: false } }).maxTimeMS ? col.countDocuments({ [f]: { $exists: false } }).maxTimeMS(3000) : col.countDocuments({ [f]: { $exists: false } }), 5000).catch(() => -1);
+          }),
+        );
+
+        // anchor format audit (minimal, only for our standardized pairs)
+        let anchorAudit = null;
+        if (name === 'simple_jefferson') {
+          // Jefferson anchors should be URLs
+          anchorAudit = await withTimeout(col.countDocuments({ "_upsert_key.anchor": { $not: /^http/ } }), 5000).catch(() => -1);
+        } else if (name === 'simple_harris') {
+          // Harris anchors should be all digits (case_number)
+          anchorAudit = await withTimeout(col.countDocuments({ "_upsert_key.anchor": { $not: /^\d+$/ } }), 5000).catch(() => -1);
+        }
+
         details[name] = {
           count,
-          latest_normalized_at: latestDoc?.[0]?.normalized_at || null,
+          latest_normalized_at: latestNorm?.[0]?.normalized_at || null,
+          latest_booking_date: latestBook?.[0]?.booking_date || null,
+          missing: missingCounts,
+          anchor_audit: anchorAudit,
         };
-      } catch {
-        details[name] = { count: 0, latest_normalized_at: null, error: 'unavailable' };
+      } catch (e) {
+        details[name] = { count: 0, latest_normalized_at: null, latest_booking_date: null, error: 'unavailable' };
       }
     }
 
     // 3) Basic warnings
-    const warnings = Object.entries(details)
-      .filter(([, v]) => (v?.count ?? 0) === 0)
-      .map(([k]) => `${k} has zero documents`);
+    const warnings = [];
+
+    for (const [k, v] of Object.entries(details)) {
+      if ((v?.count ?? 0) === 0) warnings.push(`${k} has zero documents`);
+      // flag if booking_date looks stale (older than 3 days)
+      if (v?.latest_booking_date) {
+        const ageDays = Math.floor((Date.now() - Date.parse(v.latest_booking_date)) / (1000 * 60 * 60 * 24));
+        if (ageDays > 3) warnings.push(`${k} latest booking_date is ${ageDays}d old (${v.latest_booking_date})`);
+      }
+      // flag if any key fields are missing
+      const missing = v?.missing ?? {};
+      const missingKeys = Object.entries(missing).filter(([, n]) => n > 0).map(([f, n]) => `${f}:${n}`);
+      if (missingKeys.length) warnings.push(`${k} missing fields -> ${missingKeys.join(', ')}`);
+      if (typeof v.anchor_audit === 'number' && v.anchor_audit > 0) {
+        warnings.push(`${k} has ${v.anchor_audit} nonconforming anchors`);
+      }
+    }
 
     res.json({
       ok: true,
@@ -72,59 +135,28 @@ function dOffset(days = 0) {
   return d.toISOString().slice(0, 10);
 }
 
-// Build the union pipeline across simple_* collections
+// Build the union pipeline across simple_* collections (anchor will be simple_harris)
 function unionSimple(match = {}, project = null) {
-  const base = [
-    { $match: match },
-  ];
+  const base = [{ $match: match }];
   if (project) base.push({ $project: project });
 
+  const mk = (coll) => ({ $unionWith: { coll, pipeline: base } });
+
   return [
-    { $match: {} },
-    { $project: { _id: 0 } },
-    { $replaceWith: '$$ROOT' },
-    { $limit: Number.MAX_SAFE_INTEGER },
-    { $facet: { __dummy: [{ $match: {} }] } }, // no-op to keep structure consistent
-  ] && [
-    { $match: {} },
-    { $project: { _id: 0 } },
-    { $match: {} },
-  ] && [
-    { $match: {} },
-  ] && [
-    { $replaceWith: '$$ROOT' },
-  ] && [
-    // Start with simple_harris and union others
-    {
-      $unionWith: {
-        coll: 'simple_brazoria',
-        pipeline: base,
-      },
-    },
-    {
-      $unionWith: {
-        coll: 'simple_galveston',
-        pipeline: base,
-      },
-    },
-    {
-      $unionWith: {
-        coll: 'simple_fortbend',
-        pipeline: base,
-      },
-    },
-    {
-      $unionWith: {
-        coll: 'simple_jefferson',
-        pipeline: base,
-      },
-    },
+    mk('simple_brazoria'),
+    mk('simple_galveston'),
+    mk('simple_fortbend'),
+    mk('simple_jefferson'),
   ];
 }
 
 // GET /dashboard/kpis — high-level counts/sums for header widgets
 r.get('/kpis', async (req, res) => {
   try {
+    const conn = mongoose.connection;
+    if (!conn || !conn.db) {
+      return res.status(503).json({ ok: false, error: 'DB not configured', ts: new Date().toISOString() });
+    }
     const today = dOffset(0);
     const yesterday = dOffset(-1);
     const twoDaysAgo = dOffset(-2);
@@ -134,16 +166,17 @@ r.get('/kpis', async (req, res) => {
     const matchWindow7d = { booking_date: { $gte: sevenDaysAgo, $lte: today } };
     const proj = { booking_date: 1, county: 1, bond_amount: 1 };
 
-    // Aggregate once for 7d window then slice in-memory
     const pipeline = [
-      { $match: matchWindow7d },
+      { $match: matchWindow7d }, // anchor: simple_harris
       ...unionSimple(matchWindow7d, proj),
       { $project: { booking_date: 1, county: 1, bond_amount: { $ifNull: ['$bond_amount', 0] } } },
     ];
 
     // Run against simple_harris as the anchor for the union pipeline
-    const anchor = req.app.get('mongo').db.collection('simple_harris');
-    const docs = await anchor.aggregate(pipeline).toArray();
+  const anchor = conn.db.collection('simple_harris');
+  const aggAnchor = anchor.aggregate(pipeline);
+  const anchorCursor = aggAnchor.maxTimeMS ? aggAnchor.maxTimeMS(MAX_DB_MS) : aggAnchor;
+  const docs = await withTimeout(anchorCursor.toArray(), MAX_DB_MS).catch(() => []);
 
     const bucket = (from, to) => docs.filter(d => d.booking_date >= from && d.booking_date <= to);
 
@@ -185,6 +218,10 @@ r.get('/kpis', async (req, res) => {
 // GET /dashboard/trends?days=14 — daily counts/sums for last N days
 r.get('/trends', async (req, res) => {
   try {
+    const conn = mongoose.connection;
+    if (!conn || !conn.db) {
+      return res.status(503).json({ ok: false, error: 'DB not configured', ts: new Date().toISOString() });
+    }
     const days = Math.max(1, Math.min(60, Number(req.query.days ?? 14)));
     const start = dOffset(-days + 1); // inclusive start
     const end = dOffset(0);
@@ -193,7 +230,7 @@ r.get('/trends', async (req, res) => {
     const proj = { booking_date: 1, bond_amount: 1 };
 
     const pipeline = [
-      { $match: matchRange },
+      { $match: matchRange }, // anchor: simple_harris
       ...unionSimple(matchRange, proj),
       { $project: { booking_date: 1, bond_amount: { $ifNull: ['$bond_amount', 0] } } },
       { $group: { _id: '$booking_date', count: { $sum: 1 }, bond_sum: { $sum: '$bond_amount' } } },
@@ -201,8 +238,10 @@ r.get('/trends', async (req, res) => {
       { $sort: { date: 1 } },
     ];
 
-    const anchor = req.app.get('mongo').db.collection('simple_harris');
-    const series = await anchor.aggregate(pipeline).toArray();
+  const anchor = conn.db.collection('simple_harris');
+  const aggSeries = anchor.aggregate(pipeline);
+  const seriesCursor = aggSeries.maxTimeMS ? aggSeries.maxTimeMS(MAX_DB_MS) : aggSeries;
+  const series = await withTimeout(seriesCursor.toArray(), MAX_DB_MS).catch(() => []);
 
     res.json({ ok: true, start, end, series, ts: new Date().toISOString() });
   } catch (err) {

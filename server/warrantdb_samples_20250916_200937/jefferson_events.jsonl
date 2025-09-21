@@ -1,0 +1,444 @@
+{
+  "_id": {
+    "$oid": "68c3224c5aa305b53f3c444b"
+  },
+  "person_id": null,
+  "county": "Jefferson",
+  "facility": "Jefferson County Jail",
+  "full_name": "ANGELA MORRIS",
+  "first_name": "Angela",
+  "last_name": "Morris",
+  "booking_number": null,
+  "status": "In Custody",
+  "booked_at": "2025-09-03",
+  "released_at": null,
+  "source_url": "https://jeffersoncountytx.gov/InmateSearch/Search/Detail/770540",
+  "charges": [
+    {
+      "charge": "Poss CS PG 1/1-B>=1G<4G",
+      "status": "F3",
+      "docket": "25DCCR0661 - 2",
+      "bond": "$50,000.00",
+      "condition": "Drug Patch"
+    },
+    {
+      "charge": "FAIL TO DISPLAY DRIVER LICENSE (#)",
+      "status": "MT",
+      "docket": "",
+      "bond": "",
+      "condition": ""
+    },
+    {
+      "charge": "FAILURE TO MAINTAIN PROOF OF FINANCIAL RESPONSIBILITY",
+      "status": "MT",
+      "docket": "",
+      "bond": "",
+      "condition": ""
+    },
+    {
+      "charge": "FAIL TO DISPLAY DRIVER LICENSE (#)",
+      "status": "MT",
+      "docket": "",
+      "bond": "",
+      "condition": ""
+    },
+    {
+      "charge": "OPEN CONTAINER IN VEHICLE",
+      "status": "MC",
+      "docket": "",
+      "bond": "",
+      "condition": ""
+    }
+  ],
+  "bonds": [],
+  "total_bond": 50000.0,
+  "agency": "Jefferson County Sheriff's Office",
+  "arrest_date": "2025-09-03",
+  "race": "Black",
+  "sex": "Female",
+  "age": "40",
+  "booking_age_category": "0_to_30_days",
+  "booking_priority": 2,
+  "scraped_at": "2025-09-11T19:26:04.104430Z",
+  "_collection": "jefferson_events"
+}
+{
+  "_id": {
+    "$oid": "68c1d547cf5fcbae3bf1a80e"
+  },
+  "person_id": null,
+  "county": "Jefferson",
+  "facility": "Jefferson County Jail",
+  "full_name": "EDDIE DAVIS",
+  "first_name": "Eddie",
+  "last_name": "Davis",
+  "booking_number": null,
+  "status": "In Custody",
+  "booked_at": "2025-01-13",
+  "released_at": null,
+  "source_url": "https://jeffersoncountytx.gov/InmateSearch/Search/Detail/760607",
+  "charges": [
+    {
+      "charge": "DEADLY CONDUCT DISCHARGE FIREARM",
+      "status": "F3",
+      "docket": "25JP-00003",
+      "bond": "$150,000.00",
+      "condition": "Must have GPS Monitoring Device; Remain in Jefferson County"
+    },
+    {
+      "charge": "MURDER",
+      "status": "F1",
+      "docket": "25JP-00017",
+      "bond": "$900,000.00",
+      "condition": "Must have GPS Monitoring Device; No Contact /Communication w/  Victim/Complain Witness; Remain in Jefferson County"
+    }
+  ],
+  "bonds": [],
+  "total_bond": 1050000.0,
+  "agency": "BEAUMONT PD",
+  "arrest_date": "2025-01-13",
+  "race": "Black",
+  "sex": "Male",
+  "age": "18",
+  "booking_age_category": "180_to_365_days",
+  "booking_priority": 5,
+  "scraped_at": "2025-09-10T19:45:11.163113Z",
+  "_collection": "jefferson_events"
+}
+{
+  "_id": {
+    "$oid": "68c324f75aa305b53f3c451f"
+  },
+  "person_id": null,
+  "county": "Jefferson",
+  "facility": "Jefferson County Jail",
+  "full_name": "MONICA LYNN VINCENT",
+  "first_name": "Monica Lynn",
+  "last_name": "Vincent",
+  "booking_number": null,
+  "status": "In Custody",
+  "booked_at": "2024-11-26",
+  "released_at": null,
+  "source_url": "https://jeffersoncountytx.gov/InmateSearch/Search/Detail/759382",
+  "charges": [
+    {
+      "charge": "EVADING ARREST DET W/VEH",
+      "status": "F3",
+      "docket": "24DCCR2342 - 1",
+      "bond": "$10,000.00",
+      "condition": ""
+    },
+    {
+      "charge": "Parole Violation",
+      "status": "UNK",
+      "docket": "",
+      "bond": "",
+      "condition": ""
+    },
+    {
+      "charge": "RESIST ARREST SEARCH OR TRANSP",
+      "status": "MA",
+      "docket": "",
+      "bond": "$5,000.00",
+      "condition": ""
+    },
+    {
+      "charge": "POSS CS PG 1/1-B >=4G<200G",
+      "status": "F2",
+      "docket": "25DCCR1200 - 1",
+      "bond": "$20,000.00",
+      "condition": "Drug Patch"
+    }
+  ],
+  "bonds": [],
+  "total_bond": 35000.0,
+  "agency": "Jefferson County Sheriff's Office",
+  "arrest_date": "2024-11-26",
+  "race": "White",
+  "sex": "Female",
+  "age": "40",
+  "booking_age_category": "180_to_365_days",
+  "booking_priority": 5,
+  "scraped_at": "2025-09-11T19:37:26.777384Z",
+  "_collection": "jefferson_events"
+}
+{
+  "_id": {
+    "$oid": "68c046dfc61c13acb9df295e"
+  },
+  "person_id": null,
+  "county": "Jefferson",
+  "facility": "Jefferson County Jail",
+  "full_name": "FELICE R MOORE",
+  "first_name": "FELICE R",
+  "last_name": "MOORE",
+  "booking_number": null,
+  "status": "In Custody",
+  "booked_at": "2025-05-13",
+  "released_at": null,
+  "source_url": "https://jeffersoncountytx.gov/InmateSearch/Search/Detail/764640",
+  "charges": [
+    {
+      "charge": "DRIVING WHILE INTOXICATED 3RD OR MORE",
+      "status": "F3",
+      "docket": "29875",
+      "bond": "",
+      "condition": "(1) Standard Conditions"
+    },
+    {
+      "charge": "DRIVING WHILE INTOXICATED 3RD OR MORE",
+      "status": "F3",
+      "docket": "F18-29875-0 - 2",
+      "bond": "",
+      "condition": "(1) Standard Conditions"
+    }
+  ],
+  "bonds": [],
+  "total_bond": null,
+  "agency": "Jefferson County Sheriff's Office",
+  "arrest_date": "2025-05-13",
+  "race": "Black",
+  "sex": "Female",
+  "age": "33",
+  "booking_age_category": "60_to_180_days",
+  "booking_priority": 4,
+  "scraped_at": "2025-09-09T15:25:19.056484Z",
+  "_collection": "jefferson_events"
+}
+{
+  "_id": {
+    "$oid": "68c1d5cdcf5fcbae3bf1a88c"
+  },
+  "person_id": null,
+  "county": "Jefferson",
+  "facility": "Jefferson County Jail",
+  "full_name": "LOUIS FRANKLIN",
+  "first_name": "LOUIS",
+  "last_name": "FRANKLIN",
+  "booking_number": null,
+  "status": "In Custody",
+  "booked_at": "2023-02-24",
+  "released_at": null,
+  "source_url": "https://jeffersoncountytx.gov/InmateSearch/Search/Detail/737166",
+  "charges": [
+    {
+      "charge": "AGG ROBBERY",
+      "status": "F1",
+      "docket": "23DCCR0027 - 1",
+      "bond": "",
+      "condition": ""
+    },
+    {
+      "charge": "AGG ROBBERY",
+      "status": "F1",
+      "docket": "24778",
+      "bond": "",
+      "condition": ""
+    }
+  ],
+  "bonds": [],
+  "total_bond": null,
+  "agency": "Jefferson County Sheriff's Office",
+  "arrest_date": "2023-02-24",
+  "race": "Black",
+  "sex": "Male",
+  "age": "29",
+  "booking_age_category": "365_days_or_older",
+  "booking_priority": 6,
+  "scraped_at": "2025-09-10T19:47:24.997850Z",
+  "_collection": "jefferson_events"
+}
+{
+  "_id": {
+    "$oid": "68c1d5d7cf5fcbae3bf1a88f"
+  },
+  "person_id": null,
+  "county": "Jefferson",
+  "facility": "Jefferson County Jail",
+  "full_name": "FEDERICO M ORTIZ",
+  "first_name": "Federico M",
+  "last_name": "Ortiz",
+  "booking_number": null,
+  "status": "In Custody",
+  "booked_at": "2025-07-24",
+  "released_at": null,
+  "source_url": "https://jeffersoncountytx.gov/InmateSearch/Search/Detail/768107",
+  "charges": [
+    {
+      "charge": "BURGLARY OF HABITATION",
+      "status": "F2",
+      "docket": "24DCCR2334 - 2",
+      "bond": "",
+      "condition": "(1) Standard Conditions; No Contact /Communication w/  Victim/Complain Witness"
+    },
+    {
+      "charge": "ABNDN/ENDANGR CHLD INDV INT/KNOW/RECK/CRIM NEG",
+      "status": "FS",
+      "docket": "25DCCR0589 - 2",
+      "bond": "$100,000.00",
+      "condition": "(1) Standard Conditions; No contact with children under 18 years of age"
+    }
+  ],
+  "bonds": [],
+  "total_bond": 100000.0,
+  "agency": "Jefferson County Sheriff's Office",
+  "arrest_date": "2025-07-24",
+  "race": "White",
+  "sex": "Male",
+  "age": "34",
+  "booking_age_category": "30_to_60_days",
+  "booking_priority": 3,
+  "scraped_at": "2025-09-10T19:47:35.619469Z",
+  "_collection": "jefferson_events"
+}
+{
+  "_id": {
+    "$oid": "68c052afc61c13acb9df2b2b"
+  },
+  "person_id": "68c052af4d93cf335f87b85e",
+  "county": "Jefferson",
+  "facility": "Jefferson County Jail",
+  "full_name": "ASHLEY MARIE RIGGINS",
+  "first_name": "Ashley Marie",
+  "last_name": "Riggins",
+  "booking_number": null,
+  "status": "In Custody",
+  "booked_at": "2025-08-25",
+  "released_at": null,
+  "source_url": "https://jeffersoncountytx.gov/InmateSearch/Search/Detail/770204",
+  "charges": [
+    {
+      "charge": "UNAUTH USE OF VEHICLE",
+      "status": "FS",
+      "docket": "25DCCR0092 - 1",
+      "bond": "",
+      "condition": ""
+    }
+  ],
+  "bonds": [],
+  "total_bond": null,
+  "agency": "Jefferson County Sheriff's Office",
+  "arrest_date": "2025-08-25",
+  "race": "Black",
+  "sex": "Female",
+  "age": "32",
+  "booking_age_category": "0_to_30_days",
+  "booking_priority": 2,
+  "scraped_at": "2025-09-09T16:15:43.929520Z",
+  "_collection": "jefferson_events"
+}
+{
+  "_id": {
+    "$oid": "68c3222e5aa305b53f3c442b"
+  },
+  "person_id": null,
+  "county": "Jefferson",
+  "facility": "Jefferson County Jail",
+  "full_name": "AXEL MENDOZA",
+  "first_name": "AXEL",
+  "last_name": "MENDOZA",
+  "booking_number": null,
+  "status": "In Custody",
+  "booked_at": "2025-08-06",
+  "released_at": null,
+  "source_url": "https://jeffersoncountytx.gov/InmateSearch/Search/Detail/768550",
+  "charges": [
+    {
+      "charge": "INTOXICATION ASSAULT W/VEHICLE SBI",
+      "status": "F3",
+      "docket": "",
+      "bond": "",
+      "condition": ""
+    }
+  ],
+  "bonds": [],
+  "total_bond": null,
+  "agency": "Jefferson County Sheriff's Office",
+  "arrest_date": "2025-08-06",
+  "race": "White",
+  "sex": "Male",
+  "age": "23",
+  "booking_age_category": "30_to_60_days",
+  "booking_priority": 3,
+  "scraped_at": "2025-09-11T19:25:34.880033Z",
+  "_collection": "jefferson_events"
+}
+{
+  "_id": {
+    "$oid": "68ac9ff1cdfd95f7e9d54eb6"
+  },
+  "person_id": null,
+  "county": "Jefferson",
+  "facility": "Jefferson County Jail",
+  "full_name": "JOSE WIL LOPEZ",
+  "first_name": "JOSE WIL",
+  "last_name": "LOPEZ",
+  "booking_number": null,
+  "status": "In Custody",
+  "booked_at": "2022-11-05",
+  "booking_age_category": "365_days_or_older",
+  "booking_priority": 6,
+  "released_at": null,
+  "source_url": "https://jeffersoncountytx.gov/InmateSearch/Search/Detail/733745",
+  "scraped_at": "2025-08-25T17:40:01.087794Z",
+  "charges": [
+    {
+      "charge": "MURDER",
+      "status": "FU",
+      "docket": "",
+      "bond": "",
+      "condition": ""
+    }
+  ],
+  "bonds": [],
+  "total_bond": null,
+  "agency": "BEAUMONT PD",
+  "arrest_date": "2022-11-05",
+  "race": "White",
+  "sex": "Male",
+  "age": "37",
+  "_collection": "jefferson_events"
+}
+{
+  "_id": {
+    "$oid": "68c3231b5aa305b53f3c44c1"
+  },
+  "person_id": "68c3231a67ac99460bd6eb87",
+  "county": "Jefferson",
+  "facility": "Jefferson County Jail",
+  "full_name": "DONNELL A CLARK",
+  "first_name": "DONNELL A",
+  "last_name": "CLARK",
+  "booking_number": null,
+  "status": "In Custody",
+  "booked_at": "2025-09-11",
+  "released_at": null,
+  "source_url": "https://jeffersoncountytx.gov/InmateSearch/Search/Detail/771753",
+  "charges": [
+    {
+      "charge": "EXPIRED LICENSE PLATES",
+      "status": "MC",
+      "docket": "",
+      "bond": "",
+      "condition": ""
+    },
+    {
+      "charge": "FAILURE TO APPEAR",
+      "status": "MC",
+      "docket": "",
+      "bond": "",
+      "condition": ""
+    }
+  ],
+  "bonds": [],
+  "total_bond": null,
+  "agency": "NEDERLAND PD",
+  "arrest_date": "2025-09-11",
+  "race": "Black",
+  "sex": "Male",
+  "age": "58",
+  "booking_age_category": "24_hours_or_less",
+  "booking_priority": 1,
+  "scraped_at": "2025-09-11T19:29:30.498754Z",
+  "_collection": "jefferson_events"
+}

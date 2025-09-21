@@ -1,7 +1,8 @@
+// server/src/routes/dashboard.js
 import { Router } from 'express';
 import mongoose from 'mongoose';
-import Message from '../models/Message.js';   // optional: contacted if you link caseId
-import Job from '../models/Job.js';           // optional: last-pull if you log scrape jobs
+import Message from '../models/Message.js';   // optional
+import Job from '../models/Job.js';           // optional
 
 const r = Router();
 
@@ -13,27 +14,135 @@ const COUNTY_COLLECTIONS = [
   'simple_jefferson',
 ];
 
-// Base collection helper to avoid redeclaring 'first' everywhere
+// Use the first collection only as an entry point for $unionWith
 const BASE_COLLECTION = COUNTY_COLLECTIONS[0];
 const baseColl = (db) => db.collection(BASE_COLLECTION);
 
-// Build a $unionWith chain over all simple_* collections with normalization
+/**
+ * Build a $unionWith pipeline across all simple_* collections, with:
+ *  - booking_date normalization (YYYY-MM-DD string)
+ *  - robust bond_amount normalization (numeric)
+ *  - county fallback
+ *  - global exclusion of Harris/Civil rows
+ */
 function unionAll(match = {}, project = null) {
-  // 1) Normalize fields per document
-  // With the new normalizer, `booking_date` is already canonical (YYYY-MM-DD string)
-  // and `bond_amount` is numeric. Keep minimal fallbacks for older rows.
+  // Normalize booking_date & bond_amount
   const normalizeStages = [
     {
       $set: {
+        // Prefer normalized booking_date; fall back to legacy fields if present
         booking_date_n: {
-          $ifNull: ['$booking_date', { $ifNull: ['$booked_at', '$booking_date_iso'] }]
+          $ifNull: [
+            '$booking_date',
+            { $ifNull: ['$booked_at', '$booking_date_iso'] }
+          ]
         },
-        bond_amount_n: { $ifNull: ['$bond_amount', 0] }
+        // Compute a reliable numeric bond amount:
+        // 1) use bond_amount if already numeric
+        // 2) else use numeric bond if bond is a number
+        // 3) else cast numeric-looking bond strings
+        // 4) else null (e.g., "REFER TO MAGISTRATE")
+        bond_amount_n: {
+          $let: {
+            vars: {
+              bAmt: '$bond_amount',
+              b: '$bond',
+              bl: { $toString: { $ifNull: ['$bond_label', ''] } },
+            },
+            in: {
+              $switch: {
+                branches: [
+                  { case: { $ne: ['$$bAmt', null] }, then: '$$bAmt' },
+                  { case: { $isNumber: '$$b' },       then: '$$b' },
+                  {
+                    case: {
+                      $regexMatch: {
+                        input: { $toString: '$$b' },
+                        regex: /^\d+(\.\d+)?$/,
+                      }
+                    },
+                    then: { $toDouble: '$$b' }
+                  },
+                  {
+                    case: {
+                      $regexMatch: {
+                        input: '$$bl',
+                        regex: /REFER TO MAGISTRATE/i
+                      }
+                    },
+                    then: null
+                  },
+                ],
+                default: null,
+              }
+            }
+          }
+        }
       }
-    }
+    },
+    {
+      // Canonicalize so downstream always sees booking_date & bond_amount
+      $set: {
+        booking_date: '$booking_date_n',
+        bond_amount: '$bond_amount_n',
+      }
+    },
+    // Compute-on-read extras: preserve raw bond text, classify non-numeric bonds,
+    // and provide a sort-weight for ranking. This keeps original semantics
+    // for numeric aggregation while exposing useful metadata.
+    {
+      $set: {
+          bond_raw: {
+            $ifNull: [
+              '$bond_raw',
+              { $toString: { $ifNull: ['$bond', { $ifNull: ['$bond_label', ''] }] } }
+            ]
+          },
+          bond_status: {
+            $ifNull: ['$bond_status', {
+              $switch: {
+                branches: [
+                  { case: { $ne: ['$bond_amount_n', null] }, then: 'numeric' },
+                  { case: { $regexMatch: { input: { $toString: '$bond_label' }, regex: /REFER TO MAGISTRATE/i } }, then: 'refer_to_magistrate' },
+                  { case: { $regexMatch: { input: { $toString: '$bond' }, regex: /REFER TO MAGISTRATE/i } }, then: 'refer_to_magistrate' },
+                  { case: { $regexMatch: { input: { $toString: '$bond_label' }, regex: /SUMMONS/i } }, then: 'summons' },
+                  { case: { $regexMatch: { input: { $toString: '$bond' }, regex: /SUMMONS/i } }, then: 'summons' },
+                  { case: { $regexMatch: { input: { $toString: '$bond_label' }, regex: /UNSECURED|GOB/i } }, then: 'unsecured' },
+                  { case: { $eq: [{ $toString: { $ifNull: ['$bond', ''] } }, ''] }, then: 'no_bond' }
+                ],
+                default: 'unknown_text'
+              }
+            }]
+          },
+          bond_sort_value: {
+            $ifNull: ['$bond_sort_value', {
+              $switch: {
+                branches: [
+                  { case: { $eq: ['$bond_status', 'numeric'] }, then: { $ifNull: ['$bond_amount_n', 0] } },
+                  // keep refer-to-magistrate visible but don't pollute numeric totals
+                  { case: { $eq: ['$bond_status', 'refer_to_magistrate'] }, then: 1000000000 },
+                  { case: { $eq: ['$bond_status', 'unsecured'] }, then: 100 },
+                  { case: { $eq: ['$bond_status', 'summons'] }, then: 0 }
+                ],
+                default: 0
+              }
+            }]
+          }
+        }
+    },
   ];
 
-  // 2) If the caller is matching on booking_date, rewrite to our normalized field
+  const collCounty = (name) => (name || '').replace(/^simple_/, '') || 'unknown';
+
+  // Apply normalization + county fallback + exclude Harris Civil globally
+  const headStages = [
+    ...normalizeStages,
+    // canonicalize county text to lowercase/trim to avoid mismatches
+    { $set: { county: { $toLower: { $trim: { input: { $ifNull: ['$county', collCounty(BASE_COLLECTION)] } } } } } },
+    { $match: { $nor: [ { county: 'harris', category: 'Civil' } ] } },
+  ];
+
+  // If caller filters booking_date, map it to normalized field
   const rewrittenMatch = (() => {
     if (match && Object.prototype.hasOwnProperty.call(match, 'booking_date')) {
       const m = { ...match };
@@ -44,75 +153,89 @@ function unionAll(match = {}, project = null) {
     return match || {};
   })();
 
-  // 3) If the caller requested a projection, ensure booking_date/bond_amount map to normalized fields
-  const rewrittenProject = (() => {
-    if (!project) return null;
-    const p = { ...project };
-    if (p.booking_date !== 0) p.booking_date = '$booking_date_n';
-    if (p.bond_amount !== 0) p.bond_amount = '$bond_amount_n';
-    return p;
-  })();
+  const stages = headStages.concat([{ $match: rewrittenMatch }]);
+  if (project) stages.push({ $project: project });
 
-  // 4) Build per-collection pipelines
-  const headStages = [].concat(normalizeStages).concat([{ $match: rewrittenMatch }]);
-  if (rewrittenProject) headStages.push({ $project: rewrittenProject });
-
-  const rest = COUNTY_COLLECTIONS.slice(1).map((coll) => ({
+  // Build union branches for the remaining collections
+  const unions = COUNTY_COLLECTIONS.slice(1).map((coll) => ({
     $unionWith: {
       coll,
-      pipeline: [].concat(normalizeStages).concat([{ $match: rewrittenMatch }]).concat(
-        rewrittenProject ? [{ $project: rewrittenProject }] : []
-      )
+      pipeline: []
+        .concat(normalizeStages)
+        .concat([{ $set: { county: { $ifNull: ['$county', collCounty(coll)] } } }])
+        .concat([{ $match: { $nor: [ { county: 'harris', category: 'Civil' } ] } }])
+        .concat([{ $match: rewrittenMatch }])
+        .concat(project ? [{ $project: project }] : []),
     }
   }));
 
-  return headStages.concat(rest);
+  return stages.concat(unions);
 }
 
-// Common projection (normalize names across collections)
+// Common projection shared by endpoints
 const P = {
   _id: 1,
   county: 1,
-  category: 1,          // new: surface category (Criminal/Civil) from normalized docs
+  category: 1,
   full_name: 1,
-  booking_date: 1,      // YYYY-MM-DD (string)
-  normalized_at: 1,     // ISO timestamp (optional metrics)
+  booking_date: 1,
+  normalized_at: 1,
   bond_amount: 1,
-  offense: 1,
+  bond_raw: 1,
+  bond_status: 1,
+  bond_sort_value: 1,
+  bond_label: 1,
+  bond: 1,
+  charge: 1,
   booking_number: 1,
   case_number: 1,
   spn: 1,
-  agency: 1,            // new: arresting agency when available
-  facility: 1,          // new: facility/jail when available
-  race: 1,              // new: from Harris demographics mapping
-  sex: 1,               // new: from Harris demographics mapping
+  agency: 1,
+  facility: 1,
+  race: 1,
+  sex: 1,
 };
 
-// -------- Booking-day helpers (TZ-safe, no UTC skew) --------
-const DASHBOARD_TZ = process.env.DASHBOARD_TZ || 'America/Chicago'; // Texas counties default
+// Per-file DB timeout for potentially expensive aggregations
+const MAX_DB_MS = 5000;
+
+// Helper to timeout a promise-returning DB operation so endpoints don't hang
+function withTimeout(promise, ms = MAX_DB_MS) {
+  return Promise.race([
+    promise,
+    new Promise((_, rej) => setTimeout(() => rej(new Error('operation timed out')), ms)),
+  ]);
+}
+
+// Ensure a DB is available for this request; otherwise respond 503.
+function ensureDb(res) {
+  const db = mongoose.connection && mongoose.connection.db;
+  if (!db) {
+    res.status(503).json({ error: 'Database not connected. Set MONGO_URI and (optionally) MONGO_DB.' });
+    return null;
+  }
+  return db;
+}
+
+// ----- Date helpers (timezone aware) -----
+const DASHBOARD_TZ = process.env.DASHBOARD_TZ || 'America/Chicago';
 const _ymdFmt = new Intl.DateTimeFormat('en-CA', {
-  timeZone: DASHBOARD_TZ,
-  year: 'numeric',
-  month: '2-digit',
-  day: '2-digit',
+  timeZone: DASHBOARD_TZ, year: 'numeric', month: '2-digit', day: '2-digit',
 });
+const ymdInTZ = (d) => _ymdFmt.format(d); // en-CA => YYYY-MM-DD
+const dayShift = (n) => ymdInTZ(new Date(Date.now() - n * 86400000));
+const rangeDayStrs = (n) => Array.from({ length: n }, (_, i) => dayShift(i));
 
-function ymdInTZ(date) {
-  // Returns 'YYYY-MM-DD' formatted in DASHBOARD_TZ
-  return _ymdFmt.format(date); // en-CA outputs YYYY-MM-DD
-}
-
-function dayShift(n) {
-  // Returns YYYY-MM-DD for (today - n days) in DASHBOARD_TZ
-  const now = new Date();
-  const shifted = new Date(now.getTime() - n * 24 * 60 * 60 * 1000);
-  return ymdInTZ(shifted);
-}
-
-function rangeDayStrs(daysBack) {
-  const out = [];
-  for (let i = 0; i < daysBack; i++) out.push(dayShift(i));
-  return out;
+function windowDates(win = '24h') {
+  switch ((win || '24h').toLowerCase()) {
+    case '24h': return [dayShift(0)];
+    case '48h': return [dayShift(1)];
+    case '72h': return [dayShift(2)];
+    case 'rolling72': return [dayShift(0), dayShift(1), dayShift(2)];
+    case '7d':  return rangeDayStrs(7);
+    case '30d': return rangeDayStrs(30);
+    default:    return [dayShift(0)];
+  }
 }
 
 async function countByBookingDates(db, dates) {
@@ -120,376 +243,393 @@ async function countByBookingDates(db, dates) {
   const cur = baseColl(db).aggregate([
     ...unionAll({ booking_date: { $in: dates } }, { _id: 1 }),
     { $count: 'n' }
+  ]).maxTimeMS ? baseColl(db).aggregate([
+    ...unionAll({ booking_date: { $in: dates } }, { _id: 1 }),
+    { $count: 'n' }
+  ]).maxTimeMS(MAX_DB_MS) : baseColl(db).aggregate([
+    ...unionAll({ booking_date: { $in: dates } }, { _id: 1 }),
+    { $count: 'n' }
   ]);
-  const doc = await cur.next();
+  const doc = await withTimeout(cur.next(), MAX_DB_MS).catch(() => null);
   return doc ? doc.n : 0;
 }
 
 async function bondByCountyForDates(db, dates) {
   if (!dates.length) return [];
-  return baseColl(db).aggregate([
+  const agg = baseColl(db).aggregate([
     ...unionAll({ booking_date: { $in: dates } }, { county: 1, bond_amount: 1 }),
     { $group: { _id: '$county', value: { $sum: { $ifNull: ['$bond_amount', 0] } } } },
     { $project: { _id: 0, county: '$_id', value: 1 } },
     { $sort: { county: 1 } }
-  ]).toArray();
+  ]);
+  const cursor = agg.maxTimeMS ? agg.maxTimeMS(MAX_DB_MS) : agg;
+  return withTimeout(cursor.toArray(), MAX_DB_MS).catch(() => []);
 }
 
 async function adaptiveBondByCounty(db, preferred = ['24h', '48h', '72h', '7d']) {
   const counties = COUNTY_COLLECTIONS.map(c => c.replace('simple_', ''));
-  const resultsPerWindow = new Map(); // window -> Map(county -> value)
-
+  const results = new Map();
   for (const win of preferred) {
-    const dates = windowDates(win);
-    const rows = await bondByCountyForDates(db, dates);
-    const m = new Map(rows.map(r => [r.county, r.value || 0]));
-    resultsPerWindow.set(win, m);
+    const rows = await bondByCountyForDates(db, windowDates(win)).catch(() => []);
+    results.set(win, new Map(rows.map(r => [r.county, r.value || 0])));
   }
-
-  // Choose the earliest window with non-zero per county; if all zero, keep 0 and last window label.
   const out = [];
   for (const county of counties) {
+    let used = preferred[preferred.length - 1];
     let value = 0;
-    let windowUsed = preferred[preferred.length - 1];
     for (const win of preferred) {
-      const m = resultsPerWindow.get(win);
-      const v = (m && m.get(county)) || 0;
-      if (v > 0) {
-        value = v;
-        windowUsed = win;
-        break;
-      } else {
-        // track last tried window in case all are 0
-        windowUsed = win;
-      }
+      const v = results.get(win)?.get(county) || 0;
+      used = win;
+      if (v > 0) { value = v; break; }
     }
-    out.push({ county, value, windowUsed });
+    out.push({ county, value, windowUsed: used });
   }
   return out;
 }
 
-function windowDates(window = '24h') {
-  switch ((window || '24h').toLowerCase()) {
-    case '24h': return [dayShift(0)];
-    case '48h': return [dayShift(1)];
-    case '72h': return [dayShift(2)];
-    case 'rolling72': return [dayShift(0), dayShift(1), dayShift(2)];
-    case '7d':  return rangeDayStrs(7);     // today .. today-6
-    case '30d': return rangeDayStrs(30);    // today .. today-29
-    default:    return [dayShift(0)];
-  }
+// ---- Attention flags (refer-to-magistrate or letter suffix in case number) ----
+function attentionStages(attentionOnly = false) {
+  const st = [
+    { $set: {
+        _bl: { $toString: { $ifNull: ['$bond_label', ''] } },
+        _b:  { $toString: { $ifNull: ['$bond', ''] } },
+        _cn: { $toString: { $ifNull: ['$case_number', ''] } },
+      }},
+    { $set: {
+        isReferMag: {
+          $or: [
+            { $regexMatch: { input: '$_bl', regex: /REFER TO MAGISTRATE/i } },
+            { $regexMatch: { input: '$_b',  regex: /REFER TO MAGISTRATE/i } }
+          ]
+        },
+        // Only flag case numbers that end with an ASCII letter (e.g., '12345A')
+        hasLetterCase: {
+          $and: [
+            { $ne: ['$_cn', ''] },
+            { $regexMatch: { input: '$_cn', regex: /[A-Za-z]$/ } }
+          ]
+        }
+      }},
+    { $set: {
+        needs_attention: { $or: ['$isReferMag', '$hasLetterCase'] },
+        attention_reasons: {
+          $setDifference: [
+            [
+              { $cond: ['$$REMOVE', null, null] },
+              { $cond: ['$isReferMag', 'refer_to_magistrate', null] },
+              { $cond: ['$hasLetterCase', 'letter_suffix_case', null] },
+            ],
+            [null]
+          ]
+        }
+      }},
+    { $unset: ['_bl', '_b', '_cn'] }
+  ];
+  if (attentionOnly) st.push({ $match: { needs_attention: true } });
+  return st;
 }
 
-// ---------- KPIs (booking_date driven) ----------
-r.get('/kpis', async (req, res) => {
-  const db = mongoose.connection.db;
-
-  const today     = [dayShift(0)];
-  const yesterday = [dayShift(1)];
-  const twoDays   = [dayShift(2)];
-  const last7     = rangeDayStrs(7);
-  const last30    = rangeDayStrs(30);
-
+// ===== KPIs =====
+r.get('/kpis', async (_req, res) => {
+  const db = ensureDb(res); if (!db) return;
   const [cToday, cYesterday, cTwoDays, c7, c30] = await Promise.all([
-    countByBookingDates(db, today),
-    countByBookingDates(db, yesterday),
-    countByBookingDates(db, twoDays),
-    countByBookingDates(db, last7),
-    countByBookingDates(db, last30),
+    countByBookingDates(db, [dayShift(0)]),
+    countByBookingDates(db, [dayShift(1)]),
+    countByBookingDates(db, [dayShift(2)]),
+    countByBookingDates(db, rangeDayStrs(7)),
+    countByBookingDates(db, rangeDayStrs(30)),
   ]);
-
-  // Adaptive per-county bond: prefer 24h, then 48h, 72h, 7d (per county)
   const perCountyBond = await adaptiveBondByCounty(db, ['24h', '48h', '72h', '7d']);
-  const bondTotal = perCountyBond.reduce((sum, r) => sum + (r.value || 0), 0);
+  const bondTotal = perCountyBond.reduce((s, r) => s + (r.value || 0), 0);
 
-  // optional: last pull timestamps if you record jobs
   let perCountyLastPull = [];
   try {
-    perCountyLastPull = await Job.aggregate([
+    const aggJob = Job.aggregate([
       { $match: { name: { $regex: /^scrape:/ }, status: 'success' } },
       { $group: { _id: '$name', lastPull: { $max: '$finishedAt' } } },
       { $project: { county: { $replaceOne: { input: '$_id', find: 'scrape:', replacement: '' } }, lastPull: 1, _id: 0 } },
     ]);
-  } catch { /* ignore if not present */ }
+    perCountyLastPull = await withTimeout((aggJob.maxTimeMS ? aggJob.maxTimeMS(MAX_DB_MS) : aggJob).toArray(), MAX_DB_MS).catch(() => []);
+  } catch { /* optional */ }
 
   res.json({
     newCountsBooked: {
-      today: cToday,           // 0–24h by booking_date
-      yesterday: cYesterday,   // 24–48h
-      twoDaysAgo: cTwoDays,    // 48–72h
-      last7d: c7,              // rolling 7 days (calendar)
-      last30d: c30             // rolling 30 days (calendar)
+      today: cToday,
+      yesterday: cYesterday,
+      twoDaysAgo: cTwoDays,
+      last7d: c7,
+      last30d: c30,
     },
     perCountyBond,
     bondTotal,
-    // backward compatibility
     perCountyBondToday: perCountyBond.map(({ county, value }) => ({ county, value })),
     bondTodayTotal: bondTotal,
-    perCountyLastPull
+    perCountyLastPull,
   });
 });
 
-// ---------- TOP (booking window by value) ----------
+// ===== TOP (by bond value, booking window) =====
 r.get('/top', async (req, res) => {
-  const db = mongoose.connection.db;
-  const limit = parseInt(req.query.limit || '10', 10);
+  const db = ensureDb(res); if (!db) return;
+  const limit = Math.min(Math.max(parseInt(req.query.limit || '10', 10), 1), 200);
   const requestedWindow = String(req.query.window || '24h').toLowerCase();
   let dates = windowDates(requestedWindow);
+  const countyFilter = req.query.county ? { county: req.query.county } : null;
 
   const basePipeline = (dts) => ([
     ...unionAll({ booking_date: { $in: dts } }, P),
-    { $set: { sortValue: { $ifNull: ['$bond_amount', 0] } } },
+    ...attentionStages(req.query.attention === '1' || req.query.attention === 'true'),
+  ...(countyFilter ? [{ $match: countyFilter }] : []),
+  { $set: { sortValue: { $cond: [ { $isNumber: '$bond_amount' }, '$bond_amount', { $toDouble: { $ifNull: ['$bond', 0] } } ] } } },
     { $sort: { sortValue: -1 } },
     { $limit: limit },
-    {
-      $project: {
+    { $project: {
         _id: 0,
         id: { $toString: '$_id' },
         name: '$full_name',
         county: 1,
         category: 1,
-        booking_date: '$booking_date',
-        bond_amount: '$bond_amount',
+        booking_date: 1,
+  bond_amount: 1,
         value: '$sortValue',
-        offense: '$offense',
-        agency: '$agency',
-        facility: '$facility',
-        race: '$race',
-        sex: '$sex',
-        case_number: '$case_number',
-        spn: '$spn'
-      }
-    }
+        offense: '$charge',
+        agency: 1,
+        facility: 1,
+        race: 1,
+        sex: 1,
+        case_number: 1,
+        spn: 1,
+        needs_attention: 1,
+        attention_reasons: 1,
+      }}
   ]);
 
-  let items = await baseColl(db).aggregate(basePipeline(dates)).toArray();
-
-  // Fallback: if 24h requested and empty, use yesterday (48h)
+  const aggItemsTop = baseColl(db).aggregate(basePipeline(dates));
+  let items = await withTimeout((aggItemsTop.maxTimeMS ? aggItemsTop.maxTimeMS(MAX_DB_MS) : aggItemsTop).toArray(), MAX_DB_MS).catch(() => []);
   if (requestedWindow === '24h' && items.length === 0) {
     dates = windowDates('48h');
-    items = await baseColl(db).aggregate(basePipeline(dates)).toArray();
+    const agg2 = baseColl(db).aggregate(basePipeline(dates));
+    items = await withTimeout((agg2.maxTimeMS ? agg2.maxTimeMS(MAX_DB_MS) : agg2).toArray(), MAX_DB_MS).catch(() => []);
   }
-
   res.json(items);
 });
 
-// ---------- NEW (today by booking_date) ----------
+// ===== NEW (today) =====
 r.get('/new', async (req, res) => {
-  const db = mongoose.connection.db;
+  const db = ensureDb(res); if (!db) return;
   const dates = [dayShift(0)];
   const countyFilter = req.query.county ? { county: req.query.county } : null;
+  const limit = Math.min(Math.max(parseInt(req.query.limit || '10', 10), 1), 200);
 
-  const pipeline = [
+  const aggItemsNew = baseColl(db).aggregate([
     ...unionAll({ booking_date: { $in: dates } }, P),
+    ...attentionStages(req.query.attention === '1' || req.query.attention === 'true'),
     ...(countyFilter ? [{ $match: countyFilter }] : []),
     { $sort: { booking_date: -1, bond_amount: -1 } },
-    { $limit: 10 },
-    {
-      $project: {
+    { $limit: limit },
+    { $project: {
         _id: 0,
         id: { $toString: '$_id' },
         person: '$full_name',
         county: 1,
         category: 1,
-        booking_date: '$booking_date',
-        bond: '$bond_amount',
-        offense: '$offense',
-        agency: '$agency',
-        facility: '$facility',
-        race: '$race',
-        sex: '$sex',
-        case_number: '$case_number',
-        spn: '$spn'
-      }
-    }
-  ];
+        booking_date: 1,
+  bond: { $cond: [ { $isNumber: '$bond_amount' }, '$bond_amount', { $toDouble: '$bond' } ] },
+        offense: '$charge',
+        agency: 1,
+        facility: 1,
+        race: 1,
+        sex: 1,
+        case_number: 1,
+        spn: 1,
+        needs_attention: 1,
+        attention_reasons: 1,
+      }}
+    ]);
+    const items = await withTimeout((aggItemsNew.maxTimeMS ? aggItemsNew.maxTimeMS(MAX_DB_MS) : aggItemsNew).toArray(), MAX_DB_MS).catch(() => []);
 
-  // Per-county ticker (today counts)
-  const tickerRows = await baseColl(db).aggregate([
+  const aggTicker = baseColl(db).aggregate([
     ...unionAll({ booking_date: { $in: dates } }, { county: 1 }),
     ...(countyFilter ? [{ $match: countyFilter }] : []),
     { $group: { _id: '$county', n: { $sum: 1 } } },
     { $project: { _id: 0, county: '$_id', n: 1 } },
     { $sort: { county: 1 } }
-  ]).toArray();
+  ]);
+  const ticker = await withTimeout((aggTicker.maxTimeMS ? aggTicker.maxTimeMS(MAX_DB_MS) : aggTicker).toArray(), MAX_DB_MS).catch(() => []);
 
-  const items = await baseColl(db).aggregate(pipeline).toArray();
-  res.json({
-    items: items.map(i => ({ ...i, contacted: false })),
-    ticker: tickerRows
-  });
+  res.json({ items, ticker });
 });
 
-// ---------- RECENT (48–72h by booking_date → yesterday + twoDaysAgo) ----------
+// ===== RECENT (48–72h window) =====
 r.get('/recent', async (req, res) => {
-  const db = mongoose.connection.db;
-  const limitRaw = parseInt(req.query.limit || '10', 10);
-  const limit = Math.min(Math.max(limitRaw, 1), 200);
+  const db = ensureDb(res); if (!db) return;
+  const limit = Math.min(Math.max(parseInt(req.query.limit || '10', 10), 1), 200);
   const dates = [dayShift(1), dayShift(2)];
 
-  async function sumBondForDates(dts) {
+  async function sumBond(dts) {
     if (!dts.length) return 0;
-    const rows = await baseColl(db).aggregate([
+    const agg = baseColl(db).aggregate([
       ...unionAll({ booking_date: { $in: dts } }, { bond_amount: 1 }),
       { $group: { _id: null, total: { $sum: { $ifNull: ['$bond_amount', 0] } } } },
       { $project: { _id: 0, total: 1 } }
-    ]).toArray();
+    ]);
+    const rows = await withTimeout((agg.maxTimeMS ? agg.maxTimeMS(MAX_DB_MS) : agg).toArray(), MAX_DB_MS).catch(() => []);
     return rows.length ? rows[0].total : 0;
   }
 
-  const count48h = await countByBookingDates(db, [dayShift(1)]);
-  const count72h = await countByBookingDates(db, [dayShift(2)]);
-  const totalCount = count48h + count72h;
-  const bond48h = await sumBondForDates([dayShift(1)]);
-  const bond72h = await sumBondForDates([dayShift(2)]);
-  const bondTotal = bond48h + bond72h;
+  const [count48h, count72h, bond48h, bond72h] = await Promise.all([
+    countByBookingDates(db, [dayShift(1)]),
+    countByBookingDates(db, [dayShift(2)]),
+    sumBond([dayShift(1)]),
+    sumBond([dayShift(2)]),
+  ]);
 
-  // Per-county ticker (48–72h)
-  const tickerRows = await baseColl(db).aggregate([
-    ...unionAll({ booking_date: { $in: dates } }, { county: 1 }),
-    { $group: { _id: '$county', n: { $sum: 1 } } },
-    { $project: { _id: 0, county: '$_id', n: 1 } },
-    { $sort: { county: 1 } }
-  ]).toArray();
-
-  const items = await baseColl(db).aggregate([
+  const aggItemsRecent = baseColl(db).aggregate([
     ...unionAll({ booking_date: { $in: dates } }, P),
+    ...attentionStages(req.query.attention === '1' || req.query.attention === 'true'),
     { $sort: { booking_date: -1, bond_amount: -1 } },
     { $limit: limit },
-    {
-      $project: {
+    { $project: {
         _id: 0,
         id: { $toString: '$_id' },
         person: '$full_name',
         county: 1,
         category: 1,
-        booking_date: '$booking_date',
-        bond: '$bond_amount',
-        offense: '$offense',
-        agency: '$agency',
-        facility: '$facility',
-        race: '$race',
-        sex: '$sex',
-        case_number: '$case_number',
-        spn: '$spn',
-        contacted: { $literal: false }
-      }
-    }
-  ]).toArray();
+        booking_date: 1,
+  bond: { $cond: [ { $isNumber: '$bond_amount' }, '$bond_amount', { $toDouble: '$bond' } ] },
+        offense: '$charge',
+        agency: 1,
+        facility: 1,
+        race: 1,
+        sex: 1,
+        case_number: 1,
+        spn: 1,
+        needs_attention: 1,
+        attention_reasons: 1,
+        contacted: { $literal: false },
+      }}
+  ]);
+  const items = await withTimeout((aggItemsRecent.maxTimeMS ? aggItemsRecent.maxTimeMS(MAX_DB_MS) : aggItemsRecent).toArray(), MAX_DB_MS).catch(() => []);
 
   res.json({
     items,
     summary: {
-      totalCount,
+      totalCount: count48h + count72h,
       count48h,
       count72h,
       bond48h,
       bond72h,
-      bondTotal
+      bondTotal: bond48h + bond72h,
     },
-    ticker: tickerRows
+    ticker: await (async () => {
+      const aggT = baseColl(db).aggregate([
+        ...unionAll({ booking_date: { $in: dates } }, { county: 1 }),
+        { $group: { _id: '$county', n: { $sum: 1 } } },
+        { $project: { _id: 0, county: '$_id', n: 1 } },
+        { $sort: { county: 1 } }
+      ]);
+      return await withTimeout((aggT.maxTimeMS ? aggT.maxTimeMS(MAX_DB_MS) : aggT).toArray(), MAX_DB_MS).catch(() => []);
+    })(),
   });
 });
 
-// ---------- TRENDS (per-county daily counts & bond totals over last N days) ----------
+// ===== TRENDS (last N calendar days) =====
 r.get('/trends', async (req, res) => {
-  const db = mongoose.connection.db;
-  const days = Math.min(Math.max(parseInt(req.query.days || '7', 10), 1), 60); // 1..60
-  const dates = rangeDayStrs(days); // [today .. today-(days-1)]
+  const db = ensureDb(res); if (!db) return;
+  const days = Math.min(Math.max(parseInt(req.query.days || '7', 10), 1), 60);
+  const dates = rangeDayStrs(days); // oldest-first
 
-  const rows = await baseColl(db).aggregate([
+  const agg = baseColl(db).aggregate([
     ...unionAll({ booking_date: { $in: dates } }, { county: 1, booking_date: 1, bond_amount: 1 }),
     {
       $group: {
         _id: { county: '$county', date: '$booking_date' },
-        count: { $sum: 1 },
+        count:   { $sum: 1 },
         bondSum: { $sum: { $ifNull: ['$bond_amount', 0] } },
       }
     },
     { $project: { _id: 0, county: '$_id.county', date: '$_id.date', count: 1, bondSum: 1 } }
-  ]).toArray();
+  ]);
+  const rows = await withTimeout((agg.maxTimeMS ? agg.maxTimeMS(MAX_DB_MS) : agg).toArray(), MAX_DB_MS).catch(() => []);
 
   const allCounties = COUNTY_COLLECTIONS.map(c => c.replace('simple_', ''));
-  const dateList = dates.slice(); // oldest-first
-  // Build a complete matrix with zeros where missing
   const key = (c, d) => `${c}__${d}`;
-  const have = new Map(rows.map(r => [key(r.county, r.date), r]));
+  const seen = new Map(rows.map(r => [key(r.county, r.date), r]));
   const filled = [];
-  for (const d of dateList) {
-    for (const cty of allCounties) {
-      const k = key(cty, d);
-      if (have.has(k)) {
-        filled.push(have.get(k));
-      } else {
-        filled.push({ county: cty, date: d, count: 0, bondSum: 0 });
-      }
+
+  for (const d of dates) {
+    for (const c of allCounties) {
+      filled.push(seen.get(key(c, d)) || { county: c, date: d, count: 0, bondSum: 0 });
     }
   }
-  // Return newest-last for charting
-  res.json({ days, dates: dateList.reverse(), rows: filled.sort((a, b) => (a.date > b.date ? 1 : a.date < b.date ? -1 : a.county.localeCompare(b.county))) });
+
+  // Send newest-last for charts
+  res.json({
+    days,
+    dates: dates.slice().reverse(),
+    rows: filled.sort((a, b) =>
+      a.date > b.date ? 1 : a.date < b.date ? -1 : a.county.localeCompare(b.county)
+    )
+  });
 });
 
-// ---------- PER-COUNTY SNAPSHOT (booking-day windows) ----------
+// ===== PER-COUNTY snapshot =====
 r.get('/per-county', async (req, res) => {
   try {
-    const db = mongoose.connection.db;
+    const db = ensureDb(res); if (!db) return;
+    const today   = [dayShift(0)];
+    const yest    = [dayShift(1)];
+    const two     = [dayShift(2)];
+    const last7   = rangeDayStrs(7);
+    const last30  = rangeDayStrs(30);
+    const win     = (req.query.window || '24h').toLowerCase();
+    const winDates = windowDates(win);
 
-    const todayDates = [dayShift(0)];
-    const yestDates  = [dayShift(1)];
-    const twoDates   = [dayShift(2)];
-    const last7      = rangeDayStrs(7);
-    const last30     = rangeDayStrs(30);
-
-    // NEW: window for bond sums on this endpoint (24h|48h|72h|rolling72)
-    const bondWindow = (req.query.window || '24h').toLowerCase();
-    const bondDates = windowDates(bondWindow);
-
-    // helper to build a map { county -> count } for a set of booking dates
-    async function countMap(dates) {
-      if (!dates.length) return new Map();
-      const rows = await baseColl(db).aggregate([
-        ...unionAll({ booking_date: { $in: dates } }, { county: 1 }),
+    const countMap = async (dts) => {
+      if (!dts.length) return new Map();
+      const agg = baseColl(db).aggregate([
+        ...unionAll({ booking_date: { $in: dts } }, { county: 1 }),
         { $group: { _id: '$county', n: { $sum: 1 } } },
         { $project: { _id: 0, county: '$_id', n: 1 } }
-      ]).toArray();
+      ]);
+      const rows = await withTimeout((agg.maxTimeMS ? agg.maxTimeMS(MAX_DB_MS) : agg).toArray(), MAX_DB_MS).catch(() => []);
       return new Map(rows.map(r => [r.county, r.n]));
-    }
+    };
 
-    // bond sum for window per county
-    async function bondMapForWindow() {
-      const rows = await baseColl(db).aggregate([
-        ...unionAll({ booking_date: { $in: bondDates } }, { county: 1, bond_amount: 1 }),
+    const bondMap = async () => {
+      const agg = baseColl(db).aggregate([
+        ...unionAll({ booking_date: { $in: winDates } }, { county: 1, bond_amount: 1 }),
         { $group: { _id: '$county', value: { $sum: { $ifNull: ['$bond_amount', 0] } } } },
         { $project: { _id: 0, county: '$_id', value: 1 } }
-      ]).toArray();
+      ]);
+      const rows = await withTimeout((agg.maxTimeMS ? agg.maxTimeMS(MAX_DB_MS) : agg).toArray(), MAX_DB_MS).catch(() => []);
       return new Map(rows.map(r => [r.county, r.value]));
-    }
+    };
 
-    const [mToday, mYest, mTwo, m7, m30, mBondWindow] = await Promise.all([
-      countMap(todayDates),
-      countMap(yestDates),
-      countMap(twoDates),
+    const [mT, mY, mTwo, m7, m30, mBond] = await Promise.all([
+      countMap(today),
+      countMap(yest),
+      countMap(two),
       countMap(last7),
       countMap(last30),
-      bondMapForWindow(),
+      bondMap(),
     ]);
 
-    // Normalize county list from collection names (e.g., 'simple_harris' -> 'harris')
     const counties = COUNTY_COLLECTIONS.map(c => c.replace('simple_', ''));
-    const items = counties.map(county => ({
-      county,
+    const items = counties.map(cty => ({
+      county: cty,
       counts: {
-        today: mToday.get(county) || 0,
-        yesterday: mYest.get(county) || 0,
-        twoDaysAgo: mTwo.get(county) || 0,
-        last7d: m7.get(county) || 0,
-        last30d: m30.get(county) || 0,
+        today:      mT.get(cty)   || 0,
+        yesterday:  mY.get(cty)   || 0,
+        twoDaysAgo: mTwo.get(cty) || 0,
+        last7d:     m7.get(cty)   || 0,
+        last30d:    m30.get(cty)  || 0,
       },
-      bondValue: mBondWindow.get(county) || 0,
-      bondToday: mBondWindow.get(county) || 0, // backward compatibility
+      bondValue: mBond.get(cty) || 0,
+      bondToday: mBond.get(cty) || 0, // legacy
     }));
 
-    res.json({ items, windowUsed: bondWindow });
+    res.json({ items, windowUsed: win });
   } catch (err) {
     console.error('per-county error:', err);
     res.status(500).json({ error: String(err?.message || err) });
