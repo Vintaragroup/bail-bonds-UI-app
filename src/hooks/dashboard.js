@@ -2,19 +2,56 @@
 import { useQuery } from '@tanstack/react-query';
 
 // Base URL – works with your root .env: VITE_API_URL=http://localhost:8080/api
-const API_BASE =
+export const API_BASE =
   (typeof import.meta !== 'undefined' && import.meta.env?.VITE_API_URL
     ? import.meta.env.VITE_API_URL
     : 'http://localhost:8080/api'
   ).replace(/\/$/, '');
 
-async function getJSON(path) {
+export async function getJSON(path) {
   const url = `${API_BASE}${path.startsWith('/') ? path : `/${path}`}`;
   const res = await fetch(url);
   if (!res.ok) {
     const text = await res.text();
     throw new Error(`Request failed ${res.status}: ${text}`);
   }
+  return res.json();
+}
+
+export async function sendJSON(path, { method = 'POST', body, headers } = {}) {
+  const url = `${API_BASE}${path.startsWith('/') ? path : `/${path}`}`;
+  const res = await fetch(url, {
+    method,
+    headers: {
+      'Content-Type': 'application/json',
+      ...headers,
+    },
+    body: body !== undefined ? JSON.stringify(body) : undefined,
+  });
+
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error(`Request failed ${res.status}: ${text}`);
+  }
+
+  if (res.status === 204) return null;
+  return res.json();
+}
+
+export async function sendFormData(path, { method = 'POST', formData, headers } = {}) {
+  const url = `${API_BASE}${path.startsWith('/') ? path : `/${path}`}`;
+  const res = await fetch(url, {
+    method,
+    body: formData,
+    headers,
+  });
+
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error(`Request failed ${res.status}: ${text}`);
+  }
+
+  if (res.status === 204) return null;
   return res.json();
 }
 
@@ -129,17 +166,41 @@ export function useCountyTrends(days = 7, options = {}) {
   return useQuery({
     queryKey: ['countyTrends', days],
     queryFn: async () => {
-      const data = await getJSON(`/health/trends?days=${encodeURIComponent(days)}`);
-      const series = Array.isArray(data?.series) ? data.series : [];
-      const labels = series.map((s) => s.date);
-      // Health/trends is overall (not per-county). Expose a single 'all' series for charts.
-      const countSeries = { all: series.map((s) => s.count || 0) };
-      const bondSeries = { all: series.map((s) => s.bond_sum ?? s.bondSum ?? 0) };
+      const data = await getJSON(`/dashboard/trends?days=${encodeURIComponent(days)}`);
+      const labels = Array.isArray(data?.dates) ? data.dates : [];
+      const rows = Array.isArray(data?.rows) ? data.rows : [];
+
+      const key = (county, date) => `${county}__${date}`;
+      const byKey = new Map();
+      rows.forEach((row) => {
+        if (!row?.county || !row?.date) return;
+        byKey.set(key(row.county, row.date), row);
+      });
+
+      const countySet = new Set(rows.map((row) => row?.county).filter(Boolean));
+      const counties = Array.from(countySet).sort();
+
+      const countSeries = {};
+      const bondSeries = {};
+      counties.forEach((county) => {
+        countSeries[county] = labels.map((date) => {
+          const entry = byKey.get(key(county, date));
+          return Number(entry?.count ?? 0);
+        });
+        bondSeries[county] = labels.map((date) => {
+          const entry = byKey.get(key(county, date));
+          return Number(entry?.bondSum ?? entry?.bond_sum ?? 0);
+        });
+      });
+
+      const bondSeriesArr = counties.map((county) => ({ name: county, data: bondSeries[county] || [] }));
+
       return {
         labels,
-        counties: ['all'],
+        counties,
         countSeries,
         bondSeries,
+        bondSeriesArr,
       };
     },
     staleTime: 60_000,

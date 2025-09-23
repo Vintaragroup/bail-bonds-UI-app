@@ -12,6 +12,8 @@ import { connectMongo, getMongo } from './db.js';
 import health from './routes/health.js';
 import dashboard from './routes/dashboard.js';
 import cases from './routes/cases.js';
+import checkins from './routes/checkins.js';
+import documents from './routes/documents.js';
 
 // Load .env from both repo root and server/ if present
 try { dotenv.config({ path: new URL('../../.env', import.meta.url) }); } catch {}
@@ -58,6 +60,9 @@ app.use('/api/health', health);
 app.get('/api/health/light', (_req, res) => res.json({ ok: true, pid: process.pid, ts: new Date().toISOString() }));
 app.use('/api/dashboard', dashboard);
 app.use('/api/cases', cases);
+app.use('/api/checkins', checkins);
+app.use('/api/cases', documents);
+app.use('/uploads', express.static(new URL('../uploads', import.meta.url).pathname));
 
 const port = Number(process.env.PORT || 8080);
 

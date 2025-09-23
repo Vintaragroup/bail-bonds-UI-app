@@ -1,4 +1,5 @@
 import { NavLink, Outlet } from "react-router-dom";
+import { ToastProvider } from "../components/ToastContext";
 
 const tabs = [
   { to: "/", label: "Dashboard", end: true },
@@ -7,11 +8,13 @@ const tabs = [
   { to: "/calendar", label: "Calendar" },
   { to: "/payments", label: "Payments" },
   { to: "/messages", label: "Messages" },
+  { to: "/reports", label: "Reports" },
   { to: "/admin", label: "Admin" },
 ];
 
 export default function AppLayout() {
   return (
+    <ToastProvider>
     <div className="min-h-screen bg-gray-50">
       {/* Top bar */}
       <header className="sticky top-0 z-10 bg-white border-b">
@@ -59,5 +62,6 @@ export default function AppLayout() {
         <Outlet />
       </main>
     </div>
+    </ToastProvider>
   );
 }

@@ -217,6 +217,69 @@ function ensureDb(res) {
   return db;
 }
 
+async function fetchContactedCaseIds(caseIds = []) {
+  if (!caseIds.length) return { contactSet: new Set(), lastMap: new Map() };
+
+  const conn = mongoose.connection;
+  if (!conn || !conn.db) return { contactSet: new Set(), lastMap: new Map() };
+
+  const objectIds = Array.from(new Set(caseIds.map((id) => String(id || ''))))
+    .map((raw) => {
+      if (!raw) return null;
+      try {
+        return new mongoose.Types.ObjectId(raw);
+      } catch {
+        return null;
+      }
+    })
+    .filter(Boolean);
+
+  if (!objectIds.length) return { contactSet: new Set(), lastMap: new Map() };
+
+  let coll;
+  try {
+    coll = conn.db.collection('messages');
+  } catch {
+    coll = null;
+  }
+
+  if (!coll) return { contactSet: new Set(), lastMap: new Map() };
+
+  const agg = coll.aggregate([
+    { $match: { caseId: { $in: objectIds } } },
+    {
+      $group: {
+        _id: '$caseId',
+        hasOut: {
+          $max: {
+            $cond: [
+              { $eq: ['$direction', 'out'] },
+              1,
+              0
+            ]
+          }
+        },
+        lastContact: {
+          $max: {
+            $ifNull: ['$sentAt', { $ifNull: ['$deliveredAt', { $ifNull: ['$createdAt', '$updatedAt'] }] }]
+          }
+        }
+      }
+    }
+  ]);
+  const cursor = agg.maxTimeMS ? agg.maxTimeMS(MAX_DB_MS) : agg;
+  const docs = await withTimeout(cursor.toArray(), MAX_DB_MS).catch(() => []);
+  const contactSet = new Set();
+  const lastMap = new Map();
+  docs.forEach((d) => {
+    const id = String(d?._id);
+    if (!id) return;
+    if (d?.hasOut) contactSet.add(id);
+    if (d?.lastContact) lastMap.set(id, d.lastContact);
+  });
+  return { contactSet, lastMap };
+}
+
 // ----- Date helpers (timezone aware) -----
 const DASHBOARD_TZ = process.env.DASHBOARD_TZ || 'America/Chicago';
 const _ymdFmt = new Intl.DateTimeFormat('en-CA', {
@@ -352,6 +415,28 @@ r.get('/kpis', async (_req, res) => {
     perCountyLastPull = await withTimeout((aggJob.maxTimeMS ? aggJob.maxTimeMS(MAX_DB_MS) : aggJob).toArray(), MAX_DB_MS).catch(() => []);
   } catch { /* optional */ }
 
+  let contacted24h = { contacted: 0, total: cToday, rate: 0 };
+  try {
+    const today = dayShift(0);
+    const aggTodayIds = baseColl(db).aggregate([
+      ...unionAll({ booking_date: today }, { _id: 1 }),
+    ]);
+    const todayDocs = await withTimeout((aggTodayIds.maxTimeMS ? aggTodayIds.maxTimeMS(MAX_DB_MS) : aggTodayIds).toArray(), MAX_DB_MS).catch(() => []);
+    const todayIds = todayDocs.map((d) => d._id).filter(Boolean);
+    const totalUnique = new Set(todayIds.map((id) => String(id))).size;
+    if (totalUnique) {
+      const meta = await fetchContactedCaseIds(todayIds);
+      const contacted = meta.contactSet.size;
+      contacted24h = {
+        contacted,
+        total: totalUnique,
+        rate: totalUnique ? contacted / totalUnique : 0,
+      };
+    }
+  } catch (err) {
+    console.warn('kpis: contacted24h computation failed', err?.message);
+  }
+
   res.json({
     newCountsBooked: {
       today: cToday,
@@ -365,6 +450,7 @@ r.get('/kpis', async (_req, res) => {
     perCountyBondToday: perCountyBond.map(({ county, value }) => ({ county, value })),
     bondTodayTotal: bondTotal,
     perCountyLastPull,
+    contacted24h,
   });
 });
 
@@ -375,6 +461,7 @@ r.get('/top', async (req, res) => {
   const requestedWindow = String(req.query.window || '24h').toLowerCase();
   let dates = windowDates(requestedWindow);
   const countyFilter = req.query.county ? { county: req.query.county } : null;
+  let windowUsed = requestedWindow;
 
   const basePipeline = (dts) => ([
     ...unionAll({ booking_date: { $in: dts } }, P),
@@ -410,6 +497,16 @@ r.get('/top', async (req, res) => {
     dates = windowDates('48h');
     const agg2 = baseColl(db).aggregate(basePipeline(dates));
     items = await withTimeout((agg2.maxTimeMS ? agg2.maxTimeMS(MAX_DB_MS) : agg2).toArray(), MAX_DB_MS).catch(() => []);
+    if (items.length) windowUsed = '48h';
+  }
+  if (items.length) {
+    const meta = await fetchContactedCaseIds(items.map((it) => it.id));
+    items = items.map((item) => ({
+      ...item,
+      contacted: meta.contactSet.has(String(item.id)),
+      last_contact_at: meta.lastMap.get(String(item.id)) || null,
+      window_used: windowUsed,
+    }));
   }
   res.json(items);
 });
@@ -434,7 +531,8 @@ r.get('/new', async (req, res) => {
         county: 1,
         category: 1,
         booking_date: 1,
-  bond: { $cond: [ { $isNumber: '$bond_amount' }, '$bond_amount', { $toDouble: '$bond' } ] },
+        bond_amount: '$bond_amount',
+        bond: '$bond',
         offense: '$charge',
         agency: 1,
         facility: 1,
@@ -442,11 +540,25 @@ r.get('/new', async (req, res) => {
         sex: 1,
         case_number: 1,
         spn: 1,
+        bond_status: 1,
+        bond_raw: 1,
         needs_attention: 1,
         attention_reasons: 1,
       }}
     ]);
-    const items = await withTimeout((aggItemsNew.maxTimeMS ? aggItemsNew.maxTimeMS(MAX_DB_MS) : aggItemsNew).toArray(), MAX_DB_MS).catch(() => []);
+  const rawItems = await withTimeout((aggItemsNew.maxTimeMS ? aggItemsNew.maxTimeMS(MAX_DB_MS) : aggItemsNew).toArray(), MAX_DB_MS).catch(() => []);
+  const metaNew = await fetchContactedCaseIds(rawItems.map((it) => it.id));
+  const items = rawItems.map((it) => ({
+    ...it,
+    contacted: metaNew.contactSet.has(String(it.id)),
+    last_contact_at: metaNew.lastMap.get(String(it.id)) || null,
+  }));
+  const contactedCountNew = items.filter((it) => it.contacted).length;
+  const summary = {
+    total: items.length,
+    contacted: contactedCountNew,
+    uncontacted: items.length - contactedCountNew,
+  };
 
   const aggTicker = baseColl(db).aggregate([
     ...unionAll({ booking_date: { $in: dates } }, { county: 1 }),
@@ -457,7 +569,7 @@ r.get('/new', async (req, res) => {
   ]);
   const ticker = await withTimeout((aggTicker.maxTimeMS ? aggTicker.maxTimeMS(MAX_DB_MS) : aggTicker).toArray(), MAX_DB_MS).catch(() => []);
 
-  res.json({ items, ticker });
+  res.json({ items, ticker, summary });
 });
 
 // ===== RECENT (48–72h window) =====
@@ -496,7 +608,8 @@ r.get('/recent', async (req, res) => {
         county: 1,
         category: 1,
         booking_date: 1,
-  bond: { $cond: [ { $isNumber: '$bond_amount' }, '$bond_amount', { $toDouble: '$bond' } ] },
+        bond_amount: '$bond_amount',
+        bond: '$bond',
         offense: '$charge',
         agency: 1,
         facility: 1,
@@ -506,10 +619,18 @@ r.get('/recent', async (req, res) => {
         spn: 1,
         needs_attention: 1,
         attention_reasons: 1,
-        contacted: { $literal: false },
+        bond_status: 1,
+        bond_raw: 1,
       }}
   ]);
-  const items = await withTimeout((aggItemsRecent.maxTimeMS ? aggItemsRecent.maxTimeMS(MAX_DB_MS) : aggItemsRecent).toArray(), MAX_DB_MS).catch(() => []);
+  const rawItemsRecent = await withTimeout((aggItemsRecent.maxTimeMS ? aggItemsRecent.maxTimeMS(MAX_DB_MS) : aggItemsRecent).toArray(), MAX_DB_MS).catch(() => []);
+  const metaRecent = await fetchContactedCaseIds(rawItemsRecent.map((it) => it.id));
+  const items = rawItemsRecent.map((it) => ({
+    ...it,
+    contacted: metaRecent.contactSet.has(String(it.id)),
+    last_contact_at: metaRecent.lastMap.get(String(it.id)) || null,
+  }));
+  const contactedRecent = items.filter((it) => it.contacted).length;
 
   res.json({
     items,
@@ -520,6 +641,8 @@ r.get('/recent', async (req, res) => {
       bond48h,
       bond72h,
       bondTotal: bond48h + bond72h,
+      contacted: contactedRecent,
+      uncontacted: items.length - contactedRecent,
     },
     ticker: await (async () => {
       const aggT = baseColl(db).aggregate([
