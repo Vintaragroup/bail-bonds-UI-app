@@ -1,4 +1,4 @@
-import { useState, useMemo } from 'react';
+import { useState, useMemo, useCallback } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import {
   useKpis,
@@ -8,6 +8,7 @@ import {
   useNewToday,
   useRecent48to72,
 } from '../hooks/dashboard';
+import { useCaseStats, useCases } from '../hooks/cases';
 
 // Always render these 5
 const ALL_COUNTIES = ['brazoria', 'fortbend', 'galveston', 'harris', 'jefferson'];
@@ -22,6 +23,113 @@ const COUNTY_LABELS = {
 
 const prettyCounty = (name) =>
   COUNTY_LABELS[name] || (name ? name.charAt(0).toUpperCase() + name.slice(1) : '');
+
+const formatLabel = (text = '') =>
+  text
+    .replace(/_/g, ' ')
+    .replace(/\b\w/g, (c) => c.toUpperCase());
+
+const safeDateLabel = (value) => {
+  if (!value) return null;
+  const d = value instanceof Date ? value : new Date(value);
+  if (Number.isNaN(d.getTime())) return null;
+  return d.toLocaleDateString();
+};
+
+const isStalePull = (value) => {
+  if (!value || value === '—') return true;
+  const ts = Date.parse(value);
+  if (Number.isNaN(ts)) return false;
+  const ageHours = (Date.now() - ts) / (1000 * 60 * 60);
+  return ageHours >= STALE_PULL_THRESHOLD_HOURS;
+};
+
+const offenseText = (item = {}) => {
+  if (item.offense) return item.offense;
+  if (item.charge) return item.charge;
+  if (Array.isArray(item.charges) && item.charges.length) {
+    const first = item.charges[0];
+    if (typeof first === 'string') return first;
+    if (first?.description) return first.description;
+    if (first?.offense) return first.offense;
+    if (first?.charge) return first.charge;
+  }
+  return '';
+};
+
+const agencyText = (item = {}) =>
+  item.agency || item.facility || item.agency_name || item.jail_name || '';
+
+const toCaseId = (item = {}) => {
+  const candidate =
+    item.id ??
+    item.case_id ??
+    item.caseId ??
+    item._id ??
+    item.case_number ??
+    item.booking_number ??
+    item.bookingNumber ??
+    null;
+  return candidate != null ? String(candidate) : null;
+};
+
+const shapeSnapshotRow = (item, source, extras = {}) => {
+  const caseId = toCaseId(item);
+  const rawBooked =
+    item.booking_date || item.bookedAt || item.booked_at || item.normalized_at || null;
+  const booked = rawBooked instanceof Date ? rawBooked.toISOString().slice(0, 10) : rawBooked || '';
+  return {
+    caseId,
+    key: caseId || `${source}-${item.person || item.name || item.full_name || Math.random()}`,
+    name: item.name || item.person || item.full_name || 'Unknown',
+    county: prettyCounty(item.county),
+    booked,
+    bondAmount: item.bond_amount ?? item.value ?? null,
+    bondStatus: item.bond_status || (Number(item.bond_amount ?? item.value) ? 'numeric' : null),
+    bondRaw: item.bond_raw || item.bond || item.bond_label || null,
+    offense: offenseText(item),
+    agency: agencyText(item),
+    contacted: Boolean(item.contacted),
+    lastContact: item.last_contact_at || item.last_contact || null,
+    sex: item.sex || item.gender || null,
+    race: item.race || null,
+    category:
+      source === 'top'
+        ? item.category || null
+        : item.crm_stage || item.stage || item.status || null,
+    needsAttention: Boolean(item.needs_attention),
+    attentionReasons: Array.isArray(item.attention_reasons) ? item.attention_reasons : [],
+    source,
+    ...extras,
+  };
+};
+
+const SNAPSHOT_TABS = [
+  { id: 'top', label: 'Top value' },
+  { id: 'new', label: 'New 24h' },
+  { id: 'recent', label: '48–72h' },
+  { id: 'attention', label: 'Needs attention' },
+];
+
+const SNAPSHOT_CONTACT_FILTERS = [
+  { id: 'all', label: 'All' },
+  { id: 'uncontacted', label: 'Uncontacted' },
+  { id: 'contacted', label: 'Contacted' },
+];
+
+const SNAPSHOT_EMPTY_COPY = {
+  top: 'No results for this window.',
+  new: 'No bookings in this window.',
+  recent: 'No results in the 48–72h window.',
+  attention: 'No cases currently need manual attention.',
+};
+
+const COUNTY_SORT_OPTIONS = [
+  { id: 'bond', label: 'Sort by bond' },
+  { id: 'volume', label: 'Sort by volume' },
+];
+
+const STALE_PULL_THRESHOLD_HOURS = 12;
 
 // Money formatting helper
 const money = (n) => {
@@ -187,49 +295,6 @@ function WindowSwitcher({ value, onChange }) {
   );
 }
 
-function CountyCard({ county, lastPull, new24, new48, new72, contacted24, bondValue, label }) {
-  return (
-    <div className="bg-white rounded-2xl border shadow-sm p-4">
-      <div className="flex items-center justify-between">
-        <div className="font-semibold text-slate-800">{label || county}</div>
-        <div className="text-xs text-slate-500">Last pull: {lastPull}</div>
-      </div>
-      <div className="mt-3 grid grid-cols-3 gap-3 text-xs">
-        <div>
-          <div className="font-semibold text-slate-800">{new24}</div>
-          <div className="text-slate-500">New 24h</div>
-        </div>
-        <div>
-          <div className="font-semibold text-slate-800">{new48}</div>
-          <div className="text-slate-500">New 48h</div>
-        </div>
-        <div>
-          <div className="font-semibold text-slate-800">{new72}</div>
-          <div className="text-slate-500">New 72h</div>
-        </div>
-      </div>
-      <div className="mt-3 grid grid-cols-2 gap-3 text-xs">
-        <div>
-          <div className="font-semibold text-slate-800">{contacted24}</div>
-          <div className="text-slate-500">Contacted 24h</div>
-        </div>
-        <div>
-          <div className="font-semibold text-slate-800">{money(bondValue)}</div>
-          <div className="text-slate-500">Bond value (window)</div>
-        </div>
-      </div>
-      <div className="mt-3">
-        <Link
-          to={`/cases?county=${encodeURIComponent(county)}&window=24h`}
-          className="text-sm text-blue-600 hover:text-blue-700"
-        >
-          Open county →
-        </Link>
-      </div>
-    </div>
-  );
-}
-
 export default function DashboardScreen() {
   const navigate = useNavigate();
 
@@ -241,28 +306,240 @@ export default function DashboardScreen() {
   const { data: countyTrends, isLoading: trendsLoading } = useCountyTrends(7);
   const { data: new24h, isLoading: new24Loading } = useNewToday('all');
   const { data: recent48to72, isLoading: recentLoading } = useRecent48to72(10);
+  const { data: caseStats } = useCaseStats({ staleTime: 120_000 });
+  const [snapshotTab, setSnapshotTab] = useState('top');
+  const [snapshotFilters, setSnapshotFilters] = useState({
+    top: 'all',
+    new: 'all',
+    recent: 'all',
+    attention: 'all',
+  });
+  const setSnapshotFilter = (tab, value) =>
+    setSnapshotFilters((prev) => ({
+      ...prev,
+      [tab]: value,
+    }));
+  const [countySort, setCountySort] = useState('bond');
+  const [countyAttentionOnly, setCountyAttentionOnly] = useState(false);
 
   // ── Normalize
-  const perCountyItems = perCounty?.items ?? [];
+  const perCountyItems = useMemo(
+    () => (Array.isArray(perCounty?.items) ? perCounty.items : []),
+    [perCounty]
+  );
   const perCountyMap = useMemo(() => {
     const m = new Map();
-    (perCountyItems || []).forEach((c) => {
+    perCountyItems.forEach((c) => {
       m.set(normCountyKey(c.county), c);
     });
     return m;
   }, [perCountyItems]);
 
-  const top10List = Array.isArray(top10) ? top10 : [];
-  const new24List = Array.isArray(new24h?.items)
-    ? new24h.items
-    : Array.isArray(new24h)
-    ? new24h
-    : [];
-  const recentList = Array.isArray(recent48to72?.items)
-    ? recent48to72.items
-    : Array.isArray(recent48to72)
-    ? recent48to72
-    : [];
+  const top10Raw = useMemo(() => (Array.isArray(top10) ? top10 : []), [top10]);
+  const topWindowUsed = top10Raw.length ? (top10Raw[0].window_used || valueWindow) : valueWindow;
+  const topFallbackNotice = top10Raw.length > 0 && topWindowUsed !== valueWindow;
+  const applyContactFilter = (list = [], filter = 'all') => {
+    const arr = Array.isArray(list) ? list : [];
+    if (filter === 'contacted') return arr.filter((item) => item.contacted);
+    if (filter === 'uncontacted') return arr.filter((item) => !item.contacted);
+    return arr;
+  };
+  const top10List = useMemo(
+    () => applyContactFilter(top10Raw, snapshotFilters.top),
+    [top10Raw, snapshotFilters.top]
+  );
+  const top10Counts = useMemo(() => {
+    const contacted = top10Raw.filter((item) => item.contacted).length;
+    return {
+      total: top10Raw.length,
+      contacted,
+      uncontacted: top10Raw.length - contacted,
+    };
+  }, [top10Raw]);
+  const attentionSummary = useMemo(() => {
+    if (!caseStats) return null;
+    const total = Number(caseStats?.totals?.cases || 0);
+    const needs = Number(caseStats?.attention?.needsAttention || 0);
+    const refer = Number(caseStats?.attention?.referToMagistrate || 0);
+    const letter = Number(caseStats?.attention?.letterSuffix || 0);
+    const missingDocs = Number(caseStats?.checklist?.casesMissingRequired || 0);
+    return { total, needs, refer, letter, missingDocs };
+  }, [caseStats]);
+  const lastPullMap = useMemo(() => {
+    const map = new Map();
+    (caseStats?.perCountyLastPull || kpiData?.perCountyLastPull || []).forEach((item) => {
+      if (!item?.county) return;
+      map.set(normCountyKey(item.county), item.lastPull || item.finishedAt || '—');
+    });
+    return map;
+  }, [caseStats, kpiData]);
+  const new24Raw = useMemo(() => {
+    if (Array.isArray(new24h?.items)) return new24h.items;
+    if (Array.isArray(new24h)) return new24h;
+    return [];
+  }, [new24h]);
+
+  const recentRaw = useMemo(() => {
+    if (Array.isArray(recent48to72?.items)) return recent48to72.items;
+    if (Array.isArray(recent48to72)) return recent48to72;
+    return [];
+  }, [recent48to72]);
+
+  const {
+    data: attentionData,
+    isLoading: attentionLoading,
+  } = useCases(
+    { attention: true, limit: 25, sortBy: 'bond_amount', order: 'desc' },
+    { staleTime: 60_000 }
+  );
+
+  const attentionRaw = useMemo(() => {
+    if (Array.isArray(attentionData?.items)) return attentionData.items;
+    if (Array.isArray(attentionData)) return attentionData;
+    return [];
+  }, [attentionData]);
+
+  const attentionList = useMemo(
+    () => applyContactFilter(attentionRaw, snapshotFilters.attention),
+    [attentionRaw, snapshotFilters.attention]
+  );
+
+  const attentionCounts = useMemo(() => {
+    const contacted = attentionRaw.filter((item) => item.contacted).length;
+    const needs = attentionRaw.filter((item) => item.needs_attention).length;
+    return {
+      total: attentionRaw.length,
+      contacted,
+      uncontacted: attentionRaw.length - contacted,
+      needs,
+    };
+  }, [attentionRaw]);
+
+  const newSummary = useMemo(
+    () =>
+      new24h?.summary || {
+        total: new24Raw.length,
+        contacted: 0,
+        uncontacted: new24Raw.length,
+      },
+    [new24h, new24Raw.length]
+  );
+  const recentSummary = useMemo(
+    () =>
+      recent48to72?.summary || {
+        totalCount: recentRaw.length,
+        contacted: 0,
+        uncontacted: recentRaw.length,
+      },
+    [recent48to72, recentRaw.length]
+  );
+
+  const new24List = useMemo(
+    () => applyContactFilter(new24Raw, snapshotFilters.new),
+    [new24Raw, snapshotFilters.new]
+  );
+  const recentList = useMemo(
+    () => applyContactFilter(recentRaw, snapshotFilters.recent),
+    [recentRaw, snapshotFilters.recent]
+  );
+
+  const recentBreakdown = useMemo(() => {
+    const now = Date.now();
+    const total = recentList.length;
+    let in48 = 0;
+    let in72 = 0;
+
+    const toHoursFromNow = (value) => {
+      if (!value) return Number.POSITIVE_INFINITY;
+      const isoLike = /^\d{4}-\d{2}-\d{2}$/.test(value)
+        ? `${value}T00:00:00Z`
+        : value;
+      const parsed = new Date(isoLike);
+      if (Number.isNaN(parsed.getTime())) return Number.POSITIVE_INFINITY;
+      return (now - parsed.getTime()) / (1000 * 60 * 60);
+    };
+
+    recentList.forEach((item) => {
+      const booked = item.booking_date || item.bookedAt || item.booked_at;
+      const hours = toHoursFromNow(booked);
+      if (hours >= 24 && hours < 48) in48 += 1;
+      if (hours >= 48 && hours <= 72) in72 += 1;
+    });
+
+    return { total, in48, in72 };
+  }, [recentList]);
+
+  const snapshotRowsByTab = useMemo(
+    () => ({
+      top: top10List.map((item, index) =>
+        shapeSnapshotRow(item, 'top', { key: item.id || `top-${index}` })
+      ),
+      new: new24List.map((item, index) =>
+        shapeSnapshotRow(item, 'new', {
+          key: item.id || `new-${index}`,
+          windowLabel: '24h',
+        })
+      ),
+      recent: recentList.map((item, index) =>
+        shapeSnapshotRow(item, 'recent', {
+          key: item.id || `recent-${index}`,
+          windowLabel: '48–72h',
+        })
+      ),
+      attention: attentionList.map((item, index) =>
+        shapeSnapshotRow(item, 'attention', {
+          key: item.id || item._id || `attention-${index}`,
+          windowLabel: 'Attention',
+        })
+      ),
+    }),
+    [top10List, new24List, recentList, attentionList]
+  );
+
+  const snapshotSummaries = useMemo(
+    () => ({
+      top: {
+        total: top10Counts.total,
+        contacted: top10Counts.contacted,
+        uncontacted: top10Counts.uncontacted,
+        fallbackWindow: topFallbackNotice ? topWindowUsed : null,
+      },
+      new: {
+        total: newSummary.total,
+        contacted: newSummary.contacted,
+        uncontacted: newSummary.uncontacted,
+      },
+      recent: {
+        total: recentSummary.totalCount ?? recentSummary.total ?? recentBreakdown.total,
+        contacted: recentSummary.contacted ?? 0,
+        uncontacted:
+          recentSummary.uncontacted ??
+          (recentSummary.totalCount != null
+            ? recentSummary.totalCount - (recentSummary.contacted || 0)
+            : recentBreakdown.total - (recentSummary.contacted || 0)),
+        in48: recentBreakdown.in48,
+        in72: recentBreakdown.in72,
+      },
+      attention: {
+        total: attentionCounts.total,
+        contacted: attentionCounts.contacted,
+        uncontacted: attentionCounts.uncontacted,
+        needs: attentionCounts.needs,
+        refer: attentionSummary?.refer ?? null,
+        missingDocs: attentionSummary?.missingDocs ?? null,
+      },
+    }),
+    [
+      top10Counts,
+      topFallbackNotice,
+      topWindowUsed,
+      newSummary,
+      recentSummary,
+      recentBreakdown,
+      attentionCounts,
+      attentionSummary,
+    ]
+  );
 
   const new24ByCounty = useMemo(() => {
     const m = new Map();
@@ -314,19 +591,70 @@ export default function DashboardScreen() {
       ? trendLabels.length - windowToIndexFromEnd[valueWindow]
       : null;
 
-  // Build cards for "County Trends (last 7 days)"
-  const trendCards = ALL_COUNTIES.map((name) => {
-    const pc = perCountyMap.get(name) || {};
-    const data = seriesByCounty[name] || [];
-    return {
-      county: name,
-      valueTrend: data,
-      new24: Number(pc.counts?.today || 0),
-      new48: Number(pc.counts?.yesterday || 0),
-      new72: Number(pc.counts?.twoDaysAgo || 0),
-      bondToday: Number(pc.bondToday || 0),
-    };
-  });
+  const bondValueForWindow = useCallback(
+    (county) => {
+      const key = normCountyKey(county);
+
+      if (valueWindow === '24h') {
+        const pc = perCountyMap.get(key);
+        if (pc && Number.isFinite(Number(pc.bondToday))) {
+          return Number(pc.bondToday);
+        }
+        const live = new24ByCounty.get(key);
+        if (Number.isFinite(Number(live))) {
+          return Number(live);
+        }
+      }
+
+      const arr = seriesByCounty[key] || [];
+      if (trendIndex == null || trendIndex < 0 || trendIndex >= arr.length) return 0;
+      const v = Number(arr[trendIndex] || 0);
+      return Number.isFinite(v) ? v : 0;
+    },
+    [valueWindow, perCountyMap, new24ByCounty, seriesByCounty, trendIndex]
+  );
+
+  const countyRows = useMemo(() => {
+    return ALL_COUNTIES.map((name) => {
+      const pc = perCountyMap.get(name) || {};
+      const data = seriesByCounty[name] || [];
+      const lastPull = lastPullMap.get(name) || '—';
+      const new24 = Number(pc.counts?.today || 0);
+      const new48 = Number(pc.counts?.yesterday || 0);
+      const new72 = Number(pc.counts?.twoDaysAgo || 0);
+      const totalVolume = new24 + new48 + new72;
+      return {
+        county: name,
+        pretty: prettyCounty(name),
+        valueTrend: data,
+        new24,
+        new48,
+        new72,
+        bondToday: Number(pc.bondToday || 0),
+        bondWindowValue: bondValueForWindow(name),
+        lastPull,
+        flagged: isStalePull(lastPull),
+        totalVolume,
+      };
+    });
+  }, [perCountyMap, seriesByCounty, lastPullMap, bondValueForWindow]);
+
+  const filteredCountyRows = useMemo(
+    () => (countyAttentionOnly ? countyRows.filter((row) => row.flagged) : countyRows),
+    [countyRows, countyAttentionOnly]
+  );
+
+  const sortedCountyRows = useMemo(() => {
+    const rows = filteredCountyRows.slice();
+    if (countySort === 'bond') {
+      rows.sort((a, b) => b.bondWindowValue - a.bondWindowValue);
+    } else if (countySort === 'volume') {
+      rows.sort((a, b) => b.totalVolume - a.totalVolume);
+    } else {
+      rows.sort((a, b) => a.pretty.localeCompare(b.pretty));
+    }
+    return rows;
+  }, [filteredCountyRows, countySort]);
 
   // KPIs (as provided by /kpis)
   const kpis = kpiData
@@ -339,7 +667,13 @@ export default function DashboardScreen() {
     : { new24: 0, new48: 0, new72: 0, contacted24: { contacted: 0, total: 0, rate: 0 } };
 
   const loading =
-    kpisLoading || topLoading || perCountyLoading || trendsLoading || new24Loading || recentLoading;
+    kpisLoading ||
+    topLoading ||
+    perCountyLoading ||
+    trendsLoading ||
+    new24Loading ||
+    recentLoading ||
+    attentionLoading;
 
   if (loading) {
     return (
@@ -370,29 +704,6 @@ export default function DashboardScreen() {
     );
   }
 
-  // Compute county bond value **for selected window** with priority:
-  // per-county 'today' → live 24h map → trends series
-  const bondValueForWindow = (county) => {
-    const key = normCountyKey(county);
-
-    if (valueWindow === '24h') {
-      const pc = perCountyMap.get(key);
-      if (pc && Number.isFinite(Number(pc.bondToday))) {
-        return Number(pc.bondToday);
-      }
-      const live = new24ByCounty.get(key);
-      if (Number.isFinite(Number(live))) {
-        return Number(live);
-      }
-    }
-
-    const arr = seriesByCounty[key] || [];
-    if (trendIndex == null || trendIndex < 0 || trendIndex >= arr.length) return 0;
-    const v = Number(arr[trendIndex] || 0);
-    return Number.isFinite(v) ? v : 0;
-  };
-
-  // County ticker component
   const CountyTicker = ({ map, windowLabel }) => (
     <div className="mb-3 flex flex-wrap gap-2">
       {ALL_COUNTIES.map((c) => (
@@ -410,10 +721,49 @@ export default function DashboardScreen() {
     </div>
   );
 
-  // For stacked bar scaling
-  const maxTotal = trendCards.length
-    ? Math.max(...trendCards.map((c) => (c.new24 || 0) + (c.new48 || 0) + (c.new72 || 0)))
-    : 1;
+  const percent = (part, total) => (total ? Math.round((part / total) * 100) : 0);
+
+  const activeRows = snapshotRowsByTab[snapshotTab] || [];
+  const activeSummary = snapshotSummaries[snapshotTab] || {};
+  const activeFilter = snapshotFilters[snapshotTab] || 'all';
+  const emptyMessage = SNAPSHOT_EMPTY_COPY[snapshotTab] || 'Nothing to show here.';
+
+  const formatCount = (value) => Number(value ?? 0).toLocaleString();
+
+  const summaryChips = (() => {
+    const chips = [];
+    const showing = `Showing ${formatCount(activeRows.length)} of ${formatCount(activeSummary.total)}`;
+    if (snapshotTab === 'top') {
+      chips.push(showing);
+      chips.push(`${formatCount(activeSummary.uncontacted)} uncontacted`);
+      if (activeSummary.fallbackWindow) {
+        chips.push(`Window fallback: ${activeSummary.fallbackWindow}`);
+      }
+    } else if (snapshotTab === 'new') {
+      chips.push(showing);
+      chips.push(`${formatCount(activeSummary.uncontacted)} uncontacted`);
+    } else if (snapshotTab === 'recent') {
+      chips.push(showing);
+      chips.push(`${formatCount(activeSummary.uncontacted)} uncontacted`);
+      chips.push(`48h: ${formatCount(activeSummary.in48)}`);
+      chips.push(`72h: ${formatCount(activeSummary.in72)}`);
+    } else if (snapshotTab === 'attention') {
+      chips.push(showing);
+      chips.push(`${formatCount(activeSummary.uncontacted)} uncontacted`);
+      if (activeSummary.needs != null) {
+        chips.push(`Needs attention: ${formatCount(activeSummary.needs)}`);
+      }
+      if (activeSummary.refer != null) {
+        chips.push(`Refer to magistrate: ${formatCount(activeSummary.refer)}`);
+      }
+      if (activeSummary.missingDocs != null) {
+        chips.push(`Missing docs: ${formatCount(activeSummary.missingDocs)}`);
+      }
+    } else {
+      chips.push(showing);
+    }
+    return chips;
+  })();
 
   return (
     <div className="min-h-screen bg-gray-50">
@@ -441,65 +791,52 @@ export default function DashboardScreen() {
           />
         </div>
 
-        {/* Value & County panels */}
-        <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
-          {/* Top by value with window switcher */}
-          <Panel
-            className="lg:col-span-2"
-            title={`Top 10 by Value (${valueWindow})`}
-            subtitle="Highest bond amount in selected window"
-            to={`/cases?window=${valueWindow}&sort=value:desc`}
-            right={<WindowSwitcher value={valueWindow} onChange={setValueWindow} />}
-          >
-            {top10List.length ? (
-              <ul className="divide-y text-sm">
-                {top10List.map((x) => (
-                  <li key={x.id} className="py-2 flex items-center justify-between">
-                    <div>
-                      <div className="font-semibold text-slate-800">{x.name}</div>
-                      <div className="text-slate-500 text-xs">
-                        {prettyCounty(x.county)} • Booked {x.booking_date || x.bookedAt || ''}
-                      </div>
-                      {(x.offense || x.agency || x.facility) ? (
-                        <div className="text-[11px] text-slate-500 truncate max-w-[48ch]">
-                          {x.offense ? <span className="mr-2">{x.offense}</span> : null}
-                          {x.agency || x.facility ? (
-                            <span className="inline-block">• {(x.agency || x.facility)}</span>
-                          ) : null}
-                        </div>
-                      ) : null}
-                      {(x.sex || x.race) ? (
-                        <div className="mt-0.5 flex flex-wrap gap-1">
-                          {x.sex ? (
-                            <span className="inline-flex items-center rounded-md bg-slate-100 text-slate-700 text-[10px] px-1.5 py-0.5">
-                              {x.sex}
-                            </span>
-                          ) : null}
-                          {x.race ? (
-                            <span className="inline-flex items-center rounded-md bg-slate-100 text-slate-700 text-[10px] px-1.5 py-0.5">
-                              {x.race}
-                            </span>
-                          ) : null}
-                        </div>
-                      ) : null}
-                    </div>
-                    <div className="text-right">
-                      {x.category ? (
-                        <div className="text-[10px] text-slate-500 mb-0.5">{x.category}</div>
-                      ) : null}
-                      <div className="font-semibold">
-                        <BondDisplay amount={x.value || x.bond_amount} status={x.bond_status} raw={x.bond_raw || x.bond} />
-                      </div>
-                    </div>
-                  </li>
-                ))}
-              </ul>
-            ) : (
-              <div className="text-sm text-slate-500">No results for this window.</div>
-            )}
-          </Panel>
+        {/* Attention funnel + county bond value */}
+        <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
+          {attentionSummary ? (
+            <Panel
+              title="Attention funnel"
+              subtitle="Snapshot of cases needing manual review"
+              to="/reports"
+            >
+              <div className="space-y-4 text-sm text-slate-700">
+                <div>
+                  <div className="flex items-center justify-between text-xs text-slate-500">
+                    <span>Needs attention</span>
+                    <span>
+                      {attentionSummary.needs.toLocaleString()} ({percent(attentionSummary.needs, attentionSummary.total)}%)
+                    </span>
+                  </div>
+                  <div className="mt-1 h-2 rounded-full bg-slate-200 overflow-hidden">
+                    <div
+                      className="h-full bg-rose-400"
+                      style={{ width: `${percent(attentionSummary.needs, attentionSummary.total)}%` }}
+                    />
+                  </div>
+                </div>
 
-          {/* County Bond Value (by selected window) derived from priority chain */}
+                <div className="grid grid-cols-2 gap-3 text-xs text-slate-600">
+                  <div>
+                    <div className="text-slate-500">Refer to magistrate</div>
+                    <div className="text-sm font-semibold text-slate-800">{attentionSummary.refer.toLocaleString()}</div>
+                  </div>
+                  <div>
+                    <div className="text-slate-500">Letter suffix</div>
+                    <div className="text-sm font-semibold text-slate-800">{attentionSummary.letter.toLocaleString()}</div>
+                  </div>
+                  <div>
+                    <div className="text-slate-500">Missing required docs</div>
+                    <div className="text-sm font-semibold text-slate-800">{attentionSummary.missingDocs.toLocaleString()}</div>
+                  </div>
+                  <div>
+                    <div className="text-slate-500">Total cases</div>
+                    <div className="text-sm font-semibold text-slate-800">{attentionSummary.total.toLocaleString()}</div>
+                  </div>
+                </div>
+              </div>
+            </Panel>
+          ) : null}
+
           <Panel
             title={`County Bond Value (${valueWindow})`}
             subtitle="Sum of bond amounts for new bookings in the selected window (24h prefers per-county today, then live feed)"
@@ -519,257 +856,321 @@ export default function DashboardScreen() {
           </Panel>
         </div>
 
-        {/* County trends */}
-        <Panel title="County Trends (last 7 days)" subtitle="New vs aging volume and bond value">
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-            {trendCards.map((c) => (
-              <div key={c.county} className="rounded-2xl border p-4">
-                <div className="flex items-center justify-between">
-                  <div className="font-semibold text-slate-800">{prettyCounty(c.county)}</div>
-                  <div className="text-xs text-slate-500">Today: {money(c.bondToday)}</div>
-                </div>
-                <div className="mt-3">
-                  <MiniStackedBar
-                    new24={c.new24 || 0}
-                    new48={c.new48 || 0}
-                    new72={c.new72 || 0}
-                  />
-                </div>
-                <div className="mt-3 text-[10px] text-slate-500 flex items-center gap-3">
-                  <span className="inline-block w-3 h-3 bg-green-400 rounded-sm" /> 24h
-                  <span className="inline-block w-3 h-3 bg-amber-400 rounded-sm" /> 48h
-                  <span className="inline-block w-3 h-3 bg-red-400 rounded-sm" /> 72h
-                </div>
-                <div className="mt-3 text-xs text-slate-500">Bond value (7d)</div>
-                <Sparkline values={Array.isArray(c.valueTrend) ? c.valueTrend : []} />
-              </div>
-            ))}
-          </div>
-        </Panel>
+        {/* Snapshot panel with tabs */}
+        <Panel
+          title="Inmate Snapshot"
+          subtitle="Top value, fresh bookings, and urgent follow ups"
+        >
+            <div className="flex flex-wrap items-center gap-2 text-xs font-medium text-slate-600">
+              {SNAPSHOT_TABS.map((tab) => (
+                <button
+                  key={tab.id}
+                  type="button"
+                  onClick={() => setSnapshotTab(tab.id)}
+                  data-active={snapshotTab === tab.id}
+                  className="rounded-full border px-3 py-1 transition hover:bg-slate-50 data-[active=true]:border-blue-300 data-[active=true]:bg-blue-50 data-[active=true]:text-blue-700"
+                >
+                  {tab.label}
+                </button>
+              ))}
+            </div>
 
-        {/* New (24h) */}
-        <Panel title="New Inmates (24h)" subtitle="Most recent bookings with contact status" to="/cases?window=24h">
-          <CountyTicker map={new24ByCounty} windowLabel="24h" />
-          <div className="overflow-x-auto">
-            <table className="min-w-full text-sm">
-              <thead className="text-slate-500">
-                <tr className="border-b">
-                  <th className="py-2 pr-4 text-left font-semibold">Person</th>
-                  <th className="py-2 pr-4 text-left font-semibold">County</th>
-                  <th className="py-2 pr-4 text-left font-semibold">Booked</th>
-                  <th className="py-2 pr-4 text-left font-semibold">Bond</th>
-                  <th className="py-2 pr-4 text-left font-semibold">Offense</th>
-                  <th className="py-2 pr-4 text-left font-semibold">Agency / Facility</th>
-                  <th className="py-2 text-left font-semibold">Contacted</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y">
-                {new24List
-                  .slice()
-                  .sort(
-                    (a, b) =>
-                      (Number(b.bond_amount ?? 0) || 0) -
-                      (Number(a.bond_amount ?? 0) || 0)
-                  )
-                  .slice(0, 10)
-                  .map((row) => (
-                    <tr key={row.id}>
-                      <td className="py-2 pr-4 font-medium text-slate-800">
-                        <Link to={`/cases/${row.id}`} className="text-blue-600 hover:text-blue-700">
-                          {row.person}
-                        </Link>
-                        {(row.sex || row.race) ? (
-                          <div className="mt-0.5 flex flex-wrap gap-1">
+            <div className="mt-3 flex flex-wrap items-center gap-2 text-xs text-slate-600">
+              {SNAPSHOT_CONTACT_FILTERS.map((filter) => (
+                <button
+                  key={filter.id}
+                  type="button"
+                  onClick={() => setSnapshotFilter(snapshotTab, filter.id)}
+                  data-active={activeFilter === filter.id}
+                  className="rounded-full border px-2 py-1 transition hover:bg-slate-50 data-[active=true]:border-blue-300 data-[active=true]:bg-blue-50 data-[active=true]:text-blue-700"
+                >
+                  {filter.label}
+                </button>
+              ))}
+              <div className="ml-auto flex flex-wrap items-center gap-2">
+                {summaryChips.map((chip) => (
+                  <span
+                    key={chip}
+                    className="inline-flex items-center rounded-full border border-slate-200 bg-slate-50 px-2 py-1 text-slate-500"
+                  >
+                    {chip}
+                  </span>
+                ))}
+                {snapshotTab === 'top' ? (
+                  <WindowSwitcher value={valueWindow} onChange={setValueWindow} />
+                ) : null}
+              </div>
+            </div>
+
+            {snapshotTab === 'top' && topFallbackNotice ? (
+              <div className="mt-3 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-700">
+                No bookings in the last 24h. Showing {topWindowUsed} window instead.
+              </div>
+            ) : null}
+
+            {snapshotTab === 'attention' && attentionSummary ? (
+              <div className="mt-3 rounded-lg border border-rose-100 bg-rose-50 px-3 py-2 text-xs text-rose-700">
+                Priority counts mirror the funnel above so the team can act on the highest risk items first.
+              </div>
+            ) : null}
+
+            {snapshotTab === 'new' ? <CountyTicker map={new24ByCounty} windowLabel="24h" /> : null}
+            {snapshotTab === 'recent' ? <CountyTicker map={recentByCounty} windowLabel="48-72h" /> : null}
+
+            <div className="mt-3 overflow-x-auto">
+              <table className="min-w-full text-sm">
+                <thead className="text-slate-500">
+                  <tr className="border-b">
+                    <th className="py-2 pr-4 text-left font-semibold">Person</th>
+                    <th className="py-2 pr-4 text-left font-semibold">County</th>
+                    <th className="py-2 pr-4 text-left font-semibold">Booked</th>
+                    <th className="py-2 pr-4 text-left font-semibold">Bond</th>
+                    <th className="py-2 pr-4 text-left font-semibold">Offense</th>
+                    <th className="py-2 pr-4 text-left font-semibold">Agency / Facility</th>
+                    <th className="py-2 text-left font-semibold">Contact</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y">
+                  {activeRows.map((row, index) => {
+                    const lastContact = safeDateLabel(row.lastContact);
+                    return (
+                      <tr key={row.key || `${snapshotTab}-${index}`} className="align-top">
+                        <td className="py-2 pr-4 font-medium text-slate-800 align-top">
+                          {row.caseId ? (
+                            <Link to={`/cases/${row.caseId}`} className="text-blue-600 hover:text-blue-700">
+                              {row.name}
+                            </Link>
+                          ) : (
+                            <span>{row.name}</span>
+                          )}
+                          <div className="mt-0.5 flex flex-wrap gap-1 text-[10px] text-slate-600">
                             {row.sex ? (
-                              <span className="inline-flex items-center rounded-md bg-slate-100 text-slate-700 text-[10px] px-1.5 py-0.5">
+                              <span className="inline-flex items-center rounded-md bg-slate-100 px-1.5 py-0.5 uppercase tracking-wide">
                                 {row.sex}
                               </span>
                             ) : null}
                             {row.race ? (
-                              <span className="inline-flex items-center rounded-md bg-slate-100 text-slate-700 text-[10px] px-1.5 py-0.5">
+                              <span className="inline-flex items-center rounded-md bg-slate-100 px-1.5 py-0.5">
                                 {row.race}
                               </span>
                             ) : null}
+                            {row.windowLabel ? (
+                              <span className="inline-flex items-center rounded-md bg-blue-50 px-1.5 py-0.5 text-blue-600">
+                                {row.windowLabel}
+                              </span>
+                            ) : null}
+                            {row.category ? (
+                              <span className="inline-flex items-center rounded-md bg-slate-100 px-1.5 py-0.5">
+                                {formatLabel(row.category)}
+                              </span>
+                            ) : null}
+                            {row.needsAttention ? (
+                              <span className="inline-flex items-center rounded-md bg-rose-100 px-1.5 py-0.5 text-rose-700">
+                                Needs attention
+                              </span>
+                            ) : null}
+                            {row.attentionReasons.slice(0, 2).map((reason) => (
+                              <span
+                                key={reason}
+                                className="inline-flex items-center rounded-md bg-rose-50 px-1.5 py-0.5 text-rose-600"
+                              >
+                                {formatLabel(reason)}
+                              </span>
+                            ))}
                           </div>
-                        ) : null}
-                      </td>
-                      <td className="py-2 pr-4 text-slate-700">{prettyCounty(row.county)}</td>
-                      <td className="py-2 pr-4 text-slate-700">{row.booking_date || row.bookedAt || ''}</td>
-                      <td className="py-2 pr-4 text-slate-700">
-                        <BondDisplay amount={row.bond_amount} status={row.bond_status} raw={row.bond_raw || row.bond} />
-                      </td>
-                      <td className="py-2 pr-4 text-slate-700 truncate max-w-[36ch]">{row.offense || ''}</td>
-                      <td className="py-2 pr-4 text-slate-700 truncate max-w-[28ch]">
-                        {row.agency || row.facility || ''}
-                      </td>
-                      <td className="py-2">
-                        {row.contacted ? (
-                          <span className="inline-flex items-center rounded-md bg-green-50 text-green-700 text-xs px-2 py-1">
-                            Yes
-                          </span>
-                        ) : (
-                          <button
-                            onClick={() => navigate(`/messages?compose=initial&case=${row.id}`)}
-                            className="text-xs px-2 py-1 rounded-md border hover:bg-gray-50"
-                          >
-                            Send outreach
-                          </button>
-                        )}
+                        </td>
+                        <td className="py-2 pr-4 text-slate-700 align-top">{row.county}</td>
+                        <td className="py-2 pr-4 text-slate-700 align-top">{row.booked || '—'}</td>
+                        <td className="py-2 pr-4 text-slate-700 align-top">
+                          <BondDisplay amount={row.bondAmount} status={row.bondStatus} raw={row.bondRaw} />
+                        </td>
+                        <td className="py-2 pr-4 text-slate-700 align-top truncate max-w-[36ch]">{row.offense || '—'}</td>
+                        <td className="py-2 pr-4 text-slate-700 align-top truncate max-w-[28ch]">{row.agency || '—'}</td>
+                        <td className="py-2 align-top">
+                          {row.contacted ? (
+                            <span className="inline-flex items-center rounded-md bg-green-50 px-2 py-1 text-xs text-green-700">
+                              Contacted
+                            </span>
+                          ) : row.caseId ? (
+                            <button
+                              type="button"
+                              onClick={() => navigate(`/messages?compose=initial&case=${row.caseId}`)}
+                              className="text-xs px-2 py-1 rounded-md border hover:bg-gray-50"
+                            >
+                              Send outreach
+                            </button>
+                          ) : (
+                            <span className="text-xs text-slate-400">No outreach available</span>
+                          )}
+                          {lastContact ? (
+                            <div className="mt-1 text-[10px] text-slate-400">Last contact {lastContact}</div>
+                          ) : null}
+                          {row.caseId ? (
+                            <div className="mt-2 flex flex-wrap gap-2">
+                              <button
+                                type="button"
+                                onClick={() => navigate(`/cases/${row.caseId}`)}
+                                className="text-xs inline-flex items-center rounded-lg border border-slate-300 px-2 py-1 text-slate-600 hover:border-blue-300 hover:text-blue-700"
+                              >
+                                Open case
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => navigate(`/cases/${row.caseId}?tab=checklist`)}
+                                className="text-xs inline-flex items-center rounded-lg border border-slate-200 px-2 py-1 text-slate-500 hover:border-blue-300 hover:text-blue-700"
+                              >
+                                Checklist
+                              </button>
+                            </div>
+                          ) : null}
+                        </td>
+                      </tr>
+                    );
+                  })}
+                  {activeRows.length === 0 ? (
+                    <tr>
+                      <td colSpan={7} className="py-6 text-center text-slate-500">
+                        {emptyMessage}
                       </td>
                     </tr>
-                  ))}
-                {new24List.length === 0 && (
+                  ) : null}
+                </tbody>
+              </table>
+            </div>
+          </Panel>
+
+        {/* County trends */}
+        <Panel title="County Trends (last 7 days)" subtitle="New vs aging volume and bond value">
+          {sortedCountyRows.length ? (
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+              {sortedCountyRows.map((c) => (
+                <div key={c.county} className="rounded-2xl border p-4">
+                  <div className="flex items-center justify-between">
+                    <div className="font-semibold text-slate-800">{c.pretty}</div>
+                    <div className="text-xs text-slate-500">Today: {money(c.bondToday)}</div>
+                  </div>
+                  <div className="mt-3">
+                    <MiniStackedBar new24={c.new24} new48={c.new48} new72={c.new72} />
+                  </div>
+                  <div className="mt-3 text-[10px] text-slate-500 flex items-center gap-3">
+                    <span className="inline-block w-3 h-3 bg-green-400 rounded-sm" /> 24h
+                    <span className="inline-block w-3 h-3 bg-amber-400 rounded-sm" /> 48h
+                    <span className="inline-block w-3 h-3 bg-red-400 rounded-sm" /> 72h
+                  </div>
+                  <div className="mt-3 text-xs text-slate-500">Bond value (7d)</div>
+                  <Sparkline values={Array.isArray(c.valueTrend) ? c.valueTrend : []} />
+                  {c.flagged ? (
+                    <div className="mt-3 inline-flex items-center rounded-md bg-amber-50 px-2 py-1 text-[11px] text-amber-700">
+                      Data pull is stale
+                    </div>
+                  ) : null}
+                </div>
+              ))}
+            </div>
+          ) : (
+            <div className="rounded-2xl border border-dashed border-slate-200 p-6 text-center text-sm text-slate-500">
+              All counties are up to date for this filter.
+            </div>
+          )}
+        </Panel>
+
+        {/* Counties Overview */}
+        <Panel
+          title="Counties Overview"
+          subtitle="Pull status and daily value by county"
+          to="/cases"
+          right={
+            <div className="flex items-center gap-2 text-xs text-slate-500">
+              <div className="inline-flex items-center gap-1 rounded-full border border-slate-200 bg-white p-1">
+                {COUNTY_SORT_OPTIONS.map((opt) => (
+                  <button
+                    key={opt.id}
+                    type="button"
+                    onClick={() => setCountySort(opt.id)}
+                    data-active={countySort === opt.id}
+                    className="rounded-full px-2 py-1 transition hover:bg-slate-50 data-[active=true]:border-blue-300 data-[active=true]:bg-blue-50 data-[active=true]:text-blue-700"
+                  >
+                    {opt.label}
+                  </button>
+                ))}
+              </div>
+              <label className="flex items-center gap-1">
+                <input
+                  type="checkbox"
+                  className="h-3 w-3 rounded border-slate-300 text-blue-600 focus:ring-blue-500"
+                  checked={countyAttentionOnly}
+                  onChange={(event) => setCountyAttentionOnly(event.target.checked)}
+                />
+                Attention only
+              </label>
+            </div>
+          }
+        >
+          <div className="overflow-x-auto">
+            <table className="min-w-full text-sm">
+              <thead className="text-xs uppercase tracking-wide text-slate-500">
+                <tr className="border-b">
+                  <th className="py-2 pr-3 text-left font-semibold">County</th>
+                  <th className="py-2 pr-3 text-right font-semibold">24h</th>
+                  <th className="py-2 pr-3 text-right font-semibold">48h</th>
+                  <th className="py-2 pr-3 text-right font-semibold">72h</th>
+                  <th className="py-2 pr-3 text-right font-semibold">Bond ({valueWindow})</th>
+                  <th className="py-2 pr-3 text-left font-semibold">Trend (7d)</th>
+                  <th className="py-2 pr-3 text-left font-semibold">Last pull</th>
+                  <th className="py-2 pr-3 text-left font-semibold">Actions</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y text-slate-700">
+                {sortedCountyRows.length ? (
+                  sortedCountyRows.map((c) => (
+                    <tr key={c.county} className="hover:bg-slate-50">
+                      <td className="py-2 pr-3 font-medium text-slate-800">
+                        <div className="flex items-center gap-2">
+                          <span>{c.pretty}</span>
+                          {c.flagged ? (
+                            <span className="inline-flex items-center rounded-full bg-amber-50 px-2 py-0.5 text-[10px] text-amber-700">
+                              Needs attention
+                            </span>
+                          ) : null}
+                        </div>
+                      </td>
+                      <td className="py-2 pr-3 text-right">{c.new24.toLocaleString()}</td>
+                      <td className="py-2 pr-3 text-right">{c.new48.toLocaleString()}</td>
+                      <td className="py-2 pr-3 text-right">{c.new72.toLocaleString()}</td>
+                      <td className="py-2 pr-3 text-right">{money(c.bondWindowValue)}</td>
+                      <td className="py-2 pr-3"><Sparkline values={Array.isArray(c.valueTrend) ? c.valueTrend : []} /></td>
+                      <td className="py-2 pr-3 text-xs text-slate-500">
+                        {c.lastPull === '—' ? '—' : new Date(c.lastPull).toLocaleString()}
+                      </td>
+                      <td className="py-2 pr-3">
+                        <div className="flex flex-wrap gap-1 text-xs">
+                          <button
+                            type="button"
+                            onClick={() => navigate(`/cases?county=${encodeURIComponent(c.county)}&window=${valueWindow}`)}
+                            className="rounded-lg border border-slate-300 px-2 py-1 text-slate-600 hover:border-blue-300 hover:text-blue-700"
+                          >
+                            View cases
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => navigate(`/reports?county=${encodeURIComponent(c.county)}`)}
+                            className="rounded-lg border border-slate-200 px-2 py-1 text-slate-500 hover:border-blue-300 hover:text-blue-700"
+                          >
+                            Trend
+                          </button>
+                        </div>
+                      </td>
+                    </tr>
+                  ))
+                ) : (
                   <tr>
-                    <td colSpan={7} className="py-6 text-center text-slate-500">
-                      No bookings in this window.
+                    <td colSpan={8} className="py-6 text-center text-slate-500">
+                      All counties are clear for this filter.
                     </td>
                   </tr>
                 )}
               </tbody>
             </table>
-          </div>
-        </Panel>
-
-        {/* Recent (48–72h) */}
-        <Panel title="Recent Inmates (48–72h)" subtitle="Focus on uncontacted & high value" to="/cases?window=48-72h">
-          <CountyTicker map={recentByCounty} windowLabel="48-72h" />
-          {(() => {
-            const list = Array.isArray(recentList) ? recentList : [];
-            const withValue = list.map((r) => ({
-              ...r,
-              _bondValue: Number(r.bond_amount ?? 0) || 0,
-              _bookedDate: r.booking_date || r.bookedAt || null,
-            }));
-
-            const now = new Date();
-            const hoursFromNow = (dStr) => {
-              if (!dStr) return Infinity;
-              const d = /^\d{4}-\d{2}-\d{2}$/.test(dStr) ? new Date(dStr + 'T00:00:00Z') : new Date(dStr);
-              return (now - d) / (1000 * 60 * 60);
-            };
-
-            const in48 = withValue.filter((r) => {
-              const h = hoursFromNow(r._bookedDate);
-              return h >= 24 && h < 48;
-            }).length;
-
-            const in72 = withValue.filter((r) => {
-              const h = hoursFromNow(r._bookedDate);
-              return h >= 48 && h <= 72;
-            }).length;
-
-            const total = withValue.length;
-
-            const top10 = withValue
-              .slice()
-              .sort((a, b) => b._bondValue - a._bondValue)
-              .slice(0, 10);
-
-            return (
-              <>
-                <div className="mb-3 text-xs text-slate-600">
-                  <span className="mr-3">
-                    Total: <span className="font-semibold">{total}</span>
-                  </span>
-                  <span className="mr-3">
-                    48h: <span className="font-semibold">{in48}</span>
-                  </span>
-                  <span>
-                    72h: <span className="font-semibold">{in72}</span>
-                  </span>
-                </div>
-
-                <div className="overflow-x-auto">
-                  <table className="min-w-full text-sm">
-                    <thead className="text-slate-500">
-                      <tr className="border-b">
-                        <th className="py-2 pr-4 text-left font-semibold">Person</th>
-                        <th className="py-2 pr-4 text-left font-semibold">County</th>
-                        <th className="py-2 pr-4 text-left font-semibold">Booked</th>
-                        <th className="py-2 pr-4 text-left font-semibold">Bond</th>
-                        <th className="py-2 pr-4 text-left font-semibold">Offense</th>
-                        <th className="py-2 text-left font-semibold">Contacted</th>
-                      </tr>
-                    </thead>
-                    <tbody className="divide-y">
-                      {top10.map((row) => (
-                        <tr key={row.id}>
-                          <td className="py-2 pr-4 font-medium text-slate-800">
-                            <Link to={`/cases/${row.id}`} className="text-blue-600 hover:text-blue-700">
-                              {row.person}
-                            </Link>
-                            {(row.sex || row.race) ? (
-                              <div className="mt-0.5 flex flex-wrap gap-1">
-                                {row.sex ? (
-                                  <span className="inline-flex items-center rounded-md bg-slate-100 text-slate-700 text-[10px] px-1.5 py-0.5">
-                                    {row.sex}
-                                  </span>
-                                ) : null}
-                                {row.race ? (
-                                  <span className="inline-flex items-center rounded-md bg-slate-100 text-slate-700 text-[10px] px-1.5 py-0.5">
-                                    {row.race}
-                                  </span>
-                                ) : null}
-                              </div>
-                            ) : null}
-                          </td>
-                          <td className="py-2 pr-4 text-slate-700">{prettyCounty(row.county)}</td>
-                          <td className="py-2 pr-4 text-slate-700">{row._bookedDate ? String(row._bookedDate) : ''}</td>
-                          <td className="py-2 pr-4 text-slate-700">
-                            <BondDisplay
-                              amount={row.bond_amount ?? row._bondValue}
-                              status={row.bond_status}
-                              raw={row.bond_raw || row.bond}
-                            />
-                          </td>
-                          <td className="py-2 pr-4 text-slate-700 truncate max-w-[36ch]">{row.offense || ''}</td>
-                          <td className="py-2">
-                            {row.contacted ? (
-                              <span className="inline-flex items-center rounded-md bg-green-50 text-green-700 text-xs px-2 py-1">
-                                Yes
-                              </span>
-                            ) : (
-                              <span className="inline-flex items-center rounded-md bg-amber-50 text-amber-700 text-xs px-2 py-1">
-                                No
-                              </span>
-                            )}
-                          </td>
-                        </tr>
-                      ))}
-                      {top10.length === 0 && (
-                        <tr>
-                          <td colSpan={6} className="py-6 text-center text-slate-500">
-                            No results in the 48–72h window.
-                          </td>
-                        </tr>
-                      )}
-                    </tbody>
-                  </table>
-                </div>
-              </>
-            );
-          })()}
-        </Panel>
-
-        {/* Counties Overview */}
-        <Panel title="Counties Overview" subtitle="Pull status and daily value by county" to="/cases">
-          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
-            {ALL_COUNTIES.map((name) => {
-              const c = perCountyMap.get(name) || {};
-              return (
-                <CountyCard
-                  key={name}
-                  county={name}
-                  label={prettyCounty(name)}
-                  lastPull={(kpiData?.perCountyLastPull || []).find((x) => normCountyKey(x.county) === name)?.lastPull || '—'}
-                  new24={c.counts?.today || 0}
-                  new48={c.counts?.yesterday || 0}
-                  new72={c.counts?.twoDaysAgo || 0}
-                  contacted24={0}
-                  bondValue={bondValueForWindow(name)}
-                />
-              );
-            })}
           </div>
         </Panel>
       </main>
