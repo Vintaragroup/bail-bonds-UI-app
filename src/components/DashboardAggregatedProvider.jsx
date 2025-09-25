@@ -4,7 +4,7 @@
 import React, { createContext, useContext, useMemo } from 'react';
 import useSerializedPolling from '../hooks/polling.js';
 
-const DashboardAggContext = createContext(null);
+export const DashboardAggContext = createContext(null);
 
 export function DashboardAggregatedProvider({ children, intervals = {} }) {
   /* intervals allows caller to override defaults per key */
@@ -27,6 +27,14 @@ export function useDashboardAggregated() {
   const ctx = useContext(DashboardAggContext);
   if (!ctx) throw new Error('useDashboardAggregated must be used within <DashboardAggregatedProvider>');
   return ctx;
+}
+
+export function useOptionalDashboardAggregated() {
+  try {
+    return useContext(DashboardAggContext);
+  } catch {
+    return null;
+  }
 }
 
 export default DashboardAggregatedProvider;
