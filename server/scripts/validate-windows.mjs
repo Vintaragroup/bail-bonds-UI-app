@@ -83,30 +83,63 @@ function passFail(label, expected, actual, meta = {}) {
     process.exit(3);
   }
 
-  // 1. Aggregate raw counts by bucket and county
-  const Case = db.collection('cases');
+  // 1. Preflight: ensure API is actually in v2 bucket mode (diagnostic endpoint)
+  let diagPref = null;
+  try {
+    diagPref = await getJSON('/dashboard/diag?window=24h');
+  } catch (e) {
+    console.error('Failed to fetch /dashboard/diag preflight:', e.message);
+  }
+  if (!diagPref || diagPref.mode !== 'v2_buckets') {
+    console.error(`API not in v2_buckets mode (mode=${diagPref?.mode}). Start server with USE_TIME_BUCKET_V2=true.`);
+    process.exit(4);
+  }
+
+  // Helper to build a union aggregation across all simple_* collections (mirrors API unionAllFast semantics for minimal fields)
+  const COUNTY_COLLECTIONS = [
+    'simple_brazoria',
+    'simple_fortbend',
+    'simple_galveston',
+    'simple_harris',
+    'simple_jefferson'
+  ];
+  const BASE = COUNTY_COLLECTIONS[0];
   const buckets = ['0_24h','24_48h','48_72h'];
-  const byBucket = await Case.aggregate([
-    { $match: { time_bucket_v2: { $in: buckets } } },
+
+  function unionPipeline(match, project) {
+    const stages = [ { $match: match } ];
+    if (project) stages.push({ $project: project });
+    const unions = COUNTY_COLLECTIONS.slice(1).map(coll => ({
+      $unionWith: {
+        coll,
+        pipeline: [ { $match: match }, ...(project ? [{ $project: project }] : []) ]
+      }
+    }));
+    return stages.concat(unions);
+  }
+
+  // 2. Aggregate raw counts by bucket (across all counties)
+  const byBucket = await db.collection(BASE).aggregate([
+    ...unionPipeline({ time_bucket_v2: { $in: buckets } }, { time_bucket_v2: 1 }),
     { $group: { _id: '$time_bucket_v2', count: { $sum: 1 } } },
     { $sort: { _id: 1 } }
   ]).toArray();
   const bucketMap = Object.fromEntries(byBucket.map(r => [r._id, r.count]));
   buckets.forEach(b => { if (!bucketMap[b]) bucketMap[b] = 0; });
 
-  // 2. Aggregate per-county counts for mapping to per-county API
-  const byCountyBucket = await Case.aggregate([
-    { $match: { time_bucket_v2: { $in: buckets } } },
+  // 3. Aggregate per-county counts by bucket
+  const byCountyBucket = await db.collection(BASE).aggregate([
+    ...unionPipeline({ time_bucket_v2: { $in: buckets } }, { county: 1, time_bucket_v2: 1 }),
     { $group: { _id: { county: '$county', bucket: '$time_bucket_v2' }, count: { $sum: 1 } } }
   ]).toArray();
-  const countyBucketMap = new Map(); // county -> { bucket -> count }
+  const countyBucketMap = new Map();
   byCountyBucket.forEach(r => {
     const county = (r._id?.county || '').toLowerCase();
     if (!countyBucketMap.has(county)) countyBucketMap.set(county, {});
     countyBucketMap.get(county)[r._id.bucket] = r.count;
   });
 
-  // 3. Fetch APIs
+  // 4. Fetch APIs
   const [kpis, pc24, pc48, pc72, top24, newList, recentList, diag7] = await Promise.all([
     getJSON('/dashboard/kpis'),
     getJSON('/dashboard/per-county?window=24h'),
@@ -118,19 +151,22 @@ function passFail(label, expected, actual, meta = {}) {
     getJSON('/dashboard/diag?window=7d'),
   ]);
 
-  // 4. KPI comparisons
+  // 5. KPI comparisons (expected = mongo / bucketMap, actual = API kpis)
   let allPass = true;
   allPass &= passFail('KPI.today (0_24h)', bucketMap['0_24h'], Number(kpis?.newCountsBooked?.today || 0));
   allPass &= passFail('KPI.yesterday (24_48h)', bucketMap['24_48h'], Number(kpis?.newCountsBooked?.yesterday || 0));
   allPass &= passFail('KPI.twoDaysAgo (48_72h)', bucketMap['48_72h'], Number(kpis?.newCountsBooked?.twoDaysAgo || 0));
 
-  // 5. Per-county comparisons for each window
+  // 6. Per-county comparisons: API puts bucket counts into counts.today/yesterday/twoDaysAgo depending on window param & bucket grouping logic
   function comparePerCounty(apiData, bucketKey, label) {
+    const fieldMap = { '24h': 'today', '48h': 'yesterday', '72h': 'twoDaysAgo' };
+    const metricField = fieldMap[label] || 'today';
     const items = Array.isArray(apiData?.items) ? apiData.items : [];
     items.forEach(it => {
       const county = (it.county || '').toLowerCase();
       const expected = (countyBucketMap.get(county) || {})[bucketKey] || 0;
-      const apiVal = Number(it?.counts?.today || it?.counts?.yesterday || it?.counts?.twoDaysAgo || 0);
+      const apiValRaw = it?.counts?.[metricField];
+      const apiVal = Number(apiValRaw || 0);
       const tag = `PerCounty.${label}.${county}`;
       allPass &= passFail(tag, expected, apiVal);
     });
@@ -139,7 +175,7 @@ function passFail(label, expected, actual, meta = {}) {
   comparePerCounty(pc48, '24_48h', '48h');
   comparePerCounty(pc72, '48_72h', '72h');
 
-  // 6. List validations
+  // 7. List validations
   const newItems = Array.isArray(newList?.items) ? newList.items : (Array.isArray(newList) ? newList : []);
   const recentItems = Array.isArray(recentList?.items) ? recentList.items : (Array.isArray(recentList) ? recentList : []);
   const badNew = newItems.filter(it => it.time_bucket_v2 && it.time_bucket_v2 !== '0_24h');
@@ -147,7 +183,7 @@ function passFail(label, expected, actual, meta = {}) {
   if (badNew.length) { console.log(`FAIL New list has non 0_24h buckets: ${badNew.map(b=>b.time_bucket_v2).slice(0,5).join(',')}`); allPass = false; } else { console.log('PASS New list buckets all 0_24h'); }
   if (badRecent.length) { console.log(`FAIL Recent list has non 48_72h buckets: ${badRecent.map(b=>b.time_bucket_v2).slice(0,5).join(',')}`); allPass = false; } else { console.log('PASS Recent list buckets all 48_72h'); }
 
-  // 7. Diagnostic coverage
+  // 8. Diagnostic coverage
   const coverage = diag7?.bucketCoverage;
   if (coverage && coverage.coverageRate === 1) {
     console.log('PASS Coverage 100% (bucketCoverage.coverageRate=1)');
@@ -155,7 +191,7 @@ function passFail(label, expected, actual, meta = {}) {
     console.log(`FAIL Coverage incomplete: ${JSON.stringify(coverage)}`); allPass = false;
   }
 
-  // 8. Top list fallback logic sanity (if enriched object)
+  // 9. Top list fallback logic sanity (if enriched object)
   if (top24?.mode === 'v2_buckets') {
     const items = Array.isArray(top24.items) ? top24.items : [];
     const hasFresh = items.some(i => i.time_bucket_v2 === '0_24h');

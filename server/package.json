@@ -7,6 +7,9 @@
   "scripts": {
     "dev": "nodemon --watch src src/index.js",
     "start": "node src/index.js",
+    "smoke:dashboard": "node scripts/smoke-dashboard.mjs",
+    "test:windows": "node scripts/test-windows.mjs",
+    "validate:windows": "node scripts/validate-windows.mjs",
     "lint:api": "node scripts/validate-openapi.js",
     "lint:api:bundle": "node scripts/validate-openapi.js --out src/openapi.bundle.json"
   },

@@ -8,6 +8,12 @@ Swagger UI: http://localhost:8080/api/docs (when the server is running)
 
 For full server details (environment, troubleshooting, scripts), see `server/README.md`.
 
+## Documentation
+
+- `SCHEMA_CONTRACT.md` – data field contracts
+- `WINDOW_CONTRACT.md` – canonical window semantics (design + mapping)
+- `WINDOWS_V2_STATUS.md` – windows v2 migration status, validation snapshot, ops playbook
+
 ## Quick Start
 
 1) Install dependencies
