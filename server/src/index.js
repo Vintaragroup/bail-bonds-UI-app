@@ -10,7 +10,8 @@ import path from 'node:path';
 import YAML from 'yaml';
 import { connectMongo, getMongo } from './db.js';
 // Feature flags (env)
-const USE_TIME_BUCKET_V2 = String(process.env.USE_TIME_BUCKET_V2 || 'false').toLowerCase() === 'true';
+// New default: V2 buckets ON unless explicitly disabled via DISABLE_TIME_BUCKET_V2=true
+const USE_TIME_BUCKET_V2 = String(process.env.DISABLE_TIME_BUCKET_V2 || 'false').toLowerCase() === 'true' ? false : true;
 import { ensureDashboardIndexes } from './indexes.js';
 import health from './routes/health.js';
 import dashboard from './routes/dashboard.js';
@@ -104,7 +105,7 @@ app.locals.flags = { USE_TIME_BUCKET_V2 };
 
 const server = app.listen(port, () => {
   console.log(`🚀 API listening on http://localhost:${port}`);
-  console.log(`🧪 Feature Flags: USE_TIME_BUCKET_V2=${USE_TIME_BUCKET_V2}`);
+  console.log(`🧪 Feature Flags: USE_TIME_BUCKET_V2=${USE_TIME_BUCKET_V2} (set DISABLE_TIME_BUCKET_V2=true to turn off)`);
 });
 
 server.on('connection', (sock) => {

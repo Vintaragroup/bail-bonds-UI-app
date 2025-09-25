@@ -37,11 +37,12 @@ if (!MONGO_URI) {
 }
 
 // ---------- Helpers ----------
-async function getJSON(path) {
+async function getJSON(path, wantHeaders = false) {
   const url = `${API_BASE}${path}`;
   const res = await fetch(url, { headers: { 'Accept': 'application/json', 'Cache-Control': 'no-cache' } });
   if (!res.ok) throw new Error(`HTTP ${res.status} for ${url}`);
-  return res.json();
+  const json = await res.json();
+  return wantHeaders ? { json, headers: res.headers } : json;
 }
 
 function pctDiff(a, b) {
@@ -91,7 +92,7 @@ function passFail(label, expected, actual, meta = {}) {
     console.error('Failed to fetch /dashboard/diag preflight:', e.message);
   }
   if (!diagPref || diagPref.mode !== 'v2_buckets') {
-    console.error(`API not in v2_buckets mode (mode=${diagPref?.mode}). Start server with USE_TIME_BUCKET_V2=true.`);
+    console.error(`API not in v2_buckets mode (mode=${diagPref?.mode}). V2 is now the default; ensure you did NOT set DISABLE_TIME_BUCKET_V2=true.`);
     process.exit(4);
   }
 
@@ -140,16 +141,18 @@ function passFail(label, expected, actual, meta = {}) {
   });
 
   // 4. Fetch APIs
-  const [kpis, pc24, pc48, pc72, top24, newList, recentList, diag7] = await Promise.all([
+  const [kpis, pc24H, pc48H, pc72H, top24, newResp, recentResp, diag7] = await Promise.all([
     getJSON('/dashboard/kpis'),
     getJSON('/dashboard/per-county?window=24h'),
     getJSON('/dashboard/per-county?window=48h'),
     getJSON('/dashboard/per-county?window=72h'),
     getJSON('/dashboard/top?window=24h&limit=10'),
-    getJSON('/dashboard/new?scope=all&limit=50'),
-    getJSON('/dashboard/recent?limit=50'),
+    getJSON('/dashboard/new?scope=all&limit=50', true),
+    getJSON('/dashboard/recent?limit=50', true),
     getJSON('/dashboard/diag?window=7d'),
   ]);
+  const newList = newResp.json; const recentList = recentResp.json;
+  const pc24 = pc24H; const pc48 = pc48H; const pc72 = pc72H;
 
   // 5. KPI comparisons (expected = mongo / bucketMap, actual = API kpis)
   let allPass = true;
@@ -179,9 +182,23 @@ function passFail(label, expected, actual, meta = {}) {
   const newItems = Array.isArray(newList?.items) ? newList.items : (Array.isArray(newList) ? newList : []);
   const recentItems = Array.isArray(recentList?.items) ? recentList.items : (Array.isArray(recentList) ? recentList : []);
   const badNew = newItems.filter(it => it.time_bucket_v2 && it.time_bucket_v2 !== '0_24h');
-  const badRecent = recentItems.filter(it => it.time_bucket_v2 && it.time_bucket_v2 !== '48_72h');
+  // recent fast path shows both 24_48h + 48_72h buckets; ensure no others.
+  const badRecent = recentItems.filter(it => it.time_bucket_v2 && !['24_48h','48_72h'].includes(it.time_bucket_v2));
   if (badNew.length) { console.log(`FAIL New list has non 0_24h buckets: ${badNew.map(b=>b.time_bucket_v2).slice(0,5).join(',')}`); allPass = false; } else { console.log('PASS New list buckets all 0_24h'); }
-  if (badRecent.length) { console.log(`FAIL Recent list has non 48_72h buckets: ${badRecent.map(b=>b.time_bucket_v2).slice(0,5).join(',')}`); allPass = false; } else { console.log('PASS Recent list buckets all 48_72h'); }
+  if (badRecent.length) { console.log(`FAIL Recent list has unexpected buckets: ${badRecent.map(b=>b.time_bucket_v2).slice(0,5).join(',')}`); allPass = false; } else { console.log('PASS Recent list buckets limited to 24_48h/48_72h'); }
+
+  // 8b. Variant headers presence (best-effort; headers may be undefined in some proxy setups)
+  const needVariant = (label, headers, key) => {
+    const v = headers?.get(key);
+    if (!v) { console.log(`FAIL Variant header missing: ${label} (${key})`); allPass = false; }
+    else console.log(`PASS Variant header ${label}=${v}`);
+  };
+  try {
+    needVariant('new', newResp.headers, 'x-new-variant');
+    needVariant('recent', recentResp.headers, 'x-recent-variant');
+  } catch (e) {
+    console.log('WARN Unable to verify variant headers:', e.message);
+  }
 
   // 8. Diagnostic coverage
   const coverage = diag7?.bucketCoverage;
