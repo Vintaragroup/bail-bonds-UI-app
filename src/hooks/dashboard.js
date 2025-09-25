@@ -8,14 +8,54 @@ export const API_BASE =
     : 'http://localhost:8080/api'
   ).replace(/\/$/, '');
 
-export async function getJSON(path) {
-  const url = `${API_BASE}${path.startsWith('/') ? path : `/${path}`}`;
-  const res = await fetch(url);
-  if (!res.ok) {
-    const text = await res.text();
-    throw new Error(`Request failed ${res.status}: ${text}`);
+// In-flight request de-duplication to prevent bursts of identical GETs
+const inflight = new Map(); // key -> Promise
+
+function normalizeKey(urlStr) {
+  try {
+    const u = new URL(urlStr);
+    // Drop cache-buster and any local-only churn keys
+    const qp = new URLSearchParams(u.search);
+    ['_cb', '_', 'cb', 'cacheBust', 'cachebuster'].forEach((k) => qp.delete(k));
+    // Re-add kept params in stable order
+    const stable = new URLSearchParams();
+    Array.from(qp.keys()).sort().forEach((k) => stable.set(k, qp.get(k)));
+    const qs = stable.toString();
+    return `${u.origin}${u.pathname}${qs ? `?${qs}` : ''}`;
+  } catch {
+    return urlStr;
   }
-  return res.json();
+}
+
+export async function getJSON(path) {
+  const base = `${API_BASE}${path.startsWith('/') ? path : `/${path}`}`;
+  // Add a cache-busting param to avoid conditional GET/304 and keep request simple
+  const url = `${base}${base.includes('?') ? '&' : '?'}_cb=${Date.now()}`;
+  const key = normalizeKey(url);
+
+  if (inflight.has(key)) {
+    return inflight.get(key);
+  }
+
+  const p = (async () => {
+    const res = await fetch(url, {
+      cache: 'no-store',
+      headers: { 'Accept': 'application/json' },
+    });
+    if (!res.ok) {
+      const text = await res.text();
+      throw new Error(`Request failed ${res.status}: ${text}`);
+    }
+    return res.json();
+  })();
+
+  inflight.set(key, p);
+  // Clear after it settles to allow a small coalesce window
+  p.finally(() => {
+    // Leave result available for a short moment in case of immediate re-renders
+    setTimeout(() => inflight.delete(key), 1000);
+  });
+  return p;
 }
 
 export async function sendJSON(path, { method = 'POST', body, headers } = {}) {
@@ -24,9 +64,12 @@ export async function sendJSON(path, { method = 'POST', body, headers } = {}) {
     method,
     headers: {
       'Content-Type': 'application/json',
+      'Accept': 'application/json',
+      'Cache-Control': 'no-cache',
       ...headers,
     },
     body: body !== undefined ? JSON.stringify(body) : undefined,
+    cache: 'no-store',
   });
 
   if (!res.ok) {
@@ -43,7 +86,12 @@ export async function sendFormData(path, { method = 'POST', formData, headers } 
   const res = await fetch(url, {
     method,
     body: formData,
-    headers,
+    headers: {
+      'Accept': 'application/json',
+      'Cache-Control': 'no-cache',
+      ...headers,
+    },
+    cache: 'no-store',
   });
 
   if (!res.ok) {
@@ -66,6 +114,7 @@ export function useKpis(options = {}) {
     queryKey: ['kpis'],
     queryFn: () => getJSON('/dashboard/kpis'),
     staleTime: 60_000,
+    placeholderData: (previous) => previous,
     ...options,
   });
 }
@@ -79,9 +128,13 @@ export function useKpis(options = {}) {
 export function useTopByValue(window = '24h', limit = 10, options = {}) {
   return useQuery({
     queryKey: ['topByValue', window, limit],
-    queryFn: () =>
-      getJSON(`/dashboard/top?window=${encodeURIComponent(window)}&limit=${encodeURIComponent(limit)}`),
+    queryFn: async () => {
+      const data = await getJSON(`/dashboard/top?window=${encodeURIComponent(window)}&limit=${encodeURIComponent(limit)}`);
+      // Pass through enrichment fields if present
+      return data;
+    },
     staleTime: 60_000,
+    placeholderData: (previous) => previous,
     ...options,
   });
 }
@@ -97,8 +150,12 @@ export function useNewToday(scope = 'all', options = {}) {
   const qs = scope && scope !== 'all' ? `?county=${encodeURIComponent(scope)}` : '';
   return useQuery({
     queryKey: ['newToday', scope],
-    queryFn: () => getJSON(`/dashboard/new${qs}`),
+    queryFn: async () => {
+      const data = await getJSON(`/dashboard/new${qs}`);
+      return data;
+    },
     staleTime: 30_000,
+    placeholderData: (previous) => previous,
     ...options,
   });
 }
@@ -151,6 +208,7 @@ export function useRecent48to72(limit = 10, options = {}) {
       };
     },
     staleTime: 30_000,
+    placeholderData: (previous) => previous,
     ...options,
   });
 }
@@ -204,6 +262,7 @@ export function useCountyTrends(days = 7, options = {}) {
       };
     },
     staleTime: 60_000,
+    placeholderData: (previous) => previous,
     ...options,
   });
 }
@@ -217,8 +276,12 @@ export function useCountyTrends(days = 7, options = {}) {
 export function usePerCounty(window = 'rolling72', options = {}) {
   return useQuery({
     queryKey: ['perCounty', window],
-    queryFn: () => getJSON(`/dashboard/per-county?window=${encodeURIComponent(window)}`),
+    queryFn: async () => {
+      const data = await getJSON(`/dashboard/per-county?window=${encodeURIComponent(window)}`);
+      return data;
+    },
     staleTime: 60_000,
+    placeholderData: (previous) => previous,
     ...options,
   });
 }

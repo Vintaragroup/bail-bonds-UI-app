@@ -1,4 +1,5 @@
-import { useState, useMemo, useCallback } from 'react';
+import { useState, useMemo, useCallback, useEffect } from 'react';
+import { useQueryClient } from '@tanstack/react-query';
 import { Link, useNavigate } from 'react-router-dom';
 import {
   useKpis,
@@ -8,6 +9,7 @@ import {
   useNewToday,
   useRecent48to72,
 } from '../hooks/dashboard';
+import { legacyWindowForBucket, bucketClasses } from '../lib/buckets';
 import { useCaseStats, useCases } from '../hooks/cases';
 
 // Always render these 5
@@ -78,12 +80,17 @@ const shapeSnapshotRow = (item, source, extras = {}) => {
   const rawBooked =
     item.booking_date || item.bookedAt || item.booked_at || item.normalized_at || null;
   const booked = rawBooked instanceof Date ? rawBooked.toISOString().slice(0, 10) : rawBooked || '';
+  const timeBucketV2 = item.time_bucket_v2 || item.time_bucket || null;
+  const mappedWindow = item.mapped_window || (timeBucketV2 ? legacyWindowForBucket(timeBucketV2) : null);
   return {
     caseId,
     key: caseId || `${source}-${item.person || item.name || item.full_name || Math.random()}`,
     name: item.name || item.person || item.full_name || 'Unknown',
     county: prettyCounty(item.county),
     booked,
+    bookingDateTime: item.booking_datetime || null,
+    timeBucketV2,
+    mappedWindow,
     bondAmount: item.bond_amount ?? item.value ?? null,
     bondStatus: item.bond_status || (Number(item.bond_amount ?? item.value) ? 'numeric' : null),
     bondRaw: item.bond_raw || item.bond || item.bond_label || null,
@@ -100,6 +107,9 @@ const shapeSnapshotRow = (item, source, extras = {}) => {
     needsAttention: Boolean(item.needs_attention),
     attentionReasons: Array.isArray(item.attention_reasons) ? item.attention_reasons : [],
     source,
+    timeBucket: item.time_bucket || null,
+    scrapedAt: item.scraped_at || item.scrapedAt || null,
+    normalizedAt: item.normalized_at || item.normalizedAt || null,
     ...extras,
   };
 };
@@ -297,12 +307,58 @@ function WindowSwitcher({ value, onChange }) {
 
 export default function DashboardScreen() {
   const navigate = useNavigate();
+  const queryClient = useQueryClient();
+  // Debug toggle (persisted). Enable by adding ?debug=1 to the URL or clicking the header button.
+  const [debug, setDebug] = useState(() => {
+    try {
+      const sp = new URLSearchParams(window.location.search);
+      if (sp.get('debug') === '1') return true;
+      return localStorage.getItem('dashDebug') === '1';
+    } catch { return false; }
+  });
+  const toggleDebug = useCallback(() => {
+    setDebug((prev) => {
+      const next = !prev;
+      try { localStorage.setItem('dashDebug', next ? '1' : '0'); } catch {}
+      return next;
+    });
+  }, []);
+  // Debug minimize toggle (persisted)
+  const [debugMin, setDebugMin] = useState(() => {
+    try { return localStorage.getItem('dashDebugMin') === '1'; } catch { return false; }
+  });
+  const toggleDebugMin = useCallback(() => {
+    setDebugMin((prev) => {
+      const next = !prev;
+      try { localStorage.setItem('dashDebugMin', next ? '1' : '0'); } catch {}
+      return next;
+    });
+  }, []);
+  // Window used for Top10 and Bond Value panel
+  const [valueWindow, setValueWindow] = useState('24h');
+  const forceRefresh = useCallback(() => {
+    try {
+      // Invalidate and refetch all dashboard-related queries
+      const keys = [
+        ['kpis'],
+        ['perCounty', valueWindow],
+        ['topByValue', valueWindow, 10],
+        ['countyTrends', 7],
+        ['newToday', 'all'],
+        ['recent48to72', 10],
+        ['caseStats'],
+        // cases attention snapshot
+        ['cases'],
+      ];
+      keys.forEach((key) => queryClient.invalidateQueries({ queryKey: key }));
+      keys.forEach((key) => queryClient.refetchQueries({ queryKey: key }));
+    } catch {}
+  }, [queryClient, valueWindow]);
 
   // ── Queries
   const { data: kpiData, isLoading: kpisLoading } = useKpis();
-  const [valueWindow, setValueWindow] = useState('24h'); // affects both Top10 and Bond Value panel
   const { data: top10, isLoading: topLoading } = useTopByValue(valueWindow, 10);
-  const { data: perCounty, isLoading: perCountyLoading } = usePerCounty('today');
+  const { data: perCounty, isLoading: perCountyLoading } = usePerCounty(valueWindow);
   const { data: countyTrends, isLoading: trendsLoading } = useCountyTrends(7);
   const { data: new24h, isLoading: new24Loading } = useNewToday('all');
   const { data: recent48to72, isLoading: recentLoading } = useRecent48to72(10);
@@ -327,6 +383,7 @@ export default function DashboardScreen() {
     () => (Array.isArray(perCounty?.items) ? perCounty.items : []),
     [perCounty]
   );
+  const perCountyWindowUsed = perCounty?.windowUsed || valueWindow;
   const perCountyMap = useMemo(() => {
     const m = new Map();
     perCountyItems.forEach((c) => {
@@ -335,7 +392,15 @@ export default function DashboardScreen() {
     return m;
   }, [perCountyItems]);
 
-  const top10Raw = useMemo(() => (Array.isArray(top10) ? top10 : []), [top10]);
+  // top endpoint may return either array or enriched object { items, mode }
+  const topPayload = useMemo(() => {
+    if (!top10) return { items: [], mode: null };
+    if (Array.isArray(top10)) return { items: top10, mode: null };
+    if (Array.isArray(top10.items)) return { items: top10.items, mode: top10.mode || null };
+    return { items: [], mode: null };
+  }, [top10]);
+  const top10Raw = topPayload.items;
+  const apiMode = topPayload.mode || null; // 'v2_buckets' when flag enabled (from server enrichment)
   const topWindowUsed = top10Raw.length ? (top10Raw[0].window_used || valueWindow) : valueWindow;
   const topFallbackNotice = top10Raw.length > 0 && topWindowUsed !== valueWindow;
   const applyContactFilter = (list = [], filter = 'all') => {
@@ -367,10 +432,41 @@ export default function DashboardScreen() {
   }, [caseStats]);
   const lastPullMap = useMemo(() => {
     const map = new Map();
-    (caseStats?.perCountyLastPull || kpiData?.perCountyLastPull || []).forEach((item) => {
+    const preferNewer = (a, b) => {
+      const ta = Date.parse(a || '');
+      const tb = Date.parse(b || '');
+      if (Number.isNaN(ta) && Number.isNaN(tb)) return a || b || '—';
+      if (Number.isNaN(ta)) return b;
+      if (Number.isNaN(tb)) return a;
+      return ta >= tb ? a : b;
+    };
+
+    // 1) Case stats job metadata if available
+    (caseStats?.perCountyLastPull || []).forEach((item) => {
       if (!item?.county) return;
-      map.set(normCountyKey(item.county), item.lastPull || item.finishedAt || '—');
+      const key = normCountyKey(item.county);
+      const val = item.lastPull || item.finishedAt || '—';
+      map.set(key, val);
     });
+
+    // 2) KPI job metadata (server /kpis)
+    (kpiData?.perCountyLastPull || []).forEach((item) => {
+      if (!item?.county) return;
+      const key = normCountyKey(item.county);
+      const val = item.lastPull || item.finishedAt || '—';
+      const prev = map.get(key) || '—';
+      map.set(key, preferNewer(prev, val));
+    });
+
+    // 3) Fallback: last observed data timestamp per county (server /kpis)
+    (kpiData?.perCountyLastData || []).forEach((item) => {
+      if (!item?.county) return;
+      const key = normCountyKey(item.county);
+      const val = item.lastData || '—';
+      const prev = map.get(key) || '—';
+      map.set(key, preferNewer(prev, val));
+    });
+
     return map;
   }, [caseStats, kpiData]);
   const new24Raw = useMemo(() => {
@@ -389,7 +485,15 @@ export default function DashboardScreen() {
     data: attentionData,
     isLoading: attentionLoading,
   } = useCases(
-    { attention: true, limit: 25, sortBy: 'bond_amount', order: 'desc' },
+    {
+      attention: true,
+      attentionType: 'refer',
+      county: 'harris',
+      noCount: true,
+      limit: 25,
+      sortBy: 'bond_amount',
+      order: 'desc',
+    },
     { staleTime: 60_000 }
   );
 
@@ -484,6 +588,8 @@ export default function DashboardScreen() {
         shapeSnapshotRow(item, 'recent', {
           key: item.id || `recent-${index}`,
           windowLabel: '48–72h',
+  new: new24List.map((item, index) => shapeSnapshotRow(item, 'new', { key: item.id || `new-${index}` })),
+  recent: recentList.map((item, index) => shapeSnapshotRow(item, 'recent', { key: item.id || `recent-${index}` })),
         })
       ),
       attention: attentionList.map((item, index) =>
@@ -666,43 +772,7 @@ export default function DashboardScreen() {
       }
     : { new24: 0, new48: 0, new72: 0, contacted24: { contacted: 0, total: 0, rate: 0 } };
 
-  const loading =
-    kpisLoading ||
-    topLoading ||
-    perCountyLoading ||
-    trendsLoading ||
-    new24Loading ||
-    recentLoading ||
-    attentionLoading;
-
-  if (loading) {
-    return (
-      <div className="min-h-screen bg-gray-50">
-        <header className="sticky top-0 z-10 bg-white border-b">
-          <div className="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8 h-14 flex items-center justify-between">
-            <span className="font-semibold tracking-tight">Bail Bonds Dashboard</span>
-            <span className="text-xs text-slate-500 hidden sm:block">v0.1</span>
-          </div>
-        </header>
-        <main className="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8 py-6 space-y-6">
-          <div className="animate-pulse grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
-            {Array.from({ length: 4 }).map((_, i) => (
-              <div key={i} className="h-20 bg-white rounded-2xl border shadow-sm" />
-            ))}
-          </div>
-          <div className="animate-pulse grid grid-cols-1 lg:grid-cols-3 gap-4">
-            <div className="h-48 bg-white rounded-2xl border shadow-sm lg:col-span-2" />
-            <div className="h-48 bg-white rounded-2xl border shadow-sm" />
-          </div>
-          <div className="animate-pulse grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-            {Array.from({ length: 3 }).map((_, i) => (
-              <div key={i} className="h-40 bg-white rounded-2xl border shadow-sm" />
-            ))}
-          </div>
-        </main>
-      </div>
-    );
-  }
+  // Remove global loading gate: render panels with their own lightweight loading states
 
   const CountyTicker = ({ map, windowLabel }) => (
     <div className="mb-3 flex flex-wrap gap-2">
@@ -771,7 +841,27 @@ export default function DashboardScreen() {
       <header className="sticky top-0 z-10 bg-white border-b">
         <div className="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8 h-14 flex items-center justify-between">
           <span className="font-semibold tracking-tight">Bail Bonds Dashboard</span>
-          <span className="text-xs text-slate-500 hidden sm:block">v0.1</span>
+          <div className="flex items-center gap-2">
+            <span className="text-xs text-slate-500 hidden sm:block">v0.1</span>
+            <button
+              type="button"
+              onClick={toggleDebug}
+              className="text-xs rounded-md border px-2 py-1 text-slate-600 hover:bg-slate-50"
+              title="Toggle data wiring debug overlay"
+            >
+              {debug ? 'Hide Debug' : 'Show Debug'}
+            </button>
+            {debug ? (
+              <button
+                type="button"
+                onClick={forceRefresh}
+                className="text-xs rounded-md border px-2 py-1 text-slate-600 hover:bg-slate-50"
+                title="Invalidate and refetch all dashboard queries"
+              >
+                Force refresh
+              </button>
+            ) : null}
+          </div>
         </div>
       </header>
 
@@ -780,8 +870,8 @@ export default function DashboardScreen() {
         {/* KPI Row */}
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
           <KpiCard label="New (24h)" value={kpis.new24} to="/cases?window=24h" />
-          <KpiCard label="New (48h)" value={kpis.new48} to="/cases?window=48h" />
-          <KpiCard label="New (72h)" value={kpis.new72} to="/cases?window=72h" />
+          <KpiCard label="New (24–48h)" value={kpis.new48} to="/cases?window=48h" />
+          <KpiCard label="New (48–72h)" value={kpis.new72} to="/cases?window=72h" />
           <KpiCard
             label="Contacted (24h)"
             value={`${kpis.contacted24.contacted}/${kpis.contacted24.total}`}
@@ -838,8 +928,8 @@ export default function DashboardScreen() {
           ) : null}
 
           <Panel
-            title={`County Bond Value (${valueWindow})`}
-            subtitle="Sum of bond amounts for new bookings in the selected window (24h prefers per-county today, then live feed)"
+            title={`County Bond Value (${perCountyWindowUsed})`}
+            subtitle={`Sum of bond amounts for new bookings in the selected window${perCountyWindowUsed !== valueWindow ? ` • showing ${perCountyWindowUsed}` : ''}`}
             right={<WindowSwitcher value={valueWindow} onChange={setValueWindow} />}
           >
             <div className="grid grid-cols-2 gap-3">
@@ -931,6 +1021,24 @@ export default function DashboardScreen() {
                   </tr>
                 </thead>
                 <tbody className="divide-y">
+                  {/* Targeted loading row per active tab to avoid showing empty-state during fetch */}
+                  {(() => {
+                    const activeLoading =
+                      (snapshotTab === 'top' && topLoading) ||
+                      (snapshotTab === 'new' && new24Loading) ||
+                      (snapshotTab === 'recent' && recentLoading) ||
+                      (snapshotTab === 'attention' && attentionLoading);
+                    if (activeLoading) {
+                      return (
+                        <tr>
+                          <td colSpan={7} className="py-6 text-center text-slate-500">
+                            Loading {snapshotTab}…
+                          </td>
+                        </tr>
+                      );
+                    }
+                    return null;
+                  })()}
                   {activeRows.map((row, index) => {
                     const lastContact = safeDateLabel(row.lastContact);
                     return (
@@ -957,6 +1065,20 @@ export default function DashboardScreen() {
                             {row.windowLabel ? (
                               <span className="inline-flex items-center rounded-md bg-blue-50 px-1.5 py-0.5 text-blue-600">
                                 {row.windowLabel}
+                            {row.mappedWindow ? (
+                              <span
+                                className={`inline-flex items-center rounded-md border px-1.5 py-0.5 text-[10px] ${bucketClasses(row.timeBucketV2)}`}
+                                title={row.bookingDateTime ? `Booked: ${row.bookingDateTime}` : ''}
+                              >
+                                {row.mappedWindow}
+                              </span>
+                            ) : null}
+                            {row.timeBucketV2 && !row.mappedWindow ? (
+                              <span className="inline-flex items-center rounded-md bg-slate-100 px-1.5 py-0.5 text-[10px]">
+                                {row.timeBucketV2}
+                              </span>
+                            ) : null}
+          <span className="font-semibold tracking-tight flex items-center gap-2">Bail Bonds Dashboard {apiMode === 'v2_buckets' ? <span className="inline-flex items-center rounded-full bg-indigo-50 px-2 py-0.5 text-[10px] font-medium text-indigo-700 border border-indigo-200" title="Using time_bucket_v2 canonical windows">v2</span> : null}</span>
                               </span>
                             ) : null}
                             {row.category ? (
@@ -1027,7 +1149,7 @@ export default function DashboardScreen() {
                       </tr>
                     );
                   })}
-                  {activeRows.length === 0 ? (
+                  {activeRows.length === 0 && !((snapshotTab === 'top' && topLoading) || (snapshotTab === 'new' && new24Loading) || (snapshotTab === 'recent' && recentLoading) || (snapshotTab === 'attention' && attentionLoading)) ? (
                     <tr>
                       <td colSpan={7} className="py-6 text-center text-slate-500">
                         {emptyMessage}
@@ -1096,6 +1218,8 @@ export default function DashboardScreen() {
               </div>
               <label className="flex items-center gap-1">
                 <input
+                  id="county-attention-only"
+                  name="countyAttentionOnly"
                   type="checkbox"
                   className="h-3 w-3 rounded border-slate-300 text-blue-600 focus:ring-blue-500"
                   checked={countyAttentionOnly}
@@ -1174,6 +1298,339 @@ export default function DashboardScreen() {
           </div>
         </Panel>
       </main>
+      {debug ? (
+        debugMin ? (
+          <div className="fixed right-4 bottom-4 z-50 max-w-sm text-xs">
+            <div className="rounded-full border shadow-md bg-white px-2 py-1 flex items-center gap-2">
+              <span className="text-[11px] text-slate-700">Debug</span>
+              <button
+                type="button"
+                onClick={toggleDebugMin}
+                className="text-[10px] rounded-md border px-2 py-0.5 hover:bg-slate-50"
+                title="Expand debug window"
+              >Expand</button>
+              <button
+                type="button"
+                onClick={forceRefresh}
+                className="text-[10px] rounded-md border px-2 py-0.5 hover:bg-slate-50"
+                title="Invalidate and refetch dashboard queries"
+              >Refresh</button>
+              <button
+                type="button"
+                onClick={toggleDebug}
+                className="text-[10px] text-blue-600 hover:text-blue-700"
+                title="Hide debug window"
+              >Hide</button>
+            </div>
+          </div>
+        ) : (
+          <div className="fixed right-4 bottom-4 z-50 max-w-sm w-[360px] text-xs">
+            <div className="rounded-xl border shadow-xl bg-white p-3">
+              <div className="flex items-center justify-between">
+                <div className="font-semibold text-slate-800">Data Wiring Debug</div>
+                <div className="flex items-center gap-2">
+                  <button
+                    onClick={forceRefresh}
+                    className="text-[10px] rounded-md border px-2 py-0.5 hover:bg-slate-50"
+                    title="Invalidate and refetch dashboard queries"
+                  >Refresh</button>
+                  <button
+                    onClick={toggleDebugMin}
+                    className="text-[10px] rounded-md border px-2 py-0.5 hover:bg-slate-50"
+                    title="Minimize debug window"
+                  >Minimize</button>
+                  <button onClick={toggleDebug} className="text-[10px] text-blue-600 hover:text-blue-700">close</button>
+                </div>
+              </div>
+              <DebugBlock
+                kpiData={kpiData}
+                perCountyMap={perCountyMap}
+                new24List={new24List}
+                recentList={recentList}
+                lastPullMap={lastPullMap}
+                valueWindow={valueWindow}
+                perCountyWindowUsed={perCountyWindowUsed}
+                topWindowUsed={topWindowUsed}
+                topFallbackNotice={topFallbackNotice}
+                trendLabels={trendLabels}
+                seriesByCounty={seriesByCounty}
+              />
+            </div>
+          </div>
+        )
+      ) : null}
+    </div>
+  );
+}
+
+function DebugBlock({ kpiData, perCountyMap, new24List, recentList, lastPullMap, valueWindow, perCountyWindowUsed, topWindowUsed, topFallbackNotice, trendLabels, seriesByCounty }) {
+  const [county, setCounty] = useState('harris');
+  const countyKey = normCountyKey(county);
+  const pc = perCountyMap.get(countyKey) || {};
+  const kpis = kpiData?.newCountsBooked || {};
+  const new24Count = (new24List || []).filter((r) => normCountyKey(r.county) === countyKey).length;
+  const recentCount = (recentList || []).filter((r) => normCountyKey(r.county) === countyKey).length;
+  const lastPull = lastPullMap.get(countyKey) || '—';
+
+  const labels = Array.isArray(trendLabels) ? trendLabels : [];
+  const [dayIdx, setDayIdx] = useState(() => (labels.length ? labels.length - 1 : 0));
+  useEffect(() => {
+    if (labels.length && (dayIdx < 0 || dayIdx >= labels.length)) {
+      setDayIdx(labels.length - 1);
+    }
+  }, [labels.length, dayIdx]);
+  const series = (seriesByCounty && seriesByCounty[countyKey]) || [];
+  const selectedDayLabel = labels[dayIdx] || '—';
+  const selectedDayValue = Number(series[dayIdx] || 0);
+
+  return (
+    <div className="text-slate-700 space-y-2">
+      <div className="flex items-center gap-2">
+        <div className="text-[11px] text-slate-500">Snapshot vs API windows</div>
+        <select
+          className="ml-auto text-[11px] border rounded-md px-1 py-0.5"
+          value={county}
+          onChange={(e) => setCounty(e.target.value)}
+          title="Select county"
+        >
+          {ALL_COUNTIES.map((c) => (
+            <option key={c} value={c}>{prettyCounty(c)}</option>
+          ))}
+        </select>
+        <select
+          className="text-[11px] border rounded-md px-1 py-0.5"
+          value={dayIdx}
+          onChange={(e) => setDayIdx(Number(e.target.value))}
+          title="Select day (trends)"
+        >
+          {labels.map((label, idx) => (
+            <option key={idx} value={idx}>{label}</option>
+          ))}
+        </select>
+      </div>
+      <table className="min-w-full">
+        <tbody>
+          <tr>
+            <td className="pr-2 text-slate-500">KPI Today (24h)</td>
+            <td className="font-semibold">{Number(kpis.today ?? 0).toLocaleString()}</td>
+          </tr>
+          <tr>
+            <td className="pr-2 text-slate-500">Per-County {prettyCounty(county)} 24h</td>
+            <td className="font-semibold">{Number(pc?.counts?.today ?? 0).toLocaleString()}</td>
+          </tr>
+          <tr>
+            <td className="pr-2 text-slate-500">New list (24h) {prettyCounty(county)} rows</td>
+            <td className="font-semibold">{Number(new24Count || 0).toLocaleString()}</td>
+          </tr>
+          <tr>
+            <td className="pr-2 text-slate-500">Recent list (48–72h) {prettyCounty(county)} rows</td>
+            <td className="font-semibold">{Number(recentCount || 0).toLocaleString()}</td>
+          </tr>
+          <tr>
+            <td className="pr-2 text-slate-500">Per-County {prettyCounty(county)} 24–48h</td>
+            <td className="font-semibold">{Number(pc?.counts?.yesterday ?? 0).toLocaleString()}</td>
+          </tr>
+          <tr>
+            <td className="pr-2 text-slate-500">Per-County {prettyCounty(county)} 48–72h</td>
+            <td className="font-semibold">{Number(pc?.counts?.twoDaysAgo ?? 0).toLocaleString()}</td>
+          </tr>
+          <tr>
+            <td className="pr-2 text-slate-500">Last pull ({prettyCounty(county)})</td>
+            <td className="font-semibold">{lastPull === '—' ? '—' : new Date(lastPull).toLocaleString()}</td>
+          </tr>
+          <tr>
+            <td className="pr-2 text-slate-500">Trends value ({selectedDayLabel})</td>
+            <td className="font-semibold">{money(selectedDayValue)}</td>
+          </tr>
+        </tbody>
+      </table>
+      <div className="text-[11px] text-slate-500 mt-1">If numbers above disagree, check Network tab for /dashboard/kpis, /dashboard/per-county?window=24h, /dashboard/new.</div>
+
+      <div className="mt-2 border-t pt-2">
+        <div className="font-semibold text-slate-800 mb-1">Window → Data source map</div>
+        <ul className="list-disc pl-4 space-y-1">
+          <li className="whitespace-pre-line">
+            KPI cards
+            <div className="text-[11px] text-slate-500">GET /dashboard/kpis → newCountsBooked.today (24h), newCountsBooked.yesterday (24–48h), newCountsBooked.twoDaysAgo (48–72h)</div>
+          </li>
+          <li className="whitespace-pre-line">
+            County Bond Value ({perCountyWindowUsed})
+            <div className="text-[11px] text-slate-500">GET /dashboard/per-county?window={valueWindow} → item.bondToday (when 24h) or trends fallback for other windows; effective windowUsed={perCountyWindowUsed}</div>
+          </li>
+          <li className="whitespace-pre-line">
+            Top value ({topWindowUsed})
+            <div className="text-[11px] text-slate-500">GET /dashboard/top?window={valueWindow}&limit=10 → payload may include window_used; fallback? {topFallbackNotice ? 'yes' : 'no'}</div>
+          </li>
+          <li className="whitespace-pre-line">
+            New (24h) list
+            <div className="text-[11px] text-slate-500">GET /dashboard/new?scope=all → items[] (last 24h by scraped_at_dt/normalized_at_dt AND booked today or yesterday)</div>
+          </li>
+          <li className="whitespace-pre-line">
+            Recent (48–72h) list
+            <div className="text-[11px] text-slate-500">GET /dashboard/recent?limit=… → items[]; server window bands by booking time since/until</div>
+          </li>
+          <li className="whitespace-pre-line">
+            County Trends (7d)
+            <div className="text-[11px] text-slate-500">GET /dashboard/trends?days=7 → bondSeries per county; UI indexes latest day for 24h/48h/72h when bondToday not applicable</div>
+          </li>
+          <li className="whitespace-pre-line">
+            Last pull timestamp per county
+            <div className="text-[11px] text-slate-500">caseStats.perCountyLastPull ∪ kpis.perCountyLastPull ∪ kpis.perCountyLastData (newest wins)</div>
+          </li>
+        </ul>
+      </div>
+
+      <ProbeSection county={county} countyKey={countyKey} selectedDayLabel={selectedDayLabel} />
+
+      <BoundsSection />
+    </div>
+  );
+}
+
+function BoundsSection() {
+  const now = Date.now();
+  const fmt = (ts) => new Date(ts).toLocaleString();
+  const bands = [
+    { label: '24h', since: now - 24 * 3600 * 1000, until: null },
+    { label: '48h', since: now - 48 * 3600 * 1000, until: now - 24 * 3600 * 1000 },
+    { label: '72h', since: now - 72 * 3600 * 1000, until: now - 48 * 3600 * 1000 },
+  ];
+  return (
+    <div className="mt-2 border-t pt-2">
+      <div className="font-semibold text-slate-800 mb-1">Window bounds (client clock)</div>
+      <table className="min-w-full text-[11px]">
+        <thead>
+          <tr className="text-slate-500">
+            <th className="text-left">Window</th>
+            <th className="text-left">Since</th>
+            <th className="text-left">Until</th>
+          </tr>
+        </thead>
+        <tbody>
+          {bands.map((b) => (
+            <tr key={b.label}>
+              <td className="py-0.5 pr-2">{b.label}</td>
+              <td className="py-0.5 pr-2">{fmt(b.since)}</td>
+              <td className="py-0.5 pr-2">{b.until ? fmt(b.until) : 'now'}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+      <div className="text-[10px] text-slate-500 mt-1">Server windows are computed in America/Chicago and may differ slightly if your local timezone is different.</div>
+    </div>
+  );
+}
+
+function ProbeSection({ county, countyKey, selectedDayLabel }) {
+  const [busy, setBusy] = useState(false);
+  const [probe, setProbe] = useState({});
+
+  const runProbe = useCallback(async (name, url, parse) => {
+    setBusy(true);
+    const started = performance.now();
+    let status = 0, ok = false, ms = 0, summary = '', data = null;
+    try {
+      const res = await fetch(url, { headers: { 'Cache-Control': 'no-cache' } });
+      status = res.status;
+      ok = res.ok;
+      data = await res.json().catch(() => null);
+      summary = parse ? parse(data) : '';
+    } catch (err) {
+      summary = String(err?.message || err);
+    } finally {
+      ms = Math.round(performance.now() - started);
+      setProbe((prev) => ({ ...prev, [name]: { status, ok, ms, summary, url } }));
+      setBusy(false);
+    }
+  }, []);
+
+  const copyCurl = (url) => {
+    const cmd = `curl -s "${url}" | jq .`;
+    navigator.clipboard?.writeText(cmd);
+  };
+
+  const Row = ({ name, url, parse }) => (
+    <div className="flex items-center gap-2">
+      <button
+        type="button"
+        disabled={busy}
+        onClick={() => runProbe(name, url, parse)}
+        className="text-[11px] rounded-md border px-2 py-0.5 hover:bg-slate-50 disabled:opacity-50"
+      >
+        Probe
+      </button>
+      <span className="text-[11px] text-slate-500 truncate" title={url}>{url}</span>
+      <button
+        type="button"
+        onClick={() => copyCurl(url)}
+        className="ml-auto text-[10px] text-blue-600 hover:text-blue-700"
+        title="Copy cURL"
+      >curl</button>
+      {probe[name] ? (
+        <span className={`text-[11px] ${probe[name].ok ? 'text-emerald-700' : 'text-rose-700'}`}>
+          {probe[name].status} • {probe[name].ms}ms • {probe[name].summary}
+        </span>
+      ) : null}
+    </div>
+  );
+
+  const base = '/api/dashboard';
+  const harrisOnly = (items = []) => items.find((x) => normCountyKey(x.county) === countyKey) || {};
+
+  return (
+    <div className="mt-2 border-t pt-2 space-y-1">
+      <div className="font-semibold text-slate-800">Quick API probes</div>
+      <Row
+        name="kpis"
+        url={`${base}/kpis`}
+        parse={(d) => `today=${d?.newCountsBooked?.today ?? 0}`}
+      />
+      <Row
+        name="pc24"
+        url={`${base}/per-county?window=24h`}
+        parse={(d) => {
+          const it = harrisOnly(d?.items || []);
+          const n = Number(it?.counts?.today || 0);
+          return `${prettyCounty(county)} 24h=${n}`;
+        }}
+      />
+      <Row
+        name="pc48"
+        url={`${base}/per-county?window=48h`}
+        parse={(d) => {
+          const it = harrisOnly(d?.items || []);
+          const n = Number(it?.counts?.yesterday || 0);
+          return `${prettyCounty(county)} 24–48h=${n}`;
+        }}
+      />
+      <Row
+        name="pc72"
+        url={`${base}/per-county?window=72h`}
+        parse={(d) => {
+          const it = harrisOnly(d?.items || []);
+          const n = Number(it?.counts?.twoDaysAgo || 0);
+          return `${prettyCounty(county)} 48–72h=${n}`;
+        }}
+      />
+      <Row
+        name="new"
+        url={`${base}/new?scope=all&limit=5`}
+        parse={(d) => {
+          const arr = Array.isArray(d?.items) ? d.items : [];
+          const n = arr.filter((r) => normCountyKey(r.county) === countyKey).length;
+          return `New (24h) ${prettyCounty(county)} rows=${n}`;
+        }}
+      />
+      <Row
+        name="recent"
+        url={`${base}/recent?limit=5`}
+        parse={(d) => {
+          const arr = Array.isArray(d?.items) ? d.items : [];
+          const n = arr.filter((r) => normCountyKey(r.county) === countyKey).length;
+          return `Recent (48–72h) ${prettyCounty(county)} rows=${n}`;
+        }}
+      />
+      <div className="text-[10px] text-slate-500">Tip: Use the “curl” buttons to reproduce in your terminal. Selected county: {prettyCounty(county)} • Day: {selectedDayLabel}</div>
     </div>
   );
 }
