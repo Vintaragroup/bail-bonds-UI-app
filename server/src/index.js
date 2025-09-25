@@ -9,6 +9,9 @@ import fs from 'node:fs';
 import path from 'node:path';
 import YAML from 'yaml';
 import { connectMongo, getMongo } from './db.js';
+// Feature flags (env)
+const USE_TIME_BUCKET_V2 = String(process.env.USE_TIME_BUCKET_V2 || 'false').toLowerCase() === 'true';
+import { ensureDashboardIndexes } from './indexes.js';
 import health from './routes/health.js';
 import dashboard from './routes/dashboard.js';
 import cases from './routes/cases.js';
@@ -48,8 +51,19 @@ app.use(helmet({
 }));
 app.use(express.json({ limit: '1mb' }));
 app.use(cookieParser());
+// CORS: allow CSV in WEB_ORIGIN and always include a permissive localhost regex in dev
+const ENV_ORIGINS = (process.env.WEB_ORIGIN || '')
+  .split(',')
+  .map((s) => s.trim())
+  .filter(Boolean);
+const DEFAULT_LOCALHOST_REGEX = /^http:\/\/localhost:\d+$/;
+const isProd = String(process.env.NODE_ENV || '').toLowerCase() === 'production';
+const ALLOWED_ORIGINS = isProd
+  ? (ENV_ORIGINS.length ? ENV_ORIGINS : [])
+  : [...ENV_ORIGINS, DEFAULT_LOCALHOST_REGEX];
+
 app.use(cors({
-  origin: process.env.WEB_ORIGIN || [/^http:\/\/localhost:\d+$/],
+  origin: ALLOWED_ORIGINS.length ? ALLOWED_ORIGINS : DEFAULT_LOCALHOST_REGEX,
   credentials: true,
 }));
 app.use(rateLimit({ windowMs: 60_000, max: 120 }));
@@ -77,13 +91,21 @@ const MONGO_DB = process.env.MONGO_DB || process.env.MONGODB_DB || 'warrantdb';
 if (MONGO_URI) {
   await connectMongo(MONGO_URI, MONGO_DB);
   app.set('mongo', getMongo());
+  // Kick off index creation in background (non-blocking)
+  try { ensureDashboardIndexes(getMongo()); } catch {}
 } else {
   console.warn('⚠️  MONGO_URI not set — starting server without DB connection (some endpoints will return 503)');
   app.set('mongo', null);
 }
 
 // Use the returned server instance so we can log low-level connection events
-const server = app.listen(port, () => console.log(`🚀 API listening on http://localhost:${port}`));
+// Expose feature flags to downstream routers via app locals
+app.locals.flags = { USE_TIME_BUCKET_V2 };
+
+const server = app.listen(port, () => {
+  console.log(`🚀 API listening on http://localhost:${port}`);
+  console.log(`🧪 Feature Flags: USE_TIME_BUCKET_V2=${USE_TIME_BUCKET_V2}`);
+});
 
 server.on('connection', (sock) => {
   try {

@@ -4,15 +4,45 @@ import Case from '../models/Case.js';
 import Message from '../models/Message.js';
 import CaseAudit from '../models/CaseAudit.js';
 
-// Per-file DB timeout for potentially expensive queries
-const MAX_DB_MS = 5000;
+// Per-file DB timeout for potentially expensive queries (env overridable)
+// Bump a bit for wide attention scans to avoid near-miss timeouts
+const MAX_DB_MS = parseInt(process.env.CASES_MAX_DB_MS || process.env.MAX_DB_MS || '12000', 10);
 
 // Helper to timeout a promise-returning DB operation so handlers don't hang
-function withTimeout(promise, ms = MAX_DB_MS) {
+function withTimeout(promise, ms = MAX_DB_MS, label = 'cases op') {
+  let timer;
   return Promise.race([
-    promise,
-    new Promise((_, rej) => setTimeout(() => rej(new Error('operation timed out')), ms)),
+    promise.finally(() => clearTimeout(timer)),
+    new Promise((_, rej) => {
+      timer = setTimeout(() => {
+        console.warn(`[cases] ${label} timed out after ${ms}ms`);
+        rej(new Error('operation timed out'));
+      }, ms);
+    }),
   ]);
+}
+
+// Tiny in-memory cache for expensive stats endpoint
+const CACHE_TTL_MS = parseInt(process.env.CASES_CACHE_MS || process.env.DASH_CACHE_MS || '30000', 10);
+const _cache = new Map(); // key -> { ts, data }
+const _inflight = new Map(); // key -> Promise
+const cacheGet = (k) => {
+  const e = _cache.get(k);
+  if (!e) return null;
+  if (Date.now() - e.ts > CACHE_TTL_MS) { _cache.delete(k); return null; }
+  return e.data;
+};
+const cacheSet = (k, v) => _cache.set(k, { ts: Date.now(), data: v });
+async function withCache(key, compute) {
+  const hit = cacheGet(key);
+  if (hit !== null) return { fromCache: true, data: hit };
+  if (_inflight.has(key)) {
+    try { const d = await _inflight.get(key); return { fromCache: true, data: d }; } catch {}
+  }
+  const p = (async () => await compute())();
+  _inflight.set(key, p);
+  try { const d = await p; cacheSet(key, d); return { fromCache: false, data: d }; }
+  finally { _inflight.delete(key); }
 }
 
 const r = Router();
@@ -196,6 +226,8 @@ r.get('/meta', (_req, res) => {
 r.get('/stats', async (_req, res) => {
   try {
     if (!ensureMongoConnected(res)) return;
+    const cacheKey = 'cases:stats:v1';
+    const { fromCache, data } = await withCache(cacheKey, async () => {
 
     const startOfToday = new Date();
     startOfToday.setHours(0, 0, 0, 0);
@@ -398,9 +430,9 @@ r.get('/stats', async (_req, res) => {
           ],
         },
       },
-    ]).option({ maxTimeMS: MAX_DB_MS });
+    ]).option({ maxTimeMS: MAX_DB_MS, allowDiskUse: true });
 
-    const [result] = await withTimeout(agg.exec(), MAX_DB_MS).catch((err) => {
+    const [result] = await withTimeout(agg.exec(), MAX_DB_MS, 'stats.aggregate').catch((err) => {
       console.error('GET /cases/stats aggregate failed', err?.message);
       return [{}];
     });
@@ -460,7 +492,7 @@ r.get('/stats', async (_req, res) => {
       letterSuffix: Number(attentionRaw.letterSuffix || 0),
     };
 
-    res.json({
+    return {
       stages: stageCounts,
       followUps,
       checklist,
@@ -471,7 +503,10 @@ r.get('/stats', async (_req, res) => {
         cases: totalCases,
       },
       generatedAt: new Date().toISOString(),
+    };
     });
+    res.set('X-Cache', data && fromCache ? 'HIT' : 'MISS');
+    res.json(data);
   } catch (err) {
     console.error('GET /cases/stats error:', err);
     res.status(500).json({ error: 'Internal server error' });
@@ -504,6 +539,7 @@ r.get('/', async (req, res) => {
       query = '',
       county,
       status,
+      window: windowId,
       startDate,
       endDate,
       minBond,
@@ -517,6 +553,7 @@ r.get('/', async (req, res) => {
       attentionType,
       contacted,
       stage,
+      noCount,
     } = req.query;
     const bondLabelAlias = req.query.bond_label;
 
@@ -529,11 +566,79 @@ r.get('/', async (req, res) => {
     // Text search (ensure a text index on relevant fields: full_name, offense, case_number, etc.)
     if (query) filter.$text = { $search: query };
 
-    // Date window on normalized booking_date (YYYY-MM-DD)
-    if (startDate || endDate) {
+    // Date window based on booking time: support rolling windows via ?window=24h|48h|72h
+    const WINDOW_SET = new Set(['24h','48h','72h']);
+    const now = Date.now();
+    let useExprWindow = false;
+    if (windowId && WINDOW_SET.has(String(windowId).toLowerCase())) {
+      const id = String(windowId).toLowerCase();
+      const sinceHours = id === '24h' ? 24 : id === '48h' ? 48 : 72;
+      const prevHours  = id === '24h' ? null : id === '48h' ? 24 : 48;
+      const since = new Date(now - sinceHours * 3600000);
+      const until = prevHours != null ? new Date(now - prevHours * 3600000) : new Date();
+      // Build $expr comparing coalesced booking_dt to [since, until)
+      filter.$expr = {
+        $and: [
+          { $gte: [
+            {
+              $let: {
+                vars: { ba: '$bookedAt', iso: '$booking_date_iso', ymd: '$booking_date' },
+                in: {
+                  $let: {
+                    vars: {
+                      baD: { $cond: [ { $eq: [ { $type: '$$ba' }, 'date' ] }, '$$ba', null ] },
+                      isoD: { $cond: [ { $eq: [ { $type: '$$iso' }, 'date' ] }, '$$iso', null ] },
+                      ymdD: {
+                        $cond: [
+                          { $and: [ { $ne: ['$$ymd', null] }, { $ne: ['$$ymd', ''] } ] },
+                          { $dateFromString: { dateString: '$$ymd', format: '%Y-%m-%d', timezone: 'America/Chicago', onError: null, onNull: null } },
+                          null
+                        ]
+                      }
+                    },
+                    in: { $ifNull: ['$$baD', { $ifNull: ['$$isoD', '$$ymdD'] }] }
+                  }
+                }
+              }
+            }, since ] },
+          { $lt: [
+            {
+              $let: {
+                vars: { ba: '$bookedAt', iso: '$booking_date_iso', ymd: '$booking_date' },
+                in: {
+                  $let: {
+                    vars: {
+                      baD: { $cond: [ { $eq: [ { $type: '$$ba' }, 'date' ] }, '$$ba', null ] },
+                      isoD: { $cond: [ { $eq: [ { $type: '$$iso' }, 'date' ] }, '$$iso', null ] },
+                      ymdD: {
+                        $cond: [
+                          { $and: [ { $ne: ['$$ymd', null] }, { $ne: ['$$ymd', ''] } ] },
+                          { $dateFromString: { dateString: '$$ymd', format: '%Y-%m-%d', timezone: 'America/Chicago', onError: null, onNull: null } },
+                          null
+                        ]
+                      }
+                    },
+                    in: { $ifNull: ['$$baD', { $ifNull: ['$$isoD', '$$ymdD'] }] }
+                  }
+                }
+              }
+            }, until ] },
+        ]
+      };
+      useExprWindow = true;
+    }
+    // Date window on normalized booking_date (YYYY-MM-DD) for non-rolling cases
+    if (!useExprWindow && (startDate || endDate)) {
       filter.booking_date = {};
       if (startDate) filter.booking_date.$gte = String(startDate);
       if (endDate) filter.booking_date.$lte = String(endDate);
+    }
+    // Safety default: for attention scans with no explicit window, restrict to last 30 days
+    if ((attention === '1' || attention === 'true' || attention === true) && !startDate && !endDate) {
+      const dt = new Date();
+      dt.setDate(dt.getDate() - 30);
+      const ymd = dt.toISOString().slice(0, 10);
+      filter.booking_date = { ...(filter.booking_date || {}), $gte: ymd };
     }
 
     // Bond range on normalized bond_amount
@@ -550,11 +655,18 @@ r.get('/', async (req, res) => {
     const limitNum = Math.min(Number(limit) || 25, 500);
     if (bondLabel || bondLabelAlias) filter.bond_label = bondLabel || bondLabelAlias;
     if (attention === '1' || attention === 'true' || attention === true) {
-      filter.$or = [
-        { bond_label: { $regex: /^REFER TO MAGISTRATE$/i } },
-        { bond: { $regex: /^REFER TO MAGISTRATE$/i } },
-        { "_upsert_key.anchor": { $not: /^[0-9]+$/ } }
+      const referValues = ['REFER TO MAGISTRATE', 'Refer to Magistrate', 'refer to magistrate'];
+      // By default, prefer fast equality checks that hit the bond_label index.
+      // The anchor regex is expensive; include it only if attentionType=letter or attentionType=all.
+      const ors = [
+        { bond_label: { $in: referValues } },
+        { bond: { $in: referValues } },
       ];
+      const attType = String(attentionType || '').toLowerCase();
+      if (attType === 'letter' || attType === 'all') {
+        ors.push({ "_upsert_key.anchor": { $not: /^[0-9]+$/ } });
+      }
+      filter.$or = ors;
     }
     if (stage && CRM_STAGES.includes(String(stage).toLowerCase())) {
       filter.crm_stage = String(stage).toLowerCase();
@@ -590,6 +702,11 @@ r.get('/', async (req, res) => {
       crm_stage: 1,
       crm_details: 1,
       "_upsert_key.anchor": 1,
+      // Timestamps to compute "age" on the client
+      createdAt: 1,
+      updatedAt: 1,
+      normalized_at: 1,
+      scraped_at: 1,
       // Legacy fields kept only for back-compat view (not used for sorting/sums)
       bookedAt: 1,
       booking_date_iso: 1,
@@ -603,17 +720,21 @@ r.get('/', async (req, res) => {
       .limit(limitNum)
       .lean();
 
-    const qCount = Case.countDocuments(filter);
+  const wantCount = !noCount || !TRUE_SET.has(String(noCount).toLowerCase());
+  const qCount = wantCount ? Case.countDocuments(filter) : null;
 
     // Apply maxTimeMS when the driver/query supports it, and wrap with a timeout
     let items = await withTimeout((qFind.maxTimeMS ? qFind.maxTimeMS(MAX_DB_MS) : qFind), MAX_DB_MS).catch((e) => {
       console.warn('cases: find timed out or failed', e?.message);
       return [];
     });
-    const count = await withTimeout((qCount.maxTimeMS ? qCount.maxTimeMS(MAX_DB_MS) : qCount), MAX_DB_MS).catch((e) => {
-      console.warn('cases: count timed out or failed', e?.message);
-      return 0;
-    });
+    let count = null;
+    if (qCount) {
+      count = await withTimeout((qCount.maxTimeMS ? qCount.maxTimeMS(MAX_DB_MS) : qCount), MAX_DB_MS).catch((e) => {
+        console.warn('cases: count timed out or failed', e?.message);
+        return 0;
+      });
+    }
 
     const caseIds = items.map((item) => item._id).filter(Boolean);
     const { contactSet, lastMap } = await fetchContactMeta(caseIds);
@@ -684,7 +805,7 @@ r.get('/', async (req, res) => {
 
     const limitedItems = mappedItems.slice(0, limitNum);
 
-    res.json({ items: limitedItems, count: mappedItems.length, total: count });
+  res.json({ items: limitedItems, count: mappedItems.length, total: count });
   } catch (err) {
     console.error('GET /cases error:', err);
     res.status(500).json({ error: 'Internal server error' });

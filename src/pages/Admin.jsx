@@ -1,5 +1,6 @@
 import { useMemo } from 'react';
 import { PageHeader, SectionCard, SummaryStat, DataTable } from '../components/PageToolkit';
+import { useCases } from '../hooks/cases';
 
 const JOBS = [
   { id: 'scrape:harris', description: 'Harris booking scrape', lastRun: '2025-02-18 05:10', status: 'success', durationMs: 182000 },
@@ -27,6 +28,39 @@ export default function Admin() {
     const failures = JOBS.filter((job) => job.status === 'failed').length;
     return { total: JOBS.length, successes, running, failures };
   }, []);
+
+  // Pull a small recent sample to surface data freshness
+  const today = new Date();
+  const endDate = today.toISOString().slice(0, 10);
+  const start = new Date(today);
+  start.setDate(start.getDate() - 7);
+  const startDate = start.toISOString().slice(0, 10);
+  const { data: recentCases } = useCases({ startDate, endDate, limit: 25, sortBy: 'booking_date', order: 'desc', noCount: true });
+  const sampleRows = useMemo(() => {
+    const items = Array.isArray(recentCases?.items) ? recentCases.items : [];
+    return items.map((item) => {
+      const ing = item.normalized_at || item.scraped_at || item.updatedAt || item.createdAt || null;
+      const booked = item.booking_date || null;
+      const toAge = (v) => {
+        if (!v) return '—';
+        const iso = /^\d{4}-\d{2}-\d{2}$/.test(v) ? `${v}T00:00:00Z` : v;
+        const d = new Date(iso);
+        if (Number.isNaN(d.getTime())) return '—';
+        const hours = Math.floor((Date.now() - d.getTime()) / (1000 * 60 * 60));
+        const days = Math.floor(hours / 24);
+        return hours < 24 ? `${hours}h` : `${days}d ${hours % 24}h`;
+      };
+      return {
+        id: String(item._id || item.id || item.case_number || Math.random()),
+        name: item.full_name || 'Unknown',
+        county: (item.county || '').charAt(0).toUpperCase() + (item.county || '').slice(1),
+        booked: booked || '—',
+        bookingAge: toAge(booked),
+        ingestedAt: ing ? new Date(ing).toLocaleString() : '—',
+        dataAge: toAge(ing),
+      };
+    });
+  }, [recentCases]);
 
   return (
     <div className="space-y-6">
@@ -159,6 +193,21 @@ export default function Admin() {
           />
         </SectionCard>
       </div>
+
+      <SectionCard title="Data freshness" subtitle="Compare ingestion time vs booking time (last 25 bookings)">
+        <DataTable
+          columns={[
+            { key: 'name', header: 'Name' },
+            { key: 'county', header: 'County' },
+            { key: 'booked', header: 'Booked (date)' },
+            { key: 'bookingAge', header: 'Booking age' },
+            { key: 'ingestedAt', header: 'Ingested at' },
+            { key: 'dataAge', header: 'Data age' },
+          ]}
+          rows={sampleRows}
+          empty="No recent cases in the last week."
+        />
+      </SectionCard>
     </div>
   );
 }

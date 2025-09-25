@@ -134,6 +134,19 @@ export default function CaseDetail() {
     },
   });
 
+  const ageInfo = useMemo(() => {
+    const ref = data?.booking_date;
+    if (!ref) return { label: '—', hours: null, days: null };
+    const iso = /^\d{4}-\d{2}-\d{2}$/.test(ref) ? `${ref}T00:00:00Z` : ref;
+    const d = new Date(iso);
+    if (Number.isNaN(d.getTime())) return { label: '—', hours: null, days: null };
+    const diffMs = Date.now() - d.getTime();
+    const hours = Math.floor(diffMs / (1000 * 60 * 60));
+    const days = Math.floor(hours / 24);
+    const label = hours < 24 ? `${hours}h` : `${days}d ${hours % 24}h`;
+    return { label, hours, days };
+  }, [data?.booking_date]);
+
   const updateAttachment = useUpdateCaseDocument({
     onSuccess: (response, vars) => {
       const attachment = response?.attachment;
@@ -649,6 +662,7 @@ export default function CaseDetail() {
           <StatTile label="Bond" value={bondDisplay} />
           <StatTile label="Assigned" value={crmDetails.assignedTo || 'Unassigned'} />
           <StatTile label="Next follow-up" value={followUpDisplay} />
+          <StatTile label="Age" value={ageInfo.label} hint={data.booking_date ? `Booked ${data.booking_date}` : undefined} />
           <StatTile
             label="Checklist"
             value={totalChecklist ? `${completedChecklist}/${totalChecklist}` : '—'}

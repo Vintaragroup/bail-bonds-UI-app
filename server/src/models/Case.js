@@ -150,6 +150,9 @@ CaseSchema.index({ booking_date: 1 }, { name: 'booking_date_1' });
 CaseSchema.index({ status: 1, booking_date: -1 }, { name: 'status_1_booking_date_-1' });
 CaseSchema.index({ time_bucket: 1, booking_date: -1 }, { name: 'time_bucket_1_booking_date_-1' });
 CaseSchema.index({ county: 1, booking_date: 1 }, { name: 'county_1_booking_date_1' });
+CaseSchema.index({ bond_label: 1 }, { name: 'bond_label_1' });
+// Compound index to support attention scans and sorting by bond within a recent date window
+CaseSchema.index({ bond_label: 1, booking_date: -1, bond_amount: -1 }, { name: 'bond_label_booking_date_bond_amount' });
 // Helpful text search for free-form query
 CaseSchema.index({ full_name: 'text', charge: 'text', case_number: 'text', spn: 'text' }, { name: 'case_text_index', default_language: 'english' });
 

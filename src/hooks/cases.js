@@ -7,14 +7,18 @@ function buildCasesQuery(params = {}) {
   if (params.county) qs.set('county', params.county);
   if (params.status) qs.set('status', params.status);
   if (params.attention) qs.set('attention', 'true');
+  if (params.attentionType) qs.set('attentionType', params.attentionType);
+  if (params.noCount) qs.set('noCount', 'true');
   if (params.limit) qs.set('limit', String(params.limit));
   if (params.sortBy) qs.set('sortBy', params.sortBy);
   if (params.order) qs.set('order', params.order);
   if (params.startDate) qs.set('startDate', params.startDate);
   if (params.endDate) qs.set('endDate', params.endDate);
+  if (params.window) qs.set('window', params.window);
   if (params.minBond != null && params.minBond !== '') qs.set('minBond', String(params.minBond));
   if (params.maxBond != null && params.maxBond !== '') qs.set('maxBond', String(params.maxBond));
   if (params.stage) qs.set('stage', params.stage);
+  if (params.county) qs.set('county', params.county);
   return qs.toString();
 }
 

@@ -2,6 +2,7 @@
 /* global process */
 // server/src/routes/dashboard.js
 import { Router } from 'express';
+import { bucketsForWindow, legacyWindowForBucket } from '../lib/buckets.js';
 import mongoose from 'mongoose';
 import Message from '../models/Message.js';   // optional
 import Job from '../models/Job.js';           // optional
@@ -169,6 +170,7 @@ const bucketWindowConfig = {
 // No time-bucket based matching now; windows derive from booking_dt only
 
 // Day-anchored window matching: 24h = today, 48h = yesterday, 72h = two days ago, etc.
+// Legacy calendar (pre-contract) window matching (retained as fallback)
 const buildWindowMatch = (win) => {
   const now = new Date();
   const ymd = (d) => ymdInTZ(d);
@@ -193,6 +195,21 @@ const buildWindowMatch = (win) => {
     case '24h':
     default:
       return { $and: [ { booking_date_n: today }, { category: { $ne: 'Civil' } } ] };
+  }
+};
+
+// New v2 bucket-based window match using time_bucket_v2 taxonomy.
+// Windows 24h/48h/72h map to single buckets. 7d/30d are bucket unions.
+const buildWindowMatchV2 = (win) => {
+  const w = (win || '').toLowerCase();
+  // Buckets for discrete windows – direct equality.
+  switch (w) {
+    case '24h': return { time_bucket_v2: '0_24h' };
+    case '48h': return { time_bucket_v2: '24_48h' };
+    case '72h': return { time_bucket_v2: '48_72h' };
+    case '7d':  return { time_bucket_v2: { $in: ['0_24h','24_48h','48_72h','3d_7d'] } };
+    case '30d': return { time_bucket_v2: { $in: ['0_24h','24_48h','48_72h','3d_7d','7d_30d'] } };
+    default:    return { time_bucket_v2: '0_24h' };
   }
 };
 
@@ -725,12 +742,12 @@ async function countByMatch(db, match) {
   return doc ? doc.n : 0;
 }
 
-async function countByWindow(db, win) {
-  return countByMatch(db, buildWindowMatch(win));
+async function countByWindow(db, win, useV2 = false) {
+  return countByMatch(db, useV2 ? buildWindowMatchV2(win) : buildWindowMatch(win));
 }
 
-async function sumBondForWindow(db, win) {
-  const match = buildWindowMatch(win);
+async function sumBondForWindow(db, win, useV2 = false) {
+  const match = useV2 ? buildWindowMatchV2(win) : buildWindowMatch(win);
   if (!match || (typeof match === 'object' && !Object.keys(match).length)) return 0;
   const s = JSON.stringify(match);
   const needsBooking = s.includes('booking_date');
@@ -752,8 +769,8 @@ async function sumBondForWindow(db, win) {
   return doc ? doc.total : 0;
 }
 
-async function bondByCountyForWindow(db, win) {
-  const match = buildWindowMatch(win);
+async function bondByCountyForWindow(db, win, useV2 = false) {
+  const match = useV2 ? buildWindowMatchV2(win) : buildWindowMatch(win);
   if (!match || (typeof match === 'object' && !Object.keys(match).length)) return [];
   const s = JSON.stringify(match);
   const needsBooking = s.includes('booking_date');
@@ -833,16 +850,17 @@ function attentionStages(attentionOnly = false) {
 }
 
 // ===== KPIs =====
-r.get('/kpis', async (_req, res) => {
+r.get('/kpis', async (req, res) => {
   const db = ensureDb(res); if (!db) return;
+  const useV2 = !!req.app?.locals?.flags?.USE_TIME_BUCKET_V2;
   const key = 'kpis:v1';
   const { fromCache, data } = await withCache(key, async () => {
     const [c24, c48, c72, c7, c30] = await Promise.all([
-      countByWindow(db, '24h'),
-      countByWindow(db, '48h'),
-      countByWindow(db, '72h'),
-      countByWindow(db, '7d'),
-      countByWindow(db, '30d'),
+      countByWindow(db, '24h', useV2),
+      countByWindow(db, '48h', useV2),
+      countByWindow(db, '72h', useV2),
+      countByWindow(db, '7d',  useV2),
+      countByWindow(db, '30d', useV2),
     ]);
     const perCountyBond = await adaptiveBondByCounty(db, ['24h', '48h', '72h', '7d']);
     const bondTotal = perCountyBond.reduce((s, r) => s + (r.value || 0), 0);
@@ -900,6 +918,7 @@ r.get('/kpis', async (_req, res) => {
       perCountyLastData,
       contacted24h,
       windowsUsed: ['24h','48h','72h','7d','30d'],
+      mode: useV2 ? 'v2_buckets' : 'legacy'
     };
   });
   res.set('X-Cache', fromCache ? 'HIT' : 'MISS');
@@ -911,12 +930,13 @@ r.get('/top', async (req, res) => {
   const db = ensureDb(res); if (!db) return;
   const limit = Math.min(Math.max(parseInt(req.query.limit || '10', 10), 1), 200);
   const requestedWindow = String(req.query.window || '24h').toLowerCase();
+  const useV2 = !!req.app?.locals?.flags?.USE_TIME_BUCKET_V2;
   const countyFilter = req.query.county ? { county: req.query.county } : null;
   let windowUsed = requestedWindow;
   const cacheKey = `top:v1:${requestedWindow}:${limit}:${countyFilter ? countyFilter.county : 'all'}:${req.query.attention === '1' || req.query.attention === 'true'}`;
 
   const basePipeline = (matchExpr) => ([
-    ...unionAll(matchExpr, P),
+    ...unionAll(matchExpr, { ...P, booking_datetime: 1, time_bucket_v2: 1, booking_derivation_source: 1 }),
     ...attentionStages(req.query.attention === '1' || req.query.attention === 'true'),
     ...(countyFilter ? [{ $match: countyFilter }] : []),
     { $set: { sortValue: { $cond: [ { $isNumber: '$bond_amount' }, '$bond_amount', { $toDouble: { $ifNull: ['$bond', 0] } } ] } } },
@@ -941,16 +961,21 @@ r.get('/top', async (req, res) => {
         needs_attention: 1,
         attention_reasons: 1,
         time_bucket: 1,
+        time_bucket_v2: 1,
+        booking_datetime: 1,
+        booking_derivation_source: 1,
         normalized_at: 1,
         scraped_at: 1,
       }}
   ]);
 
   const { fromCache, data } = await withCache(cacheKey, async () => {
-    const aggItemsTop = baseColl(db).aggregate(basePipeline(buildWindowMatch(requestedWindow)));
+    const matchPrimary = useV2 ? buildWindowMatchV2(requestedWindow) : buildWindowMatch(requestedWindow);
+    const aggItemsTop = baseColl(db).aggregate(basePipeline(matchPrimary));
     let items = await withTimeout((aggItemsTop.maxTimeMS ? aggItemsTop.maxTimeMS(MAX_DB_MS) : aggItemsTop).toArray(), MAX_DB_MS).catch(() => []);
     if (requestedWindow === '24h' && items.length === 0) {
-      const agg2 = baseColl(db).aggregate(basePipeline(buildWindowMatch('48h')));
+      const fallbackMatch = useV2 ? buildWindowMatchV2('48h') : buildWindowMatch('48h');
+      const agg2 = baseColl(db).aggregate(basePipeline(fallbackMatch));
       items = await withTimeout((agg2.maxTimeMS ? agg2.maxTimeMS(MAX_DB_MS) : agg2).toArray(), MAX_DB_MS).catch(() => []);
       if (items.length) windowUsed = '48h';
     }
@@ -961,9 +986,10 @@ r.get('/top', async (req, res) => {
         contacted: meta.contactSet.has(String(item.id)),
         last_contact_at: meta.lastMap.get(String(item.id)) || null,
         windowUsed,
+        mapped_window: useV2 ? (item.time_bucket_v2 === '0_24h' ? '24h' : item.time_bucket_v2 === '24_48h' ? '48h' : item.time_bucket_v2 === '48_72h' ? '72h' : null) : windowUsed,
       }));
     }
-    return items;
+    return { items, mode: useV2 ? 'v2_buckets' : 'legacy' };
   });
   res.set('X-Cache', fromCache ? 'HIT' : 'MISS');
   res.json(data);
@@ -972,13 +998,14 @@ r.get('/top', async (req, res) => {
 // ===== NEW (today) =====
 r.get('/new', async (req, res) => {
   const db = ensureDb(res); if (!db) return;
+  const useV2 = !!req.app?.locals?.flags?.USE_TIME_BUCKET_V2;
   const countyFilter = req.query.county ? { county: req.query.county } : null;
   const limit = Math.min(Math.max(parseInt(req.query.limit || '10', 10), 1), 200);
 
   const cacheKey = `new:v1:${limit}:${countyFilter ? countyFilter.county : 'all'}:${req.query.attention === '1' || req.query.attention === 'true'}`;
   const { fromCache, data } = await withCache(cacheKey, async () => {
   const aggItemsNew = baseColl(db).aggregate([
-  ...unionAll(buildWindowMatch('24h'), P),
+  ...unionAll(useV2 ? buildWindowMatchV2('24h') : buildWindowMatch('24h'), { ...P, booking_datetime: 1, time_bucket_v2: 1, booking_derivation_source: 1 }),
     ...attentionStages(req.query.attention === '1' || req.query.attention === 'true'),
     ...(countyFilter ? [{ $match: countyFilter }] : []),
   { $sort: { booking_dt: -1, booking_date: -1, bond_amount: -1 } },
@@ -1004,6 +1031,9 @@ r.get('/new', async (req, res) => {
         needs_attention: 1,
         attention_reasons: 1,
         time_bucket: 1,
+        time_bucket_v2: 1,
+        booking_datetime: 1,
+        booking_derivation_source: 1,
         normalized_at: 1,
         scraped_at: 1,
       }}
@@ -1014,6 +1044,7 @@ r.get('/new', async (req, res) => {
       ...it,
       contacted: metaNew.contactSet.has(String(it.id)),
       last_contact_at: metaNew.lastMap.get(String(it.id)) || null,
+      mapped_window: useV2 ? (it.time_bucket_v2 === '0_24h' ? '24h' : null) : '24h'
     }));
     const contactedCountNew = items.filter((it) => it.contacted).length;
     const summary = {
@@ -1022,15 +1053,15 @@ r.get('/new', async (req, res) => {
       uncontacted: items.length - contactedCountNew,
     };
 
-    const aggTicker = baseColl(db).aggregate([
-    ...unionAll(buildWindowMatch('24h'), { county: 1 }),
+  const aggTicker = baseColl(db).aggregate([
+  ...unionAll(useV2 ? buildWindowMatchV2('24h') : buildWindowMatch('24h'), { county: 1 }),
     ...(countyFilter ? [{ $match: countyFilter }] : []),
     { $group: { _id: '$county', n: { $sum: 1 } } },
     { $project: { _id: 0, county: '$_id', n: 1 } },
     { $sort: { county: 1 } }
   ]);
     const ticker = await withTimeout((aggTicker.maxTimeMS ? aggTicker.maxTimeMS(MAX_DB_MS) : aggTicker).toArray(), MAX_DB_MS).catch(() => []);
-    return { items, ticker, summary, windowUsed: '24h' };
+    return { items, ticker, summary, windowUsed: '24h', mode: useV2 ? 'v2_buckets' : 'legacy' };
   });
   res.set('X-Cache', fromCache ? 'HIT' : 'MISS');
   res.json(data);
@@ -1039,23 +1070,23 @@ r.get('/new', async (req, res) => {
 // ===== RECENT (48–72h window) =====
 r.get('/recent', async (req, res) => {
   const db = ensureDb(res); if (!db) return;
+  const useV2 = !!req.app?.locals?.flags?.USE_TIME_BUCKET_V2;
   const limit = Math.min(Math.max(parseInt(req.query.limit || '10', 10), 1), 200);
   const cacheKey = `recent:v1:${limit}:${req.query.attention === '1' || req.query.attention === 'true'}`;
   const { fromCache, data } = await withCache(cacheKey, async () => {
     const [count48h, count72h, bond48h, bond72h] = await Promise.all([
-      countByWindow(db, '48h'),
-      countByWindow(db, '72h'),
-      sumBondForWindow(db, '48h'),
-      sumBondForWindow(db, '72h'),
+      countByWindow(db, '48h', useV2),
+      countByWindow(db, '72h', useV2),
+      sumBondForWindow(db, '48h', useV2),
+      sumBondForWindow(db, '72h', useV2),
     ]);
-
-  const match48 = buildWindowMatch('48h');
-  const match72 = buildWindowMatch('72h');
+  const match48 = useV2 ? buildWindowMatchV2('48h') : buildWindowMatch('48h');
+  const match72 = useV2 ? buildWindowMatchV2('72h') : buildWindowMatch('72h');
   const recentMatchOr = [match48, match72].filter((m) => m && Object.keys(m).length);
   const recentMatch = recentMatchOr.length ? { $or: recentMatchOr } : {};
 
   const aggItemsRecent = baseColl(db).aggregate([
-    ...unionAll(recentMatch, P),
+    ...unionAll(recentMatch, { ...P, booking_datetime: 1, time_bucket_v2: 1, booking_derivation_source: 1 }),
     ...attentionStages(req.query.attention === '1' || req.query.attention === 'true'),
   { $sort: { booking_dt: -1, booking_date: -1, bond_amount: -1 } },
     { $limit: limit },
@@ -1080,6 +1111,9 @@ r.get('/recent', async (req, res) => {
         bond_status: 1,
         bond_raw: 1,
         time_bucket: 1,
+        time_bucket_v2: 1,
+        booking_datetime: 1,
+        booking_derivation_source: 1,
         normalized_at: 1,
         scraped_at: 1,
       }}
@@ -1090,6 +1124,7 @@ r.get('/recent', async (req, res) => {
       ...it,
       contacted: metaRecent.contactSet.has(String(it.id)),
       last_contact_at: metaRecent.lastMap.get(String(it.id)) || null,
+      mapped_window: useV2 ? (it.time_bucket_v2 === '24_48h' ? '48h' : it.time_bucket_v2 === '48_72h' ? '72h' : null) : null,
     }));
     const contactedRecent = items.filter((it) => it.contacted).length;
 
@@ -1117,6 +1152,7 @@ r.get('/recent', async (req, res) => {
       },
       ticker,
       windowUsed: ['48h','72h'],
+      mode: useV2 ? 'v2_buckets' : 'legacy'
     };
   });
   res.set('X-Cache', fromCache ? 'HIT' : 'MISS');
@@ -1171,50 +1207,65 @@ r.get('/per-county', async (req, res) => {
   try {
     const db = ensureDb(res); if (!db) return;
     const win = (req.query.window || '24h').toLowerCase();
+    const useV2 = !!req.app?.locals?.flags?.USE_TIME_BUCKET_V2;
     const cacheKey = `perCounty:v2:${win}`;
     const { fromCache, data } = await withCache(cacheKey, async () => {
-      // Coarse lower bound: last 30 days covers all required buckets
-      const since30 = new Date(Date.now() - 30 * 24 * 3600000);
-      const match = { booking_dt: { $gte: since30 } };
-
-      // Build window predicate for bondValue based on 'win'
-      const winCond = (() => {
-        const and = (...conds) => ({ $and: conds });
-        const lt = (f, n) => ({ $lt: [f, n] });
-        const gte = (f, n) => ({ $gte: [f, n] });
-        const h = '$hoursAgo';
-        switch (win) {
-          case '24h': return lt(h, 24);
-          case '48h': return and(gte(h, 24), lt(h, 48));
-          case '72h': return and(gte(h, 48), lt(h, 72));
-          case '7d':  return lt(h, 24 * 7);
-          case '30d': return lt(h, 24 * 30);
-          default:    return lt(h, 24);
-        }
-      })();
-
-      const pipeline = [
-        ...unionAllFast(match, { county: 1, bond_amount: 1, booking_dt: 1 }, { needBond: true, needBookingDt: true }),
-        // Compute age in hours using booking_dt vs $$NOW
-        { $set: { hoursAgo: { $dateDiff: { startDate: '$booking_dt', endDate: '$$NOW', unit: 'hour' } } } },
-        {
-          $group: {
-            _id: '$county',
-            today:      { $sum: { $cond: [{ $lt: ['$hoursAgo', 24] }, 1, 0] } },
-            yesterday:  { $sum: { $cond: [{ $and: [{ $gte: ['$hoursAgo', 24] }, { $lt: ['$hoursAgo', 48] }] }, 1, 0] } },
-            twoDaysAgo: { $sum: { $cond: [{ $and: [{ $gte: ['$hoursAgo', 48] }, { $lt: ['$hoursAgo', 72] }] }, 1, 0] } },
-            last7d:     { $sum: { $cond: [{ $lt: ['$hoursAgo', 24 * 7] }, 1, 0] } },
-            last30d:    { $sum: { $cond: [{ $lt: ['$hoursAgo', 24 * 30] }, 1, 0] } },
-            bondToday:  { $sum: { $cond: [{ $lt: ['$hoursAgo', 24] }, { $ifNull: ['$bond_amount', 0] }, 0] } },
-            bondWindow: { $sum: { $cond: [winCond, { $ifNull: ['$bond_amount', 0] }, 0] } },
+      let rows = [];
+      if (useV2) {
+        // Bucket-based grouping path
+        const bucketPipeline = [
+          ...unionAllFast({}, { county: 1, time_bucket_v2: 1, bond_amount: 1 }, { needBond: true }),
+          { $group: { _id: { county: '$county', b: '$time_bucket_v2' }, n: { $sum: 1 }, bondSum: { $sum: { $ifNull: ['$bond_amount', 0] } } } },
+          { $project: { _id: 0, county: '$_id.county', bucket: '$_id.b', n: 1, bondSum: 1 } }
+        ];
+        const aggB = baseColl(db).aggregate(bucketPipeline, { allowDiskUse: true });
+        const bucketRows = await withTimeout((aggB.maxTimeMS ? aggB.maxTimeMS(MAX_DB_MS) : aggB).toArray(), MAX_DB_MS).catch(() => []);
+        const byCounty = new Map();
+        bucketRows.forEach(r => {
+          const c = r.county; if (!byCounty.has(c)) byCounty.set(c, { county: c, counts: { today:0,yesterday:0,twoDaysAgo:0,last7d:0,last30d:0 }, bondValue:0, bondToday:0 });
+          const rec = byCounty.get(c);
+          switch (r.bucket) {
+            case '0_24h': rec.counts.today += r.n; rec.bondToday += r.bondSum; break;
+            case '24_48h': rec.counts.yesterday += r.n; break;
+            case '48_72h': rec.counts.twoDaysAgo += r.n; break;
+            default: break;
           }
-        },
-        { $project: { _id: 0, county: '$_id', counts: { today: '$today', yesterday: '$yesterday', twoDaysAgo: '$twoDaysAgo', last7d: '$last7d', last30d: '$last30d' }, bondValue: '$bondWindow', bondToday: 1 } },
-        { $sort: { county: 1 } },
-      ];
-
-      const agg = baseColl(db).aggregate(pipeline, { allowDiskUse: true });
-      const rows = await withTimeout((agg.maxTimeMS ? agg.maxTimeMS(MAX_DB_MS) : agg).toArray(), MAX_DB_MS).catch(() => []);
+          // Aggregated windows
+          if (['0_24h','24_48h','48_72h','3d_7d'].includes(r.bucket)) rec.counts.last7d += r.n;
+          if (['0_24h','24_48h','48_72h','3d_7d','7d_30d'].includes(r.bucket)) rec.counts.last30d += r.n;
+          // Bond window for requested win
+          const bucketsForWin = bucketsForWindow(win);
+            if (bucketsForWin.includes(r.bucket)) rec.bondValue += r.bondSum;
+        });
+        rows = Array.from(byCounty.values()).sort((a,b)=>a.county.localeCompare(b.county));
+      } else {
+        // Legacy hour-diff path
+        const since30 = new Date(Date.now() - 30 * 24 * 3600000);
+        const match = { booking_dt: { $gte: since30 } };
+        const winCond = (() => {
+          const and = (...conds) => ({ $and: conds });
+          const lt = (f, n) => ({ $lt: [f, n] });
+          const gte = (f, n) => ({ $gte: [f, n] });
+          const h = '$hoursAgo';
+          switch (win) {
+            case '24h': return lt(h, 24);
+            case '48h': return and(gte(h, 24), lt(h, 48));
+            case '72h': return and(gte(h, 48), lt(h, 72));
+            case '7d':  return lt(h, 24 * 7);
+            case '30d': return lt(h, 24 * 30);
+            default:    return lt(h, 24);
+          }
+        })();
+        const pipeline = [
+          ...unionAllFast(match, { county: 1, bond_amount: 1, booking_dt: 1 }, { needBond: true, needBookingDt: true }),
+          { $set: { hoursAgo: { $dateDiff: { startDate: '$booking_dt', endDate: '$$NOW', unit: 'hour' } } } },
+          { $group: { _id: '$county', today: { $sum: { $cond: [{ $lt: ['$hoursAgo', 24] }, 1, 0] } }, yesterday: { $sum: { $cond: [{ $and: [{ $gte: ['$hoursAgo', 24] }, { $lt: ['$hoursAgo', 48] }] }, 1, 0] } }, twoDaysAgo: { $sum: { $cond: [{ $and: [{ $gte: ['$hoursAgo', 48] }, { $lt: ['$hoursAgo', 72] }] }, 1, 0] } }, last7d: { $sum: { $cond: [{ $lt: ['$hoursAgo', 24 * 7] }, 1, 0] } }, last30d: { $sum: { $cond: [{ $lt: ['$hoursAgo', 24 * 30] }, 1, 0] } }, bondToday: { $sum: { $cond: [{ $lt: ['$hoursAgo', 24] }, { $ifNull: ['$bond_amount', 0] }, 0] } }, bondWindow: { $sum: { $cond: [winCond, { $ifNull: ['$bond_amount', 0] }, 0] } } } },
+          { $project: { _id: 0, county: '$_id', counts: { today: '$today', yesterday: '$yesterday', twoDaysAgo: '$twoDaysAgo', last7d: '$last7d', last30d: '$last30d' }, bondValue: '$bondWindow', bondToday: 1 } },
+          { $sort: { county: 1 } }
+        ];
+        const agg = baseColl(db).aggregate(pipeline, { allowDiskUse: true });
+        rows = await withTimeout((agg.maxTimeMS ? agg.maxTimeMS(MAX_DB_MS) : agg).toArray(), MAX_DB_MS).catch(() => []);
+      }
 
       // Ensure all counties are present
       const counties = COUNTY_COLLECTIONS.map((c) => c.replace('simple_', ''));
@@ -1237,8 +1288,9 @@ r.get('/per-county', async (req, res) => {
 r.get('/diag', async (req, res) => {
   const db = ensureDb(res); if (!db) return;
   const win = (req.query.window || '24h').toLowerCase();
+  const useV2 = !!req.app?.locals?.flags?.USE_TIME_BUCKET_V2;
   const rawMode = req.query.raw === '1' || req.query.raw === 'true';
-  const match = rawMode ? {} : buildWindowMatch(win);
+  const match = rawMode ? {} : (useV2 ? buildWindowMatchV2(win) : buildWindowMatch(win));
 
   // Extract booking_dt range (our buildWindowMatch returns {$and:[ {...}, ... ]})
   let since = null; let until = null;
@@ -1255,9 +1307,9 @@ r.get('/diag', async (req, res) => {
   const now = new Date();
   const since48 = new Date(now.getTime() - 48 * 3600000);
   const pipeline = [
-    ...unionAllFast(match, { county: 1, booking_dt: 1, bond_amount: 1, booking_date: 1 }, { needBookingDt: true, needBond: true }),
+    ...unionAllFast(match, { county: 1, booking_dt: 1, bond_amount: 1, booking_date: 1, time_bucket_v2: 1, booking_datetime: 1, booking_derivation_source: 1 }, { needBookingDt: true, needBond: true }),
     { $facet: Object.assign({
-      sample: [ { $sort: { booking_dt: -1 } }, { $limit: 5 }, { $project: { _id: 0, county: 1, booking_dt: 1, bond_amount: 1, booking_date: 1 } } ],
+      sample: [ { $sort: { booking_dt: -1 } }, { $limit: 5 }, { $project: { _id: 0, county: 1, booking_dt: 1, bond_amount: 1, booking_date: 1, time_bucket_v2: 1 } } ],
       stats: [ { $group: { _id: null, count: { $sum: 1 }, bondSum: { $sum: { $ifNull: ['$bond_amount', 0] } } } } ]
     }, rawMode ? {
       recentBookingDtAudit: [
@@ -1269,11 +1321,22 @@ r.get('/diag', async (req, res) => {
         { $match: { booking_date: { $gte: ymdInTZ(since48) } } },
         { $sort: { booking_dt: -1 } },
         { $limit: 10 },
-        { $project: { _id: 0, county: 1, booking_date: 1, booking_dt: 1, bond_amount: 1 } }
+        { $project: { _id: 0, county: 1, booking_date: 1, booking_dt: 1, bond_amount: 1, time_bucket_v2: 1 } }
+      ]
+    } : {}, useV2 ? {
+      bucketDist: [
+        { $group: { _id: '$time_bucket_v2', n: { $sum: 1 } } },
+        { $project: { _id: 0, bucket: '$_id', n: 1 } },
+        { $sort: { bucket: 1 } }
+      ],
+      bucketCoverage: [
+        { $group: { _id: null, withBucket: { $sum: { $cond: [{ $ne: ['$time_bucket_v2', null] }, 1, 0] } }, withoutBucket: { $sum: { $cond: [{ $eq: ['$time_bucket_v2', null] }, 1, 0] } } } },
+        { $project: { _id: 0, withBucket: 1, withoutBucket: 1, coverageRate: { $cond: [{ $gt: [{ $add: ['$withBucket', '$withoutBucket'] }, 0] }, { $divide: ['$withBucket', { $add: ['$withBucket', '$withoutBucket'] }] }, 0] } } }
       ]
     } : {}) }
   ];
   let count = 0; let bondSum = 0; let sample = []; let recentAudit = []; let recentLatest = [];
+  let bucketDist = []; let bucketCoverage = null;
   try {
     const agg = baseColl(db).aggregate(pipeline, { allowDiskUse: true });
     const doc = await withTimeout((agg.maxTimeMS ? agg.maxTimeMS(MAX_DB_MS) : agg).next(), MAX_DB_MS, 'diag.facet').catch(() => null);
@@ -1287,12 +1350,16 @@ r.get('/diag', async (req, res) => {
         recentAudit = doc.recentBookingDtAudit || [];
         recentLatest = doc.recentLatest || [];
       }
+      if (useV2) {
+        bucketDist = doc.bucketDist || [];
+        bucketCoverage = Array.isArray(doc.bucketCoverage) && doc.bucketCoverage.length ? doc.bucketCoverage[0] : null;
+      }
     }
   } catch (e) {
     return res.status(500).json({ error: 'diag failed', message: e?.message });
   }
   res.set('X-Perf-Window', win);
-  res.json({ window: win, windowUsed: win, rawMode, since, until, match, count, bondSum, sample, recentAudit, recentLatest });
+  res.json({ window: win, windowUsed: win, mode: useV2 ? 'v2_buckets' : 'legacy', rawMode, since, until, match, count, bondSum, sample, recentAudit, recentLatest, bucketDist, bucketCoverage });
 });
 
 export default r;

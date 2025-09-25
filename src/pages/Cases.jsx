@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
+import { useLocation } from 'react-router-dom';
 import { useQueryClient } from '@tanstack/react-query';
 import { useNavigate } from 'react-router-dom';
 import { PageHeader, SummaryStat, PageToolbar, FilterPills, DataTable, SectionCard } from '../components/PageToolkit';
@@ -13,6 +14,7 @@ const RESULT_LIMIT = 25;
 const WINDOW_OPTIONS = [
   { id: 'all', label: 'All time' },
   { id: '24h', label: 'Last 24h' },
+  { id: '48-72h', label: '48–72h' },
   { id: '48h', label: 'Last 48h' },
   { id: '72h', label: 'Last 72h' },
 ];
@@ -70,27 +72,28 @@ const daysAgo = (sourceDate, days) => {
 };
 
 function computeWindowRange(windowId) {
-  if (windowId === 'all') return {};
+  // For rolling windows (24h/48h/72h) let the server compute by booking time via ?window; return empty.
+  if (windowId === 'all' || windowId === '24h' || windowId === '48h' || windowId === '72h') return {};
+
+  // Handle "recent" 48–72h window from dashboard deep-links
+  if (windowId === '48-72h' || windowId === '48–72h' || windowId === 'recent') {
+    const now = Date.now();
+    const start = new Date(now - 72 * 60 * 60 * 1000); // 72h ago (inclusive)
+    const end = new Date(now - 48 * 60 * 60 * 1000);   // 48h ago (exclusive upper bound)
+    // We send inclusive YYYY-MM-DD to the server which compares string dates on booking_date
+    // This approximates [72h, 48h) by full-day boundaries in local TZ.
+    return { startDate: formatDate(start), endDate: formatDate(end) };
+  }
+
+  // Default: clamp to the last N days
   const today = new Date();
   const endDate = formatDate(today);
-  const clone = new Date(today);
-  switch (windowId) {
-    case '24h':
-      break;
-    case '48h':
-      clone.setDate(clone.getDate() - 1);
-      break;
-    case '72h':
-      clone.setDate(clone.getDate() - 2);
-      break;
-    default:
-      break;
-  }
-  const startDate = formatDate(clone);
+  const startDate = formatDate(daysAgo(today, DEFAULT_CASE_WINDOW_DAYS));
   return { startDate, endDate };
 }
 
 export default function Cases() {
+  const location = useLocation();
   const navigate = useNavigate();
   const queryClient = useQueryClient();
   const { data: meta } = useCaseMeta();
@@ -117,6 +120,32 @@ export default function Cases() {
     return { startDate, endDate };
   }, [windowId]);
 
+  // Initialize filters from URL query params (e.g., /cases?county=harris&window=24h or 48-72h)
+  useEffect(() => {
+    try {
+      const sp = new URLSearchParams(location.search || '');
+      const qpCounty = sp.get('county');
+      const qpWindowRaw = sp.get('window');
+
+      if (qpCounty && COUNTIES.includes(qpCounty)) {
+        setCounty(qpCounty);
+      }
+
+      if (qpWindowRaw) {
+        const w = qpWindowRaw.toLowerCase();
+        if (w === '24h' || w === '48h' || w === '72h') {
+          setWindowId(w);
+        } else if (w === '48-72h' || w === '48–72h' || w === 'recent') {
+          // Support dashboard "recent" deep-links
+          setWindowId('48-72h');
+        }
+      }
+    } catch {
+      // ignore malformed URLs
+    }
+    // Run on location.search change
+  }, [location.search]);
+
   const filters = useMemo(() => ({
     query: search.trim() || undefined,
     county: county !== 'all' ? county : undefined,
@@ -131,6 +160,8 @@ export default function Cases() {
     stage: stageFilter !== 'all' ? stageFilter : undefined,
     startDate: effectiveRange.startDate,
     endDate: effectiveRange.endDate,
+    // Only pass recognized rolling windows to the server; compute others (like 48-72h) via start/end
+    window: (windowId === '24h' || windowId === '48h' || windowId === '72h') ? windowId : undefined,
   }), [
     search,
     county,
@@ -143,6 +174,7 @@ export default function Cases() {
     stageFilter,
     effectiveRange.startDate,
     effectiveRange.endDate,
+    windowId,
   ]);
 
   const { data, isLoading, isError, error, refetch, isFetching } = useCases(filters);
@@ -216,6 +248,15 @@ export default function Cases() {
       const caseId = String(item._id || item.id || item.case_number || id);
       const assignedOwner = item.crm_details?.assignedTo || '';
       const followUpIso = item.crm_details?.followUpAt || null;
+      const ageMs = (() => {
+        const ref = item.booking_date;
+        if (!ref) return null;
+        const iso = /^\d{4}-\d{2}-\d{2}$/.test(ref) ? `${ref}T00:00:00Z` : ref;
+        const d = new Date(iso);
+        return !Number.isNaN(d.getTime()) ? (Date.now() - d.getTime()) : null;
+      })();
+      const ageHours = ageMs != null ? Math.floor(ageMs / (1000 * 60 * 60)) : null;
+      const ageDays = ageHours != null ? Math.floor(ageHours / 24) : null;
       return {
         key: id,
         caseId,
@@ -234,6 +275,9 @@ export default function Cases() {
       lastContact: item.last_contact_at ? new Date(item.last_contact_at).toLocaleString() : '—',
       assignedTo: assignedOwner,
       followUpAt: followUpIso,
+        ageLabel: (ageHours != null)
+          ? (ageHours < 24 ? `${ageHours}h` : `${ageDays}d ${ageHours % 24}h`)
+          : '—',
       raw: item,
     };
     })
@@ -482,6 +526,7 @@ export default function Cases() {
                   { key: 'id', header: 'Case ID' },
                   { key: 'county', header: 'County' },
                   { key: 'bookingDate', header: 'Booked' },
+                  { key: 'ageLabel', header: 'Age' },
                   {
                     key: 'bondAmount',
                     header: 'Bond',
