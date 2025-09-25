@@ -1,5 +1,6 @@
 // src/hooks/dashboard.js
 import { useQuery } from '@tanstack/react-query';
+// NOTE: For aggregated polling across multiple endpoints prefer useSerializedPolling in polling.js
 
 // Base URL – works with your root .env: VITE_API_URL=http://localhost:8080/api
 export const API_BASE =
