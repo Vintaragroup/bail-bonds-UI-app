@@ -22,3 +22,9 @@ dist-ssr
 *.njsproj
 *.sln
 *.sw?
+
+# Ephemeral dashboard artifacts
+tmp/*.har
+tmp/*.sanitized.har
+tmp/*HAR_v*.har
+/tmp/Bail Bonds Dashboard not connected.html
