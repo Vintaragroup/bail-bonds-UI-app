@@ -49,6 +49,10 @@ export default function DashboardDebugPanel({ refreshInterval = 60000 }) {
     return { route, count: m.count, errors: m.errors, p50: m.p50, p90: m.p90, p95: m.p95, p99: m.p99, variants: m.variants };
   }).sort((a,b) => a.route.localeCompare(b.route));
 
+  const adaptiveMeta = agg?.getMetaSnapshot ? agg.getMetaSnapshot() : agg?.meta || {};
+  const adaptiveKeys = Object.keys(adaptiveMeta).sort();
+  const resetAll = () => agg?.resetAdaptive && agg.resetAdaptive();
+
   return (
     <div className="fixed bottom-4 right-4 z-50 max-w-md w-[420px] bg-white border border-slate-300 shadow-xl rounded-xl text-[11px] font-mono p-3 space-y-2">
       <div className="flex items-center justify-between">
@@ -109,15 +113,37 @@ export default function DashboardDebugPanel({ refreshInterval = 60000 }) {
       </div>
 
       <div>
-        <div className="font-semibold text-slate-600 mb-1">Adaptive State</div>
-        <pre className="bg-slate-50 rounded p-2 max-h-32 overflow-auto whitespace-pre-wrap leading-tight">
-          {Object.entries(agg?.data||{}).filter(([k]) => !k.endsWith('__variant')).slice(0,3).map(([k,v]) => {
-            if (!v) return null;
-            if (Array.isArray(v)) return `${k}: arr[len=${v.length}]`;
-            if (v && typeof v === 'object' && Array.isArray(v.items)) return `${k}: items[len=${v.items.length}]`;
-            return `${k}: type=${typeof v}`;
-          }).join('\n')}
-        </pre>
+        <div className="flex items-center justify-between mb-1">
+          <div className="font-semibold text-slate-600">Adaptive State</div>
+          <button onClick={resetAll} className="px-1.5 py-0.5 rounded bg-slate-100 hover:bg-slate-200 text-slate-700">Reset</button>
+        </div>
+        <div className="max-h-40 overflow-auto border border-slate-200 rounded">
+          <table className="min-w-full text-[10px]">
+            <thead className="bg-slate-50 sticky top-0">
+              <tr>
+                <th className="text-left px-1 py-0.5">Key</th>
+                <th className="text-right px-1 py-0.5">Mult</th>
+                <th className="text-right px-1 py-0.5">Stable</th>
+                <th className="text-right px-1 py-0.5">Backoff</th>
+                <th className="text-right px-1 py-0.5">ETA</th>
+              </tr>
+            </thead>
+            <tbody>
+              {adaptiveKeys.map(k => {
+                const m = adaptiveMeta[k];
+                return (
+                  <tr key={k} className="odd:bg-white even:bg-slate-50">
+                    <td className="px-1 py-0.5 truncate max-w-[90px]" title={k}>{k}</td>
+                    <td className="px-1 py-0.5 text-right tabular-nums">{m.intervalMultiplier}</td>
+                    <td className="px-1 py-0.5 text-right tabular-nums">{m.stable}</td>
+                    <td className="px-1 py-0.5 text-right tabular-nums">{m.backoff ? prettyMillis(m.backoff) : '—'}</td>
+                    <td className="px-1 py-0.5 text-right tabular-nums" title={`nextAt=${new Date(m.nextAt).toLocaleTimeString()}`}>{prettyMillis(m.etaMs)}</td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
       </div>
     </div>
   );

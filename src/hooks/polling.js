@@ -188,7 +188,38 @@ export function useSerializedPolling(endpoints, { enabled = true, align = true, 
     return () => { if (typeof document !== 'undefined') document.removeEventListener('visibilitychange', onVisibility); };
   }, [refresh]);
 
-  return { data, errors, refresh, running };
+  const getMetaSnapshot = useCallback(() => {
+    const out = {};
+    Object.entries(metaRef.current).forEach(([k, v]) => {
+      const interval = (endpoints.find(ep => ep.key === k)?.interval) || 60000;
+      const mult = v.intervalMultiplier || 1;
+      const nextAt = (v.last || 0) + interval * mult + (v.backoff || 0);
+      out[k] = {
+        last: v.last,
+        backoff: v.backoff,
+        stable: v.stable,
+        intervalMultiplier: mult,
+        effectiveInterval: interval * mult,
+        nextAt,
+        etaMs: Math.max(0, nextAt - Date.now()),
+      };
+    });
+    return out;
+  }, [endpoints]);
+
+  const resetAdaptive = useCallback((keys) => {
+    const target = keys && keys.length ? keys : Object.keys(metaRef.current);
+    target.forEach(k => {
+      if (!metaRef.current[k]) return;
+      metaRef.current[k].stable = 0;
+      metaRef.current[k].intervalMultiplier = 1;
+      metaRef.current[k].hash = null;
+      metaRef.current[k].last = 0; // make eligible immediately
+    });
+    refresh();
+  }, [refresh]);
+
+  return { data, errors, refresh, running, meta: getMetaSnapshot(), getMetaSnapshot, resetAdaptive };
 }
 
 export default useSerializedPolling;

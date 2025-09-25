@@ -1,6 +1,55 @@
 # Bail-Bonds Dashboard (UI + API)
 
 This repository contains:
+## Time Bucket Model (v2 Default)
+The dashboard now uses a canonical time bucket taxonomy (`time_bucket_v2`) enabled by default:
+`0_24h, 24_48h, 48_72h, 3d_7d, 7d_30d, 30d_60d, 60d_plus`.
+
+To temporarily revert to legacy hour-diff logic set:
+
+```bash
+DISABLE_TIME_BUCKET_V2=true
+```
+
+Otherwise no flag is required—v2 is on by default.
+
+## Adaptive Serialized Polling
+Front-end polling of dashboard endpoints is consolidated into a single serialized loop (`useSerializedPolling`).
+Each endpoint has a base interval; if returned data is unchanged the interval is multiplied (x2 at 3 stable cycles, x4 at 6, x8 at 12) and resets on change or tab visibility regain.
+You can reset adaptive state via the Debug Panel (see below) or programmatically with `resetAdaptive()` from the provider.
+
+## Debug Panel
+Activate with `?debug=1` in the dashboard URL or set `window.__DASH_DEBUG__ = true` in the console.
+Shows:
+- Variant headers (fast path vs fallback) per endpoint
+- Route metrics (count, errors, p95 latency, variant distribution)
+- Adaptive meta table (multiplier, stable cycles, backoff, ETA)
+- Manual reload & adaptive reset controls
+
+## Scripts (Root)
+```bash
+npm run server:dev          # nodemon backend
+npm run server:start        # production-style start
+npm run validate:windows    # correctness validator vs Mongo
+npm run smoke:dashboard     # quick KPI/top/new/recent sanity
+npm run smoke:trends        # trends spans smoke (7,14,30)
+```
+
+## Validator Notes
+`validate-windows.mjs` now expects v2 buckets; it fails if the API reports a legacy mode (which only happens if you explicitly set `DISABLE_TIME_BUCKET_V2=true`).
+
+## Observability
+- `/api/dashboard/metrics` exposes in-memory route timing & variant counts.
+- Variant headers: `X-Top-Variant`, `X-New-Variant`, `X-Recent-Variant`, `X-PerCounty-Variant`, and `X-Path-Variant` (KPIs) allow fast-path validation.
+
+## Future Enhancements (Optional)
+- Persist metrics snapshots.
+- Expand aggregated provider to additional windows on demand.
+- Add CI smoke run using the validator with a seeded fixture dataset.
+
+# Bail-Bonds Dashboard (UI + API)
+
+This repository contains:
 - Frontend: React + Vite app under `src/`
 - Backend API: Express + Mongoose under `server/`
 

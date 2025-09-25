@@ -4,7 +4,7 @@
  Compares API-visible booking window counts with direct Mongo aggregation over time_bucket_v2.
 
  Requirements:
-  - Server running with USE_TIME_BUCKET_V2=true
+  - Server running with default v2 buckets (this is now automatic unless DISABLE_TIME_BUCKET_V2=true is set)
   - MONGO_URI / MONGO_DB env vars available (or pass via CLI)
 
  Usage:
@@ -80,7 +80,7 @@ function passFail(label, expected, actual, meta = {}) {
 
   const apiOk = await waitForApi(API_BASE + '/dashboard'.replace(/\/dashboard$/, '')); // ensure base alive
   if (!apiOk) {
-    console.error(`API not reachable at ${API_BASE}. Start server first (e.g. USE_TIME_BUCKET_V2=true node src/index.js)`);
+  console.error(`API not reachable at ${API_BASE}. Start server first (v2 buckets are default; set DISABLE_TIME_BUCKET_V2=true only to opt-out).`);
     process.exit(3);
   }
 

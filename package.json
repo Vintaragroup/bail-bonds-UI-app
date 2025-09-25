@@ -12,6 +12,7 @@
     "server:start": "npm --prefix server run start",
     "validate:windows": "npm --prefix server run validate:windows",
     "smoke:dashboard": "npm --prefix server run smoke:dashboard"
+    ,"smoke:trends": "npm --prefix server run smoke:trends"
   },
   "dependencies": {
     "@tanstack/react-query": "^5.87.1",

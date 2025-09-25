@@ -8,6 +8,7 @@
     "dev": "nodemon --watch src src/index.js",
     "start": "node src/index.js",
     "smoke:dashboard": "node scripts/smoke-dashboard.mjs",
+  "smoke:trends": "node scripts/smoke-trends.mjs",
     "test:windows": "node scripts/test-windows.mjs",
     "validate:windows": "node scripts/validate-windows.mjs",
     "lint:api": "node scripts/validate-openapi.js",
