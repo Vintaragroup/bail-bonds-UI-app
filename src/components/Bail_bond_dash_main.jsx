@@ -11,6 +11,7 @@ import {
 } from '../hooks/dashboard';
 import { legacyWindowForBucket, bucketClasses } from '../lib/buckets';
 import { useCaseStats, useCases } from '../hooks/cases';
+import DashboardDebugPanel from './DashboardDebugPanel.jsx';
 
 // Always render these 5
 const ALL_COUNTIES = ['brazoria', 'fortbend', 'galveston', 'harris', 'jefferson'];
@@ -141,6 +142,11 @@ const COUNTY_SORT_OPTIONS = [
 
 const STALE_PULL_THRESHOLD_HOURS = 12;
 
+// Debug flag: toggle in console with window.__DASH_DEBUG__ = true
+if (typeof window !== 'undefined' && window.__DASH_DEBUG__ == null) {
+  window.__DASH_DEBUG__ = false;
+}
+
 // Money formatting helper
 const money = (n) => {
   const v = Number(n);
@@ -262,6 +268,8 @@ function KpiCard({ label, value, sublabel, tone = 'default', to }) {
   );
   return to ? <Link to={to}>{content}</Link> : content;
 }
+
+// Root component (search for existing default export further below). We'll inject DebugPanel near top-level container.
 
 function Panel({ title, subtitle, children, className = '', to, right }) {
   return (
@@ -391,6 +399,9 @@ export default function DashboardScreen() {
     });
     return m;
   }, [perCountyItems]);
+
+  // Determine if debug panel should render (explicit toggle or global flag)
+  const showDebugPanel = debug || (typeof window !== 'undefined' && window.__DASH_DEBUG__);
 
   // top endpoint may return either array or enriched object { items, mode }
   const topPayload = useMemo(() => {
@@ -892,6 +903,8 @@ export default function DashboardScreen() {
               <div className="space-y-4 text-sm text-slate-700">
                 <div>
                   <div className="flex items-center justify-between text-xs text-slate-500">
+
+                {showDebugPanel ? <DashboardDebugPanel /> : null}
                     <span>Needs attention</span>
                     <span>
                       {attentionSummary.needs.toLocaleString()} ({percent(attentionSummary.needs, attentionSummary.total)}%)

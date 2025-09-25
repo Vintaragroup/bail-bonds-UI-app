@@ -47,7 +47,7 @@ function buildUrl(path) {
   return u;
 }
 
-export function useSerializedPolling(endpoints, { enabled = true, align = true } = {}) {
+export function useSerializedPolling(endpoints, { enabled = true, align = true, adaptive = true } = {}) {
   const [data, setData] = useState({});
   const [errors, setErrors] = useState({});
   const [running, setRunning] = useState(false);
@@ -55,7 +55,7 @@ export function useSerializedPolling(endpoints, { enabled = true, align = true }
   const startedRef = useRef(false); // StrictMode guard
   const stopRef = useRef(false);
   const scheduleRef = useRef(null);
-  const metaRef = useRef({}); // key -> { last:0, backoff:0 }
+  const metaRef = useRef({}); // key -> { last:0, backoff:0, stable:0, hash:null, intervalMultiplier:1 }
   const queryClient = useQueryClient();
 
   const refresh = useCallback(() => {
@@ -75,16 +75,71 @@ export function useSerializedPolling(endpoints, { enabled = true, align = true }
     const visible = typeof document === 'undefined' ? true : document.visibilityState === 'visible';
 
     for (const ep of endpoints) {
-      const { key, path, interval = 60000 } = ep;
-      if (!metaRef.current[key]) metaRef.current[key] = { last: 0, backoff: 0 };
+      const { key, path, interval = 60000, adaptiveSample } = ep;
+      if (!metaRef.current[key]) metaRef.current[key] = { last: 0, backoff: 0, stable: 0, hash: null, intervalMultiplier: 1 };
       const meta = metaRef.current[key];
 
-      const due = now - meta.last >= interval;
+      // Effective interval may be scaled if adaptive enabled and payload stable
+      const effInterval = adaptive && meta.intervalMultiplier > 1 ? interval * meta.intervalMultiplier : interval;
+      const due = now - meta.last >= effInterval;
       if (!due || !visible) continue; // skip if not due or tab hidden
 
       try {
         const url = buildUrl(path);
         const { json, headers } = await fetchJSONWithHeaders(url);
+
+        // Build a small hash for adaptive comparison. Allow endpoint to provide custom sampler.
+        let hashSource;
+        try {
+          if (typeof adaptiveSample === 'function') {
+            hashSource = adaptiveSample(json);
+          } else if (json && typeof json === 'object') {
+            // Heuristic: prefer stable summary fields to avoid large stringify cost
+            if (Array.isArray(json.items)) {
+              // Sample first few items' ids + length + maybe aggregate fields
+              const first = json.items.slice(0, 5).map(it => it.id || it.case_id || it._id || it.booking_number || it.name || '').join('|');
+              hashSource = { len: json.items.length, first, extra: json.count || json.total || json.sum || null };
+            } else if (Array.isArray(json)) {
+              const first = json.slice(0, 5).map(it => (it && (it.id || it._id || it.case_id || it.booking_number || it.name)) || '').join('|');
+              hashSource = { len: json.length, first };
+            } else {
+              // Pick numeric fields + counts
+              const picked = {};
+              Object.keys(json).forEach(k => {
+                const v = json[k];
+                if (v == null) return;
+                if (typeof v === 'number' || typeof v === 'string') picked[k] = v;
+                if (Array.isArray(v)) picked[k] = v.length; // treat arrays by length only
+              });
+              hashSource = picked;
+            }
+          } else {
+            hashSource = json;
+          }
+        } catch {
+          hashSource = json;
+        }
+        const hash = (() => {
+          try { return JSON.stringify(hashSource); } catch { return String(hashSource); }
+        })();
+
+        // Compare to previous hash to adjust stability counters
+        if (adaptive) {
+          if (meta.hash && meta.hash === hash) {
+            meta.stable += 1;
+          } else {
+            meta.stable = 0;
+            meta.intervalMultiplier = 1; // reset multiplier on change
+          }
+          meta.hash = hash;
+
+          // Escalate interval multiplier based on stability plateaus
+          // Tiers: after 3 unchanged -> x2, after 6 -> x4, after 12 -> x8 (cap), reset on change/visibility toggle
+          if (meta.stable === 3) meta.intervalMultiplier = 2;
+          else if (meta.stable === 6) meta.intervalMultiplier = 4;
+          else if (meta.stable === 12) meta.intervalMultiplier = 8;
+        }
+
         setData(prev => ({ ...prev, [key]: json }));
         setErrors(prev => { const { [key]: _, ...rest } = prev; return rest; });
         meta.last = Date.now();
@@ -109,7 +164,8 @@ export function useSerializedPolling(endpoints, { enabled = true, align = true }
     const nextTimes = endpoints.map(ep => {
       const meta = metaRef.current[ep.key];
       const interval = ep.interval || 60000;
-      const baseNext = (meta.last || 0) + interval + (meta.backoff || 0);
+      const mult = adaptive && meta.intervalMultiplier ? meta.intervalMultiplier : 1;
+      const baseNext = (meta.last || 0) + interval * mult + (meta.backoff || 0);
       return baseNext;
     });
     const soonest = Math.min(...nextTimes);
