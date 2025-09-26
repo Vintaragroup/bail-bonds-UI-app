@@ -7,18 +7,19 @@ import { Label } from '../ui/label';
 import { Checkbox } from '../ui/checkbox';
 import { Alert, AlertDescription } from '../ui/alert';
 import type { AuthScreen } from './types';
+import { useUser } from '../UserContext';
 
 interface EmailPasswordLoginProps {
   onNavigate: (screen: AuthScreen) => void;
 }
 
 export function EmailPasswordLogin({ onNavigate }: EmailPasswordLoginProps) {
+  const { signInWithEmail, error: authError, loading } = useUser();
   const [showPassword, setShowPassword] = useState(false);
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [rememberMe, setRememberMe] = useState(false);
-  const [isLocked, setIsLocked] = useState(false);
-  const [errors, setErrors] = useState<{email?: string; password?: string}>({});
+  const [errors, setErrors] = useState<{email?: string; password?: string; form?: string}>({});
 
   const validateForm = () => {
     const newErrors: {email?: string; password?: string} = {};
@@ -39,15 +40,16 @@ export function EmailPasswordLogin({ onNavigate }: EmailPasswordLoginProps) {
     return Object.keys(newErrors).length === 0;
   };
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (validateForm()) {
-      // Simulate lockout for demo
-      if (email === 'locked@example.com') {
-        setIsLocked(true);
-        return;
+      try {
+        await signInWithEmail(email, password);
+        onNavigate('auth-success');
+      } catch (err) {
+        const message = err instanceof Error ? err.message : 'Unable to sign in';
+        setErrors(prev => ({ ...prev, form: message }));
       }
-      onNavigate('mfa-challenge');
     }
   };
 
@@ -72,17 +74,11 @@ export function EmailPasswordLogin({ onNavigate }: EmailPasswordLoginProps) {
             </CardDescription>
           </CardHeader>
           <CardContent>
-            {isLocked && (
+            {(errors.form || authError) && (
               <Alert className="mb-6 border-destructive/50 bg-destructive/5">
                 <AlertCircle className="h-4 w-4 text-destructive" />
                 <AlertDescription className="text-destructive">
-                  Account temporarily locked due to multiple failed attempts. 
-                  <button 
-                    onClick={() => onNavigate('account-recovery')}
-                    className="underline hover:no-underline ml-1"
-                  >
-                    Get help
-                  </button>
+                  {errors.form || authError}
                 </AlertDescription>
               </Alert>
             )}
@@ -145,8 +141,8 @@ export function EmailPasswordLogin({ onNavigate }: EmailPasswordLoginProps) {
                 </button>
               </div>
 
-              <PillButton type="submit" className="w-full h-12" disabled={isLocked}>
-                {isLocked ? 'Account Locked' : 'Sign In'}
+              <PillButton type="submit" className="w-full h-12" disabled={loading}>
+                {loading ? 'Signing in...' : 'Sign In'}
               </PillButton>
             </form>
 
