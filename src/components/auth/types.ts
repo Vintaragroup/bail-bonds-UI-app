@@ -1,0 +1,15 @@
+export type AuthScreen =
+  | 'landing'
+  | 'login'
+  | 'magic-link'
+  | 'social-redirect'
+  | 'mfa-challenge'
+  | 'mfa-enrollment'
+  | 'forgot-password'
+  | 'account-recovery'
+  | 'auth-success'
+  | 'profile-settings'
+  | 'admin-users'
+  | 'auth-audit'
+  | 'design-guide'
+  | 'avatar-showcase';

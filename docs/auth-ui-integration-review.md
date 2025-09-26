@@ -110,3 +110,6 @@ Once we settle the decisions above, we can begin editing `package.json`, `vite.c
 + **Status (2025-01-14 @ 09:45):** tsconfig added, Vite aliases configured, Tailwind/global styles layered. `package.json` updated but `npm install` needs to run outside the restricted sandbox to fetch dependencies before the next check-in.
 + **Status (2025-01-14 @ 10:05):** Removed unused `react-day-picker` dependency and calendar wrapper to keep the stack React 19 compatible prior to installing new packages.
 + **Status (2025-01-14 @ 10:20):** Hardened `DashboardDebugPanel` variant rendering to guard against nested metric objects and prevent crashes while navigating the existing dashboard.
++ **Status (2025-01-14 @ 10:30):** Working branch `feature/auth-integration-prep` created to isolate scaffold changes from the main dashboard work.
++ **Status (2025-01-14 @ 11:05):** Added `/auth/preview` route with selector-based wrapper so design stakeholders can review Figma-generated screens inside the running app without touching production flows.
++ **Status (2025-01-14 @ 11:20):** Removed unused Figma scaffolding (`tmp/`, duplicate `.jsx` copies, `src/figmaCSS`) now that TypeScript variants are wired, keeping the repo lean for integration work.

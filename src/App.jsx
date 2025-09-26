@@ -10,11 +10,13 @@ import Messages from "./pages/Messages";
 import Admin from "./pages/Admin";
 import Login from "./pages/Login";
 import Reports from "./pages/Reports";
+import AuthPreview from "./pages/AuthPreview";
 
 export default function App() {
   return (
     <Routes>
       <Route path="/login" element={<Login />} />
+      <Route path="/auth/preview" element={<AuthPreview />} />
       <Route element={<AppLayout />}>
         <Route path="/" element={<Dashboard />} />
         <Route path="/cases" element={<Cases />} />
