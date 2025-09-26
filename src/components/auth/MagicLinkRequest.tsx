@@ -5,17 +5,19 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '../ui
 import { Input } from '../ui/input';
 import { Label } from '../ui/label';
 import type { AuthScreen } from './types';
+import { useUser } from '../UserContext';
 
 interface MagicLinkRequestProps {
   onNavigate: (screen: AuthScreen) => void;
 }
 
 export function MagicLinkRequest({ onNavigate }: MagicLinkRequestProps) {
+  const { sendMagicLink, loading, error: authError } = useUser();
   const [email, setEmail] = useState('');
   const [isSuccess, setIsSuccess] = useState(false);
   const [error, setError] = useState('');
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setError('');
     
@@ -29,8 +31,13 @@ export function MagicLinkRequest({ onNavigate }: MagicLinkRequestProps) {
       return;
     }
     
-    // Simulate success
-    setIsSuccess(true);
+    try {
+      await sendMagicLink(email);
+      setIsSuccess(true);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Unable to send magic link';
+      setError(message);
+    }
   };
 
   if (isSuccess) {
@@ -106,6 +113,11 @@ export function MagicLinkRequest({ onNavigate }: MagicLinkRequestProps) {
             </CardDescription>
           </CardHeader>
           <CardContent>
+            {(error || authError) && (
+              <div className="bg-destructive/5 border border-destructive/40 rounded-lg p-3 text-sm text-destructive mb-4">
+                {error || authError}
+              </div>
+            )}
             <form onSubmit={handleSubmit} className="space-y-6">
               <div className="space-y-2">
                 <Label htmlFor="email">Email address</Label>
@@ -122,8 +134,8 @@ export function MagicLinkRequest({ onNavigate }: MagicLinkRequestProps) {
                 )}
               </div>
 
-              <PillButton type="submit" className="w-full h-12">
-                Send magic link
+              <PillButton type="submit" className="w-full h-12" disabled={loading}>
+                {loading ? 'Sending...' : 'Send magic link'}
               </PillButton>
             </form>
 

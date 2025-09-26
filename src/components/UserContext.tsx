@@ -8,6 +8,9 @@ import React, {
 } from 'react';
 import {
   signInWithEmailAndPassword,
+  sendSignInLinkToEmail,
+  isSignInWithEmailLink,
+  signInWithEmailLink,
   onAuthStateChanged,
   signOut as firebaseSignOut,
   User as FirebaseUser,
@@ -28,6 +31,7 @@ interface UserContextType {
   loading: boolean;
   error: string | null;
   signInWithEmail: (email: string, password: string) => Promise<void>;
+  sendMagicLink: (email: string) => Promise<void>;
   signOut: () => Promise<void>;
   refreshProfile: () => Promise<void>;
   users: AuthenticatedUser[];
@@ -174,15 +178,55 @@ export function UserProvider({ children }: { children: React.ReactNode }) {
     }
   }, []);
 
+  const sendMagicLink = useCallback(async (email: string) => {
+    setLoading(true);
+    setError(null);
+    try {
+      const actionCodeSettings = {
+        url: `${window.location.origin}/auth/login`,
+        handleCodeInApp: true,
+      };
+      await sendSignInLinkToEmail(firebaseAuthClient, email, actionCodeSettings);
+      window.localStorage.setItem('asapAuthEmail', email);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Failed to send magic link';
+      setError(message);
+      throw err;
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (isSignInWithEmailLink(firebaseAuthClient, window.location.href)) {
+      const storedEmail = window.localStorage.getItem('asapAuthEmail') || window.prompt('Confirm your email');
+      if (storedEmail) {
+        signInWithEmailLink(firebaseAuthClient, storedEmail, window.location.href)
+          .then(async (credential) => {
+            const idToken = await credential.user.getIdToken(true);
+            await exchangeSession(idToken);
+            const profile = await fetchProfile();
+            setCurrentUser(profile);
+            window.localStorage.removeItem('asapAuthEmail');
+          })
+          .catch((err) => {
+            console.error('Magic link sign-in failed:', err);
+            setError(err instanceof Error ? err.message : String(err));
+          });
+      }
+    }
+  }, []);
+
   const value = useMemo<UserContextType>(() => ({
     currentUser,
     loading,
     error,
     signInWithEmail,
+    sendMagicLink,
     signOut,
     refreshProfile,
     users: currentUser ? [currentUser] : [],
-  }), [currentUser, loading, error, signInWithEmail, signOut, refreshProfile]);
+  }), [currentUser, loading, error, signInWithEmail, sendMagicLink, signOut, refreshProfile]);
 
   return <UserContext.Provider value={value}>{children}</UserContext.Provider>;
 }
