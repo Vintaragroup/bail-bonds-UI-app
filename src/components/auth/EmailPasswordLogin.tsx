@@ -14,7 +14,7 @@ interface EmailPasswordLoginProps {
 }
 
 export function EmailPasswordLogin({ onNavigate }: EmailPasswordLoginProps) {
-  const { signInWithEmail, error: authError, loading } = useUser();
+  const { signInWithEmail, signInWithProvider, error: authError, loading } = useUser();
   const [showPassword, setShowPassword] = useState(false);
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
@@ -165,23 +165,43 @@ export function EmailPasswordLogin({ onNavigate }: EmailPasswordLoginProps) {
               </PillButton>
               
               <div className="grid grid-cols-2 gap-3">
-                <PillButton 
-                  variant="outline" 
-                  className="h-12"
-                  onClick={() => onNavigate('social-redirect')}
-                >
-                  <Chrome className="h-4 w-4 mr-2" />
-                  Google
-                </PillButton>
-                <PillButton 
-                  variant="outline" 
-                  className="h-12"
-                  onClick={() => onNavigate('social-redirect')}
-                >
-                  <Apple className="h-4 w-4 mr-2" />
-                  Apple
-                </PillButton>
-              </div>
+              <PillButton 
+                variant="outline" 
+                className="h-12"
+                onClick={async () => {
+                  try {
+                    setErrors({});
+                    await signInWithProvider('google');
+                    onNavigate('auth-success');
+                  } catch (err) {
+                    const message = err instanceof Error ? err.message : 'Unable to sign in with Google';
+                    setErrors((prev) => ({ ...prev, form: message }));
+                  }
+                }}
+                disabled={loading}
+              >
+                <Chrome className="h-4 w-4 mr-2" />
+                Google
+              </PillButton>
+              <PillButton 
+                variant="outline" 
+                className="h-12"
+                onClick={async () => {
+                  try {
+                    setErrors({});
+                    await signInWithProvider('apple');
+                    onNavigate('auth-success');
+                  } catch (err) {
+                    const message = err instanceof Error ? err.message : 'Unable to sign in with Apple';
+                    setErrors((prev) => ({ ...prev, form: message }));
+                  }
+                }}
+                disabled={loading}
+              >
+                <Apple className="h-4 w-4 mr-2" />
+                Apple
+              </PillButton>
+            </div>
             </div>
 
             <div className="text-center mt-6 pt-6 border-t border-muted">

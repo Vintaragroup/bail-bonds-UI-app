@@ -125,7 +125,8 @@ Once we settle the decisions above, we can begin editing `package.json`, `vite.c
 - **2025-01-14 @ 13:35:** Documented `/api/auth` endpoints in OpenAPI, aligned handlers, introduced `AuthRoutes`, and pushed changes to `feature/auth-integration-prep`.
 - **2025-01-14 @ 13:45:** Wired email/password flow to Firebase session exchange; build still passes (`npm run build`). Verified new `/api/auth/*` paths appear in Swagger after server restart.
 - **2025-01-14 @ 14:05:** Integrated Firebase email magic-link flow (send & callback) via updated `useUser` context; build still passes.
-- **Next:** Implement Google & Apple OAuth flows using Firebase providers and hook UI controls to the shared auth context.
+- **2025-01-14 @ 14:25:** Enabled Google/Apple sign-in via Firebase providers, wired buttons to context, and confirmed build (`npm run build`).
+- **Next:** Flesh out `/api/auth` error handling/audit logging and begin integrating auth state into protected dashboard routes.
 
 ## 7. Backend/Firebase Integration Checklist (In Progress)
 - **Environment & Secrets**

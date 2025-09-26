@@ -13,6 +13,9 @@ import {
   signInWithEmailLink,
   onAuthStateChanged,
   signOut as firebaseSignOut,
+  signInWithPopup,
+  GoogleAuthProvider,
+  OAuthProvider,
   User as FirebaseUser,
 } from 'firebase/auth';
 import { firebaseAuthClient } from '../lib/firebaseClient';
@@ -31,6 +34,7 @@ interface UserContextType {
   loading: boolean;
   error: string | null;
   signInWithEmail: (email: string, password: string) => Promise<void>;
+  signInWithProvider: (provider: 'google' | 'apple') => Promise<void>;
   sendMagicLink: (email: string) => Promise<void>;
   signOut: () => Promise<void>;
   refreshProfile: () => Promise<void>;
@@ -157,6 +161,33 @@ export function UserProvider({ children }: { children: React.ReactNode }) {
     }
   }, []);
 
+  const signInWithProvider = useCallback(async (provider: 'google' | 'apple') => {
+    setLoading(true);
+    setError(null);
+    try {
+      const providerInstance = provider === 'google'
+        ? new GoogleAuthProvider()
+        : new OAuthProvider('apple.com');
+
+      if (provider === 'apple') {
+        providerInstance.addScope?.('email');
+        providerInstance.addScope?.('name');
+      }
+
+      const credential = await signInWithPopup(firebaseAuthClient, providerInstance);
+      const idToken = await credential.user.getIdToken(true);
+      await exchangeSession(idToken);
+      const profile = await fetchProfile();
+      setCurrentUser(profile);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Failed to sign in with provider';
+      setError(message);
+      throw err;
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
   const signOut = useCallback(async () => {
     setLoading(true);
     try {
@@ -222,11 +253,12 @@ export function UserProvider({ children }: { children: React.ReactNode }) {
     loading,
     error,
     signInWithEmail,
+    signInWithProvider,
     sendMagicLink,
     signOut,
     refreshProfile,
     users: currentUser ? [currentUser] : [],
-  }), [currentUser, loading, error, signInWithEmail, sendMagicLink, signOut, refreshProfile]);
+  }), [currentUser, loading, error, signInWithEmail, signInWithProvider, sendMagicLink, signOut, refreshProfile]);
 
   return <UserContext.Provider value={value}>{children}</UserContext.Provider>;
 }
