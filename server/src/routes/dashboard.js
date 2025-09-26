@@ -2,12 +2,21 @@
 /* global process */
 // server/src/routes/dashboard.js
 import { Router } from 'express';
-import { bucketsForWindow, legacyWindowForBucket } from '../lib/buckets.js';
+import { bucketsForWindow, legacyWindowForBucket, V2_BUCKET_ORDER } from '../lib/buckets.js';
+import { userHasPermission } from '../lib/roles.js';
 import mongoose from 'mongoose';
 import Message from '../models/Message.js';   // optional
 import Job from '../models/Job.js';           // optional
 
 const r = Router();
+
+function assertPermission(req, permission) {
+  if (!req.user || !userHasPermission(req.user.roles, permission)) {
+    const err = new Error('Forbidden');
+    err.statusCode = 403;
+    throw err;
+  }
+}
 
 // --- Perf timing middleware (router-local) ---
 r.use((req, res, next) => {
@@ -74,6 +83,60 @@ async function withCache(key, compute) {
     _inflight.delete(key);
   }
 }
+
+// ===== Simple in-memory metrics =====
+const DASH_METRICS = { routes: new Map() }; // routeKey -> {count, errors, durations[], lastError, variants:Map}
+function recordMetric(routeKey, ms, status, variant, err) {
+  let r = DASH_METRICS.routes.get(routeKey);
+  if (!r) { r = { count:0, errors:0, durations:[], lastError:null, variants:new Map() }; DASH_METRICS.routes.set(routeKey, r); }
+  r.count += 1;
+  if (err || status >= 500) { r.errors += 1; r.lastError = String(err?.message || err || status); }
+  r.durations.push(ms); if (r.durations.length > 300) r.durations.splice(0, r.durations.length - 300);
+  if (variant) r.variants.set(variant, (r.variants.get(variant) || 0) + 1);
+}
+function withMetrics(routeKey, handler) {
+  return async (req, res) => {
+    const start = process.hrtime.bigint();
+    let variantRef = null;
+    const origSet = res.set.bind(res);
+    res.set = (field, val) => {
+      if (typeof field === 'string') {
+        if (/variant/i.test(field)) variantRef = val;
+      } else if (field && typeof field === 'object') {
+        for (const k of Object.keys(field)) if (/variant/i.test(k)) variantRef = field[k];
+      }
+      return origSet(field, val);
+    };
+    try {
+      await handler(req, res);
+    } catch (err) {
+      if (!res.headersSent) res.status(500).json({ error: String(err?.message || err) });
+      const end = process.hrtime.bigint();
+      recordMetric(routeKey, Number(end - start)/1e6, res.statusCode || 500, variantRef, err);
+      return;
+    }
+    const end = process.hrtime.bigint();
+    recordMetric(routeKey, Number(end - start)/1e6, res.statusCode || 200, variantRef, null);
+  };
+}
+
+r.get('/metrics', (req, res) => {
+  const out = [];
+  for (const [k,v] of DASH_METRICS.routes.entries()) {
+    const d = v.durations.slice().sort((a,b)=>a-b);
+    const pct = (p) => d.length ? d[Math.min(d.length-1, Math.floor(p/100*(d.length-1)))] : 0;
+    out.push({
+      route: k,
+      count: v.count,
+      errors: v.errors,
+      errorRate: v.count ? +(v.errors/v.count).toFixed(4) : 0,
+      p50: pct(50), p90: pct(90), p95: pct(95), p99: pct(99),
+      variants: Array.from(v.variants.entries()).map(([variant,n]) => ({ variant, n })),
+      lastError: v.lastError,
+    });
+  }
+  res.json({ generatedAt: new Date().toISOString(), routes: out });
+});
 
 const COUNTY_COLLECTIONS = [
   'simple_brazoria',
@@ -479,6 +542,43 @@ function unionAll(match = {}, project = null) {
   return stages.concat(unions);
 }
 
+// Extremely lightweight union focused on time_bucket_v2 equality / IN queries.
+// Assumptions (validated by caller):
+//  - Only filters on time_bucket_v2 and category exclusion already implicit.
+//  - Need only _id and time_bucket_v2 (optionally county) for counts.
+//  - time_bucket_v2 already materialized & indexed.
+function unionBucketsFast(bucketMatch = {}, project = null, { needCounty = false, needBond = false } = {}) {
+  const baseProject = project || { _id: 1, time_bucket_v2: 1, ...(needCounty ? { county: 1 } : {}), ...(needBond ? { bond_amount: 1, bond: 1, bond_label: 1 } : {}) };
+  const bondSetStage = needBond ? [{
+    $set: {
+      bond_amount: {
+        $let: { vars: { bAmt: '$bond_amount', b: '$bond' }, in: { $switch: { branches: [ { case: { $ne: ['$$bAmt', null] }, then: '$$bAmt' }, { case: { $isNumber: '$$b' }, then: '$$b' }, { case: { $regexMatch: { input: { $toString: '$$b' }, regex: /^\d+(\.\d+)?$/ } }, then: { $toDouble: '$$b' } } ], default: null } } }
+      }
+    }
+  }] : [];
+  const base = [
+    { $match: bucketMatch },
+    ...(needCounty ? [{ $set: { county: { $toLower: { $trim: { input: { $ifNull: ['$county', BASE_COLLECTION.replace(/^simple_/, '')] } } } } } }] : []),
+    // Exclude Harris Civil AFTER normalization (parity with unionAll)
+    { $match: { $nor: [ { county: 'harris', category: 'Civil' } ] } },
+    ...bondSetStage,
+    { $project: baseProject }
+  ];
+  const unions = COUNTY_COLLECTIONS.slice(1).map(coll => ({
+    $unionWith: {
+      coll,
+      pipeline: [
+        { $match: bucketMatch },
+        ...(needCounty ? [{ $set: { county: { $toLower: { $trim: { input: { $ifNull: ['$county', coll.replace(/^simple_/, '')] } } } } } }] : []),
+        { $match: { $nor: [ { county: 'harris', category: 'Civil' } ] } },
+        ...bondSetStage,
+        { $project: baseProject }
+      ]
+    }
+  }));
+  return base.concat(unions);
+}
+
 /**
  * A lightweight variant of unionAll used for count/sum style queries to avoid
  * expensive per-document computations we don't need. It computes only the
@@ -746,6 +846,23 @@ async function countByWindow(db, win, useV2 = false) {
   return countByMatch(db, useV2 ? buildWindowMatchV2(win) : buildWindowMatch(win));
 }
 
+// Fast path: get counts for all primary KPI windows in a single aggregation when in v2 bucket mode.
+// Returns map: { '0_24h': n, '24_48h': n, ... }
+async function computeBucketCounts(db) {
+  // Single pass grouping by time_bucket_v2
+  const pipeline = [
+    ...unionBucketsFast({}, { time_bucket_v2: 1 }),
+    { $group: { _id: '$time_bucket_v2', n: { $sum: 1 } } },
+    { $project: { _id: 0, bucket: '$_id', n: 1 } }
+  ];
+  const agg = baseColl(db).aggregate(pipeline, { allowDiskUse: true });
+  const cursor = agg.maxTimeMS ? agg.maxTimeMS(MAX_DB_MS) : agg;
+  const docs = await withTimeout(cursor.toArray(), MAX_DB_MS, 'computeBucketCounts.toArray').catch(() => []);
+  const out = new Map();
+  docs.forEach(d => { if (d?.bucket) out.set(d.bucket, d.n || 0); });
+  return out;
+}
+
 async function sumBondForWindow(db, win, useV2 = false) {
   const match = useV2 ? buildWindowMatchV2(win) : buildWindowMatch(win);
   if (!match || (typeof match === 'object' && !Object.keys(match).length)) return 0;
@@ -807,6 +924,51 @@ async function adaptiveBondByCounty(db, preferred = ['24h', '48h', '72h', '7d'])
   return out;
 }
 
+// Single pass per-county adaptive bond totals using v2 buckets fast path.
+// Logic:
+//  - Aggregate sums per county per bucket.
+//  - For each county choose earliest window with non-zero sum across 24h,48h,72h,7d analogs.
+async function adaptiveBondByCountyV2SinglePass(db, preferred = ['24h','48h','72h','7d']) {
+  const bucketToWindow = (bucket) => {
+    switch (bucket) {
+      case '0_24h': return '24h';
+      case '24_48h': return '48h';
+      case '48_72h': return '72h';
+      case '3d_7d': return '7d';
+      default: return null;
+    }
+  };
+  const pipeline = [
+    ...unionBucketsFast({}, { county: 1, time_bucket_v2: 1, bond_amount: 1 }, { needCounty: true, needBond: true }),
+    { $match: { time_bucket_v2: { $in: ['0_24h','24_48h','48_72h','3d_7d'] } } },
+    { $group: { _id: { county: '$county', bucket: '$time_bucket_v2' }, value: { $sum: { $ifNull: ['$bond_amount', 0] } } } },
+    { $project: { _id: 0, county: '$_id.county', bucket: '$_id.bucket', value: 1 } }
+  ];
+  const agg = baseColl(db).aggregate(pipeline, { allowDiskUse: true });
+  const cursor = agg.maxTimeMS ? agg.maxTimeMS(MAX_DB_MS) : agg;
+  const docs = await withTimeout(cursor.toArray(), MAX_DB_MS, 'adaptiveBondByCountyV2SinglePass.toArray').catch(() => []);
+  const byCounty = new Map();
+  docs.forEach(d => {
+    if (!d?.county) return;
+    if (!byCounty.has(d.county)) byCounty.set(d.county, new Map());
+    byCounty.get(d.county).set(bucketToWindow(d.bucket), d.value || 0);
+  });
+  const counties = COUNTY_COLLECTIONS.map(c => c.replace('simple_', ''));
+  const out = [];
+  for (const county of counties) {
+    const winMap = byCounty.get(county) || new Map();
+    let used = preferred[preferred.length - 1];
+    let value = 0;
+    for (const win of preferred) {
+      const v = winMap.get(win) || 0;
+      used = win;
+      if (v > 0) { value = v; break; }
+    }
+    out.push({ county, value, windowUsed: used });
+  }
+  return out;
+}
+
 // ---- Attention flags (refer-to-magistrate or letter suffix in case number) ----
 function attentionStages(attentionOnly = false) {
   const st = [
@@ -853,16 +1015,57 @@ function attentionStages(attentionOnly = false) {
 r.get('/kpis', async (req, res) => {
   const db = ensureDb(res); if (!db) return;
   const useV2 = !!req.app?.locals?.flags?.USE_TIME_BUCKET_V2;
-  const key = 'kpis:v1';
+  const variant = useV2 ? 'buckets-fast' : 'legacy';
+  const key = `kpis:v2:${variant}`;
   const { fromCache, data } = await withCache(key, async () => {
-    const [c24, c48, c72, c7, c30] = await Promise.all([
-      countByWindow(db, '24h', useV2),
-      countByWindow(db, '48h', useV2),
-      countByWindow(db, '72h', useV2),
-      countByWindow(db, '7d',  useV2),
-      countByWindow(db, '30d', useV2),
-    ]);
-    const perCountyBond = await adaptiveBondByCounty(db, ['24h', '48h', '72h', '7d']);
+    let c24, c48, c72, c7, c30;
+    let pathVariantUsed = variant;
+    if (useV2) {
+      try {
+        const t0 = Date.now();
+        const bucketCounts = await computeBucketCounts(db);
+        res.locals.perfMark && res.locals.perfMark('kpisBuckets');
+        // Map windows using canonical union semantics
+        const bc = (b) => bucketCounts.get(b) || 0;
+        c24 = bc('0_24h');
+        c48 = bc('24_48h');
+        c72 = bc('48_72h');
+        c7  = bc('0_24h') + bc('24_48h') + bc('48_72h') + bc('3d_7d');
+        c30 = c7 + bc('7d_30d');
+        const t1 = Date.now();
+        res.locals.perfMark && res.locals.perfMark(`kpisBucketsDone`);
+      } catch (e) {
+        // Fallback to legacy per-window counting preserving semantics
+        pathVariantUsed = 'fallback-countByWindow';
+        [c24, c48, c72, c7, c30] = await Promise.all([
+          countByWindow(db, '24h', useV2),
+          countByWindow(db, '48h', useV2),
+          countByWindow(db, '72h', useV2),
+          countByWindow(db, '7d',  useV2),
+          countByWindow(db, '30d', useV2),
+        ]);
+      }
+    } else {
+      [c24, c48, c72, c7, c30] = await Promise.all([
+        countByWindow(db, '24h', useV2),
+        countByWindow(db, '48h', useV2),
+        countByWindow(db, '72h', useV2),
+        countByWindow(db, '7d',  useV2),
+        countByWindow(db, '30d', useV2),
+      ]);
+    }
+    let perCountyBond;
+    if (useV2) {
+      try {
+        perCountyBond = await adaptiveBondByCountyV2SinglePass(db, ['24h','48h','72h','7d']);
+        res.locals.perfMark && res.locals.perfMark('kpisBondAdaptive');
+      } catch {
+        perCountyBond = await adaptiveBondByCounty(db, ['24h','48h','72h','7d']);
+        res.locals.perfMark && res.locals.perfMark('kpisBondAdaptiveFallback');
+      }
+    } else {
+      perCountyBond = await adaptiveBondByCounty(db, ['24h','48h','72h','7d']);
+    }
     const bondTotal = perCountyBond.reduce((s, r) => s + (r.value || 0), 0);
 
     let perCountyLastPull = [];
@@ -889,8 +1092,10 @@ r.get('/kpis', async (req, res) => {
 
     let contacted24h = { contacted: 0, total: c24, rate: 0 };
     try {
-      const aggTodayIds = baseColl(db).aggregate([
-        ...unionAll(buildWindowMatch('24h'), { _id: 1 }),
+      const aggTodayIds = baseColl(db).aggregate(useV2 ? [
+        ...unionBucketsFast({ time_bucket_v2: '0_24h' }, { _id: 1 })
+      ] : [
+        ...unionAll(buildWindowMatch('24h'), { _id: 1 })
       ], { allowDiskUse: true });
       const todayDocs = await withTimeout((aggTodayIds.maxTimeMS ? aggTodayIds.maxTimeMS(MAX_DB_MS) : aggTodayIds).toArray(), MAX_DB_MS, 'kpis.todayDocs').catch(() => []);
       const todayIds = todayDocs.map((d) => d._id).filter(Boolean);
@@ -918,10 +1123,12 @@ r.get('/kpis', async (req, res) => {
       perCountyLastData,
       contacted24h,
       windowsUsed: ['24h','48h','72h','7d','30d'],
-      mode: useV2 ? 'v2_buckets' : 'legacy'
+      mode: useV2 ? 'v2_buckets' : 'legacy',
+      pathVariant: pathVariantUsed || variant
     };
   });
   res.set('X-Cache', fromCache ? 'HIT' : 'MISS');
+  if (data?.pathVariant) res.set('X-Path-Variant', data.pathVariant);
   res.json(data);
 });
 
@@ -933,7 +1140,8 @@ r.get('/top', async (req, res) => {
   const useV2 = !!req.app?.locals?.flags?.USE_TIME_BUCKET_V2;
   const countyFilter = req.query.county ? { county: req.query.county } : null;
   let windowUsed = requestedWindow;
-  const cacheKey = `top:v1:${requestedWindow}:${limit}:${countyFilter ? countyFilter.county : 'all'}:${req.query.attention === '1' || req.query.attention === 'true'}`;
+  const attentionOnly = req.query.attention === '1' || req.query.attention === 'true';
+  const cacheKey = `top:v2:${requestedWindow}:${limit}:${countyFilter ? countyFilter.county : 'all'}:${attentionOnly}:${useV2}`;
 
   const basePipeline = (matchExpr) => ([
     ...unionAll(matchExpr, { ...P, booking_datetime: 1, time_bucket_v2: 1, booking_derivation_source: 1 }),
@@ -970,88 +1178,185 @@ r.get('/top', async (req, res) => {
   ]);
 
   const { fromCache, data } = await withCache(cacheKey, async () => {
-    const matchPrimary = useV2 ? buildWindowMatchV2(requestedWindow) : buildWindowMatch(requestedWindow);
-    const aggItemsTop = baseColl(db).aggregate(basePipeline(matchPrimary));
-    let items = await withTimeout((aggItemsTop.maxTimeMS ? aggItemsTop.maxTimeMS(MAX_DB_MS) : aggItemsTop).toArray(), MAX_DB_MS).catch(() => []);
+    let variant = 'legacy';
+    if (!useV2) {
+      // legacy path unchanged
+      const matchPrimary = buildWindowMatch(requestedWindow);
+      const aggItemsTop = baseColl(db).aggregate(basePipeline(matchPrimary));
+      let items = await withTimeout((aggItemsTop.maxTimeMS ? aggItemsTop.maxTimeMS(MAX_DB_MS) : aggItemsTop).toArray(), MAX_DB_MS).catch(() => []);
+      if (requestedWindow === '24h' && items.length === 0) {
+        const fallbackMatch = buildWindowMatch('48h');
+        const agg2 = baseColl(db).aggregate(basePipeline(fallbackMatch));
+        items = await withTimeout((agg2.maxTimeMS ? agg2.maxTimeMS(MAX_DB_MS) : agg2).toArray(), MAX_DB_MS).catch(() => []);
+        if (items.length) windowUsed = '48h';
+      }
+      if (items.length) {
+        const meta = await fetchContactedCaseIds(items.map((it) => it.id));
+        items = items.map((item) => ({
+          ...item,
+          contacted: meta.contactSet.has(String(item.id)),
+          last_contact_at: meta.lastMap.get(String(item.id)) || null,
+          windowUsed,
+          mapped_window: windowUsed,
+        }));
+      }
+      return { items, mode: 'legacy', pathVariant: variant };
+    }
+
+    // v2 fast path for single-bucket windows (24h/48h/72h). 7d/30d keep legacy heavy pipeline.
+    const singleBucketMap = { '24h': '0_24h', '48h': '24_48h', '72h': '48_72h' };
+    const bucket = singleBucketMap[requestedWindow];
+    if (!bucket) {
+      // reuse existing heavy path for broader windows
+      variant = 'v2-heavy';
+      const matchPrimary = buildWindowMatchV2(requestedWindow);
+      const aggItemsTop = baseColl(db).aggregate(basePipeline(matchPrimary));
+      let items = await withTimeout((aggItemsTop.maxTimeMS ? aggItemsTop.maxTimeMS(MAX_DB_MS) : aggItemsTop).toArray(), MAX_DB_MS).catch(() => []);
+      if (requestedWindow === '24h' && items.length === 0) {
+        const fallbackMatch = buildWindowMatchV2('48h');
+        const agg2 = baseColl(db).aggregate(basePipeline(fallbackMatch));
+        items = await withTimeout((agg2.maxTimeMS ? agg2.maxTimeMS(MAX_DB_MS) : agg2).toArray(), MAX_DB_MS).catch(() => []);
+        if (items.length) windowUsed = '48h';
+      }
+      if (items.length) {
+        const meta = await fetchContactedCaseIds(items.map((it) => it.id));
+        items = items.map((item) => ({
+          ...item,
+          contacted: meta.contactSet.has(String(item.id)),
+          last_contact_at: meta.lastMap.get(String(item.id)) || null,
+          windowUsed,
+          mapped_window: item.time_bucket_v2 === '0_24h' ? '24h' : item.time_bucket_v2 === '24_48h' ? '48h' : item.time_bucket_v2 === '48_72h' ? '72h' : null,
+        }));
+      }
+      return { items, mode: 'v2_buckets', pathVariant: variant };
+    }
+
+    // Fast path: lean projection & bond sort using unionBucketsFast
+    variant = 'v2-buckets-fast-top';
+    const bucketMatch = { time_bucket_v2: bucket };
+    const fastPipeline = [
+      ...unionBucketsFast(bucketMatch, { _id: 1, time_bucket_v2: 1, county: 1, bond_amount: 1, bond: 1, bond_label: 1, full_name: 1, charge: 1, category: 1, agency: 1, facility: 1, race: 1, sex: 1, case_number: 1, spn: 1 }, { needCounty: true, needBond: true }),
+      ...(attentionOnly ? attentionStages(true) : attentionStages(false)),
+      ...(countyFilter ? [{ $match: countyFilter }] : []),
+      { $set: { sortValue: { $cond: [ { $isNumber: '$bond_amount' }, '$bond_amount', { $toDouble: { $ifNull: ['$bond', 0] } } ] } } },
+      { $sort: { sortValue: -1 } },
+      { $limit: limit },
+      { $project: {
+          _id: 0,
+          id: { $toString: '$_id' },
+          name: '$full_name',
+          county: 1,
+          category: 1,
+          bond_amount: 1,
+          value: '$sortValue',
+          offense: '$charge',
+          agency: 1,
+          facility: 1,
+          race: 1,
+          sex: 1,
+          case_number: 1,
+          spn: 1,
+          needs_attention: 1,
+          attention_reasons: 1,
+          time_bucket_v2: 1,
+        } }
+    ];
+    let items = await withTimeout((baseColl(db).aggregate(fastPipeline).maxTimeMS?.(MAX_DB_MS) ?? baseColl(db).aggregate(fastPipeline)).toArray(), MAX_DB_MS).catch(() => []);
+    // Fallback to heavy path if empty and 24h requested (same semantics as before)
     if (requestedWindow === '24h' && items.length === 0) {
-      const fallbackMatch = useV2 ? buildWindowMatchV2('48h') : buildWindowMatch('48h');
-      const agg2 = baseColl(db).aggregate(basePipeline(fallbackMatch));
-      items = await withTimeout((agg2.maxTimeMS ? agg2.maxTimeMS(MAX_DB_MS) : agg2).toArray(), MAX_DB_MS).catch(() => []);
+      variant = 'v2-buckets-fast-top-fallback48h';
+      const fbPipeline = [
+        ...unionBucketsFast({ time_bucket_v2: '24_48h' }, { _id: 1, time_bucket_v2: 1, county: 1, bond_amount: 1, bond: 1, bond_label: 1, full_name: 1, charge: 1, category: 1, agency: 1, facility: 1, race: 1, sex: 1, case_number: 1, spn: 1 }, { needCounty: true, needBond: true }),
+        ...(attentionOnly ? attentionStages(true) : attentionStages(false)),
+        ...(countyFilter ? [{ $match: countyFilter }] : []),
+        { $set: { sortValue: { $cond: [ { $isNumber: '$bond_amount' }, '$bond_amount', { $toDouble: { $ifNull: ['$bond', 0] } } ] } } },
+        { $sort: { sortValue: -1 } },
+        { $limit: limit },
+        { $project: { _id: 0, id: { $toString: '$_id' }, name: '$full_name', county: 1, category: 1, bond_amount: 1, value: '$sortValue', offense: '$charge', agency: 1, facility: 1, race: 1, sex: 1, case_number: 1, spn: 1, needs_attention: 1, attention_reasons: 1, time_bucket_v2: 1 } }
+      ];
+      items = await withTimeout((baseColl(db).aggregate(fbPipeline).maxTimeMS?.(MAX_DB_MS) ?? baseColl(db).aggregate(fbPipeline)).toArray(), MAX_DB_MS).catch(() => []);
       if (items.length) windowUsed = '48h';
     }
     if (items.length) {
-      const meta = await fetchContactedCaseIds(items.map((it) => it.id));
-      items = items.map((item) => ({
+      const meta = await fetchContactedCaseIds(items.map(i => i.id));
+      items = items.map(item => ({
         ...item,
         contacted: meta.contactSet.has(String(item.id)),
         last_contact_at: meta.lastMap.get(String(item.id)) || null,
         windowUsed,
-        mapped_window: useV2 ? (item.time_bucket_v2 === '0_24h' ? '24h' : item.time_bucket_v2 === '24_48h' ? '48h' : item.time_bucket_v2 === '48_72h' ? '72h' : null) : windowUsed,
+        mapped_window: item.time_bucket_v2 === '0_24h' ? '24h' : item.time_bucket_v2 === '24_48h' ? '48h' : item.time_bucket_v2 === '48_72h' ? '72h' : null,
       }));
     }
-    return { items, mode: useV2 ? 'v2_buckets' : 'legacy' };
+    return { items, mode: 'v2_buckets', pathVariant: variant };
   });
   res.set('X-Cache', fromCache ? 'HIT' : 'MISS');
+  if (data?.pathVariant) res.set('X-Top-Variant', data.pathVariant);
   res.json(data);
 });
 
 // ===== NEW (today) =====
-r.get('/new', async (req, res) => {
+r.get('/new', withMetrics('new', async (req, res) => {
   const db = ensureDb(res); if (!db) return;
   const useV2 = !!req.app?.locals?.flags?.USE_TIME_BUCKET_V2;
   const countyFilter = req.query.county ? { county: req.query.county } : null;
   const limit = Math.min(Math.max(parseInt(req.query.limit || '10', 10), 1), 200);
-
-  const cacheKey = `new:v1:${limit}:${countyFilter ? countyFilter.county : 'all'}:${req.query.attention === '1' || req.query.attention === 'true'}`;
+  const attentionOnly = req.query.attention === '1' || req.query.attention === 'true';
+  const cacheKey = `new:v2:${limit}:${countyFilter ? countyFilter.county : 'all'}:${attentionOnly}:${useV2}`;
   const { fromCache, data } = await withCache(cacheKey, async () => {
-  const aggItemsNew = baseColl(db).aggregate([
-  ...unionAll(useV2 ? buildWindowMatchV2('24h') : buildWindowMatch('24h'), { ...P, booking_datetime: 1, time_bucket_v2: 1, booking_derivation_source: 1 }),
-    ...attentionStages(req.query.attention === '1' || req.query.attention === 'true'),
-    ...(countyFilter ? [{ $match: countyFilter }] : []),
-  { $sort: { booking_dt: -1, booking_date: -1, bond_amount: -1 } },
-    { $limit: limit },
-    { $project: {
-        _id: 0,
-        id: { $toString: '$_id' },
-        person: '$full_name',
-        county: 1,
-        category: 1,
-        booking_date: 1,
-        bond_amount: '$bond_amount',
-        bond: '$bond',
-        offense: '$charge',
-        agency: 1,
-        facility: 1,
-        race: 1,
-        sex: 1,
-        case_number: 1,
-        spn: 1,
-        bond_status: 1,
-        bond_raw: 1,
-        needs_attention: 1,
-        attention_reasons: 1,
-        time_bucket: 1,
-        time_bucket_v2: 1,
-        booking_datetime: 1,
-        booking_derivation_source: 1,
-        normalized_at: 1,
-        scraped_at: 1,
-      }}
-    ]);
-    const rawItems = await withTimeout((aggItemsNew.maxTimeMS ? aggItemsNew.maxTimeMS(MAX_DB_MS) : aggItemsNew).toArray(), MAX_DB_MS).catch(() => []);
-    const metaNew = await fetchContactedCaseIds(rawItems.map((it) => it.id));
-    const items = rawItems.map((it) => ({
+    let variant = useV2 ? 'v2-buckets-fast-new' : 'legacy';
+    let pipeline;
+    if (useV2) {
+      // Fast path: single bucket 0_24h, minimal projection & needed fields
+      pipeline = [
+        ...unionBucketsFast({ time_bucket_v2: '0_24h' }, { _id: 1, time_bucket_v2: 1, county: 1, bond_amount: 1, bond: 1, bond_label: 1, full_name: 1, charge: 1, category: 1, agency: 1, facility: 1, race: 1, sex: 1, case_number: 1, spn: 1, normalized_at: 1, scraped_at: 1 }, { needCounty: true, needBond: true }),
+        ...(attentionOnly ? attentionStages(true) : attentionStages(false)),
+        ...(countyFilter ? [{ $match: countyFilter }] : []),
+        { $sort: { scraped_at: -1, normalized_at: -1, bond_amount: -1 } },
+        { $limit: limit },
+        { $project: { _id: 0, id: { $toString: '$_id' }, person: '$full_name', county: 1, category: 1, bond_amount: 1, bond: 1, offense: '$charge', agency: 1, facility: 1, race: 1, sex: 1, case_number: 1, spn: 1, needs_attention: 1, attention_reasons: 1, time_bucket_v2: 1, normalized_at: 1, scraped_at: 1 } }
+      ];
+    } else {
+      // Legacy path unchanged (still uses normalization & booking_dt sort)
+      pipeline = [
+        ...unionAll(buildWindowMatch('24h'), { ...P, booking_datetime: 1, time_bucket_v2: 1, booking_derivation_source: 1 }),
+        ...(attentionOnly ? attentionStages(true) : attentionStages(false)),
+        ...(countyFilter ? [{ $match: countyFilter }] : []),
+        { $sort: { booking_dt: -1, booking_date: -1, bond_amount: -1 } },
+        { $limit: limit },
+        { $project: { _id: 0, id: { $toString: '$_id' }, person: '$full_name', county: 1, category: 1, booking_date: 1, bond_amount: '$bond_amount', bond: '$bond', offense: '$charge', agency: 1, facility: 1, race: 1, sex: 1, case_number: 1, spn: 1, bond_status: 1, bond_raw: 1, needs_attention: 1, attention_reasons: 1, time_bucket: 1, time_bucket_v2: 1, booking_datetime: 1, booking_derivation_source: 1, normalized_at: 1, scraped_at: 1 } }
+      ];
+    }
+    const cursor = baseColl(db).aggregate(pipeline, { allowDiskUse: true });
+    const rawItems = await withTimeout((cursor.maxTimeMS ? cursor.maxTimeMS(MAX_DB_MS) : cursor).toArray(), MAX_DB_MS, 'new.items').catch(() => []);
+    const metaNew = await fetchContactedCaseIds(rawItems.map(it => it.id));
+    let items = rawItems.map(it => ({
       ...it,
       contacted: metaNew.contactSet.has(String(it.id)),
       last_contact_at: metaNew.lastMap.get(String(it.id)) || null,
-      mapped_window: useV2 ? (it.time_bucket_v2 === '0_24h' ? '24h' : null) : '24h'
+      mapped_window: useV2 ? '24h' : '24h'
     }));
-    const contactedCountNew = items.filter((it) => it.contacted).length;
-    const summary = {
-      total: items.length,
-      contacted: contactedCountNew,
-      uncontacted: items.length - contactedCountNew,
-    };
+    // Fallback: if v2 fast path yielded 0 but legacy might have records (rare), retry heavy path once
+    if (useV2 && items.length === 0) {
+      variant = 'v2-buckets-fast-new-fallback';
+      const heavy = baseColl(db).aggregate([
+        ...unionAll(buildWindowMatchV2('24h'), { ...P, booking_datetime: 1, time_bucket_v2: 1, booking_derivation_source: 1 }),
+        ...(attentionOnly ? attentionStages(true) : attentionStages(false)),
+        ...(countyFilter ? [{ $match: countyFilter }] : []),
+        { $sort: { booking_dt: -1, booking_date: -1, bond_amount: -1 } },
+        { $limit: limit },
+        { $project: { _id: 0, id: { $toString: '$_id' }, person: '$full_name', county: 1, category: 1, booking_date: 1, bond_amount: '$bond_amount', bond: '$bond', offense: '$charge', agency: 1, facility: 1, race: 1, sex: 1, case_number: 1, spn: 1, bond_status: 1, bond_raw: 1, needs_attention: 1, attention_reasons: 1, time_bucket: 1, time_bucket_v2: 1, booking_datetime: 1, booking_derivation_source: 1, normalized_at: 1, scraped_at: 1 } }
+      ]);
+      const heavyItems = await withTimeout((heavy.maxTimeMS ? heavy.maxTimeMS(MAX_DB_MS) : heavy).toArray(), MAX_DB_MS, 'new.items.fallback').catch(() => []);
+      const metaH = await fetchContactedCaseIds(heavyItems.map(it => it.id));
+      items = heavyItems.map(it => ({
+        ...it,
+        contacted: metaH.contactSet.has(String(it.id)),
+        last_contact_at: metaH.lastMap.get(String(it.id)) || null,
+        mapped_window: '24h'
+      }));
+    }
+    const contactedCountNew = items.filter(i => i.contacted).length;
+    const summary = { total: items.length, contacted: contactedCountNew, uncontacted: items.length - contactedCountNew };
 
   const aggTicker = baseColl(db).aggregate([
   ...unionAll(useV2 ? buildWindowMatchV2('24h') : buildWindowMatch('24h'), { county: 1 }),
@@ -1061,83 +1366,110 @@ r.get('/new', async (req, res) => {
     { $sort: { county: 1 } }
   ]);
     const ticker = await withTimeout((aggTicker.maxTimeMS ? aggTicker.maxTimeMS(MAX_DB_MS) : aggTicker).toArray(), MAX_DB_MS).catch(() => []);
-    return { items, ticker, summary, windowUsed: '24h', mode: useV2 ? 'v2_buckets' : 'legacy' };
+    return { items, ticker, summary, windowUsed: '24h', mode: useV2 ? 'v2_buckets' : 'legacy', pathVariant: useV2 ? variant : 'legacy' };
   });
   res.set('X-Cache', fromCache ? 'HIT' : 'MISS');
+  if (data?.pathVariant) res.set('X-New-Variant', data.pathVariant);
   res.json(data);
-});
+}));
 
 // ===== RECENT (48–72h window) =====
-r.get('/recent', async (req, res) => {
+r.get('/recent', withMetrics('recent', async (req, res) => {
   const db = ensureDb(res); if (!db) return;
   const useV2 = !!req.app?.locals?.flags?.USE_TIME_BUCKET_V2;
   const limit = Math.min(Math.max(parseInt(req.query.limit || '10', 10), 1), 200);
-  const cacheKey = `recent:v1:${limit}:${req.query.attention === '1' || req.query.attention === 'true'}`;
+  const attentionOnly = req.query.attention === '1' || req.query.attention === 'true';
+  const cacheKey = `recent:v2:${limit}:${attentionOnly}:${useV2}`;
   const { fromCache, data } = await withCache(cacheKey, async () => {
-    const [count48h, count72h, bond48h, bond72h] = await Promise.all([
-      countByWindow(db, '48h', useV2),
-      countByWindow(db, '72h', useV2),
-      sumBondForWindow(db, '48h', useV2),
-      sumBondForWindow(db, '72h', useV2),
-    ]);
-  const match48 = useV2 ? buildWindowMatchV2('48h') : buildWindowMatch('48h');
-  const match72 = useV2 ? buildWindowMatchV2('72h') : buildWindowMatch('72h');
-  const recentMatchOr = [match48, match72].filter((m) => m && Object.keys(m).length);
-  const recentMatch = recentMatchOr.length ? { $or: recentMatchOr } : {};
-
-  const aggItemsRecent = baseColl(db).aggregate([
-    ...unionAll(recentMatch, { ...P, booking_datetime: 1, time_bucket_v2: 1, booking_derivation_source: 1 }),
-    ...attentionStages(req.query.attention === '1' || req.query.attention === 'true'),
-  { $sort: { booking_dt: -1, booking_date: -1, bond_amount: -1 } },
-    { $limit: limit },
-    { $project: {
-        _id: 0,
-        id: { $toString: '$_id' },
-        person: '$full_name',
-        county: 1,
-        category: 1,
-        booking_date: 1,
-        bond_amount: '$bond_amount',
-        bond: '$bond',
-        offense: '$charge',
-        agency: 1,
-        facility: 1,
-        race: 1,
-        sex: 1,
-        case_number: 1,
-        spn: 1,
-        needs_attention: 1,
-        attention_reasons: 1,
-        bond_status: 1,
-        bond_raw: 1,
-        time_bucket: 1,
-        time_bucket_v2: 1,
-        booking_datetime: 1,
-        booking_derivation_source: 1,
-        normalized_at: 1,
-        scraped_at: 1,
-      }}
-  ]);
-    const rawItemsRecent = await withTimeout((aggItemsRecent.maxTimeMS ? aggItemsRecent.maxTimeMS(MAX_DB_MS) : aggItemsRecent).toArray(), MAX_DB_MS).catch(() => []);
-    const metaRecent = await fetchContactedCaseIds(rawItemsRecent.map((it) => it.id));
-    const items = rawItemsRecent.map((it) => ({
-      ...it,
-      contacted: metaRecent.contactSet.has(String(it.id)),
-      last_contact_at: metaRecent.lastMap.get(String(it.id)) || null,
-      mapped_window: useV2 ? (it.time_bucket_v2 === '24_48h' ? '48h' : it.time_bucket_v2 === '48_72h' ? '72h' : null) : null,
-    }));
-    const contactedRecent = items.filter((it) => it.contacted).length;
-
-    const ticker = await (async () => {
-      const aggT = baseColl(db).aggregate([
-        ...unionAll(recentMatch, { county: 1 }),
-        { $group: { _id: '$county', n: { $sum: 1 } } },
-        { $project: { _id: 0, county: '$_id', n: 1 } },
-        { $sort: { county: 1 } }
+    let variant = useV2 ? 'v2-buckets-fast-recent' : 'legacy';
+    let items = [];
+    let count48h = 0, count72h = 0, bond48h = 0, bond72h = 0;
+    if (useV2) {
+      // Accurate counts & bonds (no limit)
+      const countPipe = [
+        ...unionBucketsFast({ time_bucket_v2: { $in: ['24_48h','48_72h'] } }, { time_bucket_v2: 1, bond_amount: 1 }, { needBond: true }),
+        { $group: { _id: '$time_bucket_v2', n: { $sum: 1 }, bond: { $sum: { $ifNull: ['$bond_amount', 0] } } } }
+      ];
+      const curCounts = baseColl(db).aggregate(countPipe);
+      const countRows = await withTimeout((curCounts.maxTimeMS ? curCounts.maxTimeMS(MAX_DB_MS) : curCounts).toArray(), MAX_DB_MS, 'recent.counts').catch(() => []);
+      countRows.forEach(r => {
+        if (r._id === '24_48h') { count48h = r.n; bond48h = r.bond; }
+        if (r._id === '48_72h') { count72h = r.n; bond72h = r.bond; }
+      });
+      // Limited item list
+      const pipeline = [
+        ...unionBucketsFast({ time_bucket_v2: { $in: ['24_48h','48_72h'] } }, { _id: 1, time_bucket_v2: 1, county: 1, bond_amount: 1, bond: 1, bond_label: 1, full_name: 1, charge: 1, category: 1, agency: 1, facility: 1, race: 1, sex: 1, case_number: 1, spn: 1, normalized_at: 1, scraped_at: 1 }, { needCounty: true, needBond: true }),
+        ...(attentionOnly ? attentionStages(true) : attentionStages(false)),
+        { $sort: { scraped_at: -1, normalized_at: -1, bond_amount: -1 } },
+        { $limit: limit },
+        { $project: { _id: 0, id: { $toString: '$_id' }, person: '$full_name', county: 1, category: 1, bond_amount: 1, bond: 1, offense: '$charge', agency: 1, facility: 1, race: 1, sex: 1, case_number: 1, spn: 1, needs_attention: 1, attention_reasons: 1, time_bucket_v2: 1, normalized_at: 1, scraped_at: 1 } }
+      ];
+      const cur = baseColl(db).aggregate(pipeline, { allowDiskUse: true });
+      const raw = await withTimeout((cur.maxTimeMS ? cur.maxTimeMS(MAX_DB_MS) : cur).toArray(), MAX_DB_MS, 'recent.items').catch(() => []);
+      const metaR = await fetchContactedCaseIds(raw.map(r => r.id));
+      items = raw.map(r => ({
+        ...r,
+        contacted: metaR.contactSet.has(String(r.id)),
+        last_contact_at: metaR.lastMap.get(String(r.id)) || null,
+        mapped_window: r.time_bucket_v2 === '24_48h' ? '48h' : r.time_bucket_v2 === '48_72h' ? '72h' : null,
+      }));
+      // Fallback if empty (rare) -> heavy path
+      if (!items.length) {
+        variant = 'v2-buckets-fast-recent-fallback';
+      }
+    }
+    if (!useV2 || (useV2 && items.length === 0)) {
+      // Legacy / fallback heavy path
+      const [c48, c72, b48, b72] = await Promise.all([
+        countByWindow(db, '48h', useV2),
+        countByWindow(db, '72h', useV2),
+        sumBondForWindow(db, '48h', useV2),
+        sumBondForWindow(db, '72h', useV2),
       ]);
-      return await withTimeout((aggT.maxTimeMS ? aggT.maxTimeMS(MAX_DB_MS) : aggT).toArray(), MAX_DB_MS).catch(() => []);
-    })();
-
+      count48h = c48; count72h = c72; bond48h = b48; bond72h = b72;
+      const match48 = useV2 ? buildWindowMatchV2('48h') : buildWindowMatch('48h');
+      const match72 = useV2 ? buildWindowMatchV2('72h') : buildWindowMatch('72h');
+      const recentMatchOr = [match48, match72].filter(m => m && Object.keys(m).length);
+      const recentMatch = recentMatchOr.length ? { $or: recentMatchOr } : {};
+      const heavyAgg = baseColl(db).aggregate([
+        ...unionAll(recentMatch, { ...P, booking_datetime: 1, time_bucket_v2: 1, booking_derivation_source: 1 }),
+        ...(attentionOnly ? attentionStages(true) : attentionStages(false)),
+        { $sort: { booking_dt: -1, booking_date: -1, bond_amount: -1 } },
+        { $limit: limit },
+        { $project: { _id: 0, id: { $toString: '$_id' }, person: '$full_name', county: 1, category: 1, booking_date: 1, bond_amount: '$bond_amount', bond: '$bond', offense: '$charge', agency: 1, facility: 1, race: 1, sex: 1, case_number: 1, spn: 1, needs_attention: 1, attention_reasons: 1, bond_status: 1, bond_raw: 1, time_bucket: 1, time_bucket_v2: 1, booking_datetime: 1, booking_derivation_source: 1, normalized_at: 1, scraped_at: 1 } }
+      ]);
+      const heavyRaw = await withTimeout((heavyAgg.maxTimeMS ? heavyAgg.maxTimeMS(MAX_DB_MS) : heavyAgg).toArray(), MAX_DB_MS, 'recent.heavy').catch(() => []);
+      const metaH = await fetchContactedCaseIds(heavyRaw.map(r => r.id));
+      items = heavyRaw.map(r => ({
+        ...r,
+        contacted: metaH.contactSet.has(String(r.id)),
+        last_contact_at: metaH.lastMap.get(String(r.id)) || null,
+        mapped_window: useV2 ? (r.time_bucket_v2 === '24_48h' ? '48h' : r.time_bucket_v2 === '48_72h' ? '72h' : null) : null,
+      }));
+    }
+    const contactedRecent = items.filter(i => i.contacted).length;
+    // Ticker (per-county counts) using fast path if available
+    let ticker = [];
+    try {
+      if (useV2 && items.length) {
+        const tPipe = [
+          ...unionBucketsFast({ time_bucket_v2: { $in: ['24_48h','48_72h'] } }, { county: 1, time_bucket_v2: 1 }, { needCounty: true }),
+          { $group: { _id: { county: '$county' }, n: { $sum: 1 } } },
+          { $project: { _id: 0, county: '$_id.county', n: 1 } },
+          { $sort: { county: 1 } }
+        ];
+        const curT = baseColl(db).aggregate(tPipe);
+        ticker = await withTimeout((curT.maxTimeMS ? curT.maxTimeMS(MAX_DB_MS) : curT).toArray(), MAX_DB_MS, 'recent.ticker.fast').catch(() => []);
+      } else {
+        const aggT = baseColl(db).aggregate([
+          ...unionAll({ $or: [{ time_bucket_v2: '24_48h' }, { time_bucket_v2: '48_72h' }] }, { county: 1 }),
+          { $group: { _id: '$county', n: { $sum: 1 } } },
+          { $project: { _id: 0, county: '$_id', n: 1 } },
+          { $sort: { county: 1 } }
+        ]);
+        ticker = await withTimeout((aggT.maxTimeMS ? aggT.maxTimeMS(MAX_DB_MS) : aggT).toArray(), MAX_DB_MS, 'recent.ticker.heavy').catch(() => []);
+      }
+    } catch {}
     return {
       items,
       summary: {
@@ -1152,12 +1484,14 @@ r.get('/recent', async (req, res) => {
       },
       ticker,
       windowUsed: ['48h','72h'],
-      mode: useV2 ? 'v2_buckets' : 'legacy'
+      mode: useV2 ? 'v2_buckets' : 'legacy',
+      pathVariant: useV2 ? variant : 'legacy'
     };
   });
   res.set('X-Cache', fromCache ? 'HIT' : 'MISS');
+  if (data?.pathVariant) res.set('X-Recent-Variant', data.pathVariant);
   res.json(data);
-});
+}));
 
 // ===== TRENDS (last N calendar days) =====
 r.get('/trends', async (req, res) => {
@@ -1203,7 +1537,7 @@ r.get('/trends', async (req, res) => {
 });
 
 // ===== PER-COUNTY snapshot =====
-r.get('/per-county', async (req, res) => {
+r.get('/per-county', withMetrics('per-county', async (req, res) => {
   try {
     const db = ensureDb(res); if (!db) return;
     const win = (req.query.window || '24h').toLowerCase();
@@ -1211,6 +1545,7 @@ r.get('/per-county', async (req, res) => {
     const cacheKey = `perCounty:v2:${win}`;
     const { fromCache, data } = await withCache(cacheKey, async () => {
       let rows = [];
+      let pathVariant = useV2 ? 'v2-buckets-fast-per-county' : 'legacy';
       if (useV2) {
         // Bucket-based grouping path
         const bucketPipeline = [
@@ -1274,15 +1609,16 @@ r.get('/per-county', async (req, res) => {
         map.get(cty) || { county: cty, counts: { today: 0, yesterday: 0, twoDaysAgo: 0, last7d: 0, last30d: 0 }, bondValue: 0, bondToday: 0 }
       ));
 
-      return { items, windowUsed: win };
+      return { items, windowUsed: win, pathVariant };
     });
     res.set('X-Cache', fromCache ? 'HIT' : 'MISS');
+    if (data?.pathVariant) res.set('X-PerCounty-Variant', data.pathVariant);
     res.json(data);
   } catch (err) {
     console.error('per-county error:', err);
     res.status(500).json({ error: String(err?.message || err) });
   }
-});
+}));
 
 // ===== DIAGNOSTICS (window bounds + sample) =====
 r.get('/diag', async (req, res) => {

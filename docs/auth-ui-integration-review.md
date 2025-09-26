@@ -127,7 +127,8 @@ Once we settle the decisions above, we can begin editing `package.json`, `vite.c
 - **2025-01-14 @ 14:05:** Integrated Firebase email magic-link flow (send & callback) via updated `useUser` context; build still passes.
 - **2025-01-14 @ 14:25:** Enabled Google/Apple sign-in via Firebase providers, wired buttons to context, and confirmed build (`npm run build`).
 - **2025-01-14 @ 14:40:** Added basic auth event logging, enforced `requireAuth` on dashboard/case routes, build still passes.
-- **Next:** Expand auth error handling/audit persistence and start enforcing role-based access inside protected route handlers.
+- **2025-01-14 @ 15:05:** Persisting auth audits to Mongo and introducing `requireAuth` guards on protected routes (`npm run build` OK).
+- **Next:** Fine-tune role-based permissions within individual handlers and prepare E2E auth tests.
 
 ## 7. Backend/Firebase Integration Checklist (In Progress)
 - **Environment & Secrets**

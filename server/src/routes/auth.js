@@ -1,21 +1,29 @@
 import express from 'express';
 import { firebaseAuth } from '../lib/firebaseAdmin.js';
 import User from '../models/User.js';
+import AuthAudit from '../models/AuthAudit.js';
 import { requireAuth, optionalAuth, setSessionCookie, clearSessionCookie } from '../middleware/auth.js';
 
 const router = express.Router();
 
 const SESSION_MAX_AGE_MS = Number(process.env.SESSION_MAX_AGE_MS || 1000 * 60 * 60 * 24 * 14);
 
-function recordAuthEvent(type, details) {
+async function recordAuthEvent(event, payload = {}) {
   try {
-    console.info(`[auth] ${type}`, {
-      ...details,
-      ts: new Date().toISOString(),
+    await AuthAudit.create({
+      event,
+      uid: payload.uid,
+      email: payload.email,
+      ip: payload.ip,
+      userAgent: payload.userAgent,
+      metadata: payload.metadata,
     });
   } catch (err) {
-    console.warn('Failed to record auth event', err);
+    console.warn('Failed to persist auth audit event', err);
   }
+  try {
+    console.info(`[auth] ${event}`, { ...payload, ts: new Date().toISOString() });
+  } catch (err) { /* noop */ }
 }
 
 function sanitizeUser(user) {
@@ -53,7 +61,12 @@ router.post('/session', async (req, res) => {
     const userDoc = await User.findOneAndUpdate({ uid: decoded.uid }, updates, options);
 
     await setSessionCookie(res, idToken);
-    recordAuthEvent('session_created', { uid: decoded.uid, email: decoded.email });
+    await recordAuthEvent('session_created', {
+      uid: decoded.uid,
+      email: decoded.email,
+      ip: req.ip,
+      userAgent: req.get('user-agent'),
+    });
     return res.json({
       ok: true,
       user: sanitizeUser(userDoc),
@@ -61,14 +74,22 @@ router.post('/session', async (req, res) => {
     });
   } catch (err) {
     console.error('Failed to create session:', err);
-    recordAuthEvent('session_failed', { reason: err.message });
+    await recordAuthEvent('session_failed', {
+      reason: err.message,
+      ip: req.ip,
+      userAgent: req.get('user-agent'),
+    });
     return res.status(401).json({ message: 'Invalid ID token' });
   }
 });
 
 router.post('/logout', (req, res) => {
   clearSessionCookie(res);
-  recordAuthEvent('logout', { uid: req.user?.uid });
+  recordAuthEvent('logout', {
+    uid: req.user?.uid,
+    ip: req.ip,
+    userAgent: req.get('user-agent'),
+  });
   return res.json({ ok: true });
 });
 
@@ -84,7 +105,11 @@ router.post('/session/revoke', requireAuth, async (req, res) => {
     const uid = req.user.uid;
     await firebaseAuth.revokeRefreshTokens(uid);
     clearSessionCookie(res);
-    recordAuthEvent('session_revoked', { uid });
+    await recordAuthEvent('session_revoked', {
+      uid,
+      ip: req.ip,
+      userAgent: req.get('user-agent'),
+    });
     return res.json({ ok: true });
   } catch (err) {
     console.error('Failed to revoke sessions:', err);
