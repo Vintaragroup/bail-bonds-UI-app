@@ -7,6 +7,17 @@ const router = express.Router();
 
 const SESSION_MAX_AGE_MS = Number(process.env.SESSION_MAX_AGE_MS || 1000 * 60 * 60 * 24 * 14);
 
+function recordAuthEvent(type, details) {
+  try {
+    console.info(`[auth] ${type}`, {
+      ...details,
+      ts: new Date().toISOString(),
+    });
+  } catch (err) {
+    console.warn('Failed to record auth event', err);
+  }
+}
+
 function sanitizeUser(user) {
   if (!user) return null;
   return {
@@ -42,6 +53,7 @@ router.post('/session', async (req, res) => {
     const userDoc = await User.findOneAndUpdate({ uid: decoded.uid }, updates, options);
 
     await setSessionCookie(res, idToken);
+    recordAuthEvent('session_created', { uid: decoded.uid, email: decoded.email });
     return res.json({
       ok: true,
       user: sanitizeUser(userDoc),
@@ -49,12 +61,14 @@ router.post('/session', async (req, res) => {
     });
   } catch (err) {
     console.error('Failed to create session:', err);
+    recordAuthEvent('session_failed', { reason: err.message });
     return res.status(401).json({ message: 'Invalid ID token' });
   }
 });
 
 router.post('/logout', (req, res) => {
   clearSessionCookie(res);
+  recordAuthEvent('logout', { uid: req.user?.uid });
   return res.json({ ok: true });
 });
 
@@ -70,6 +84,7 @@ router.post('/session/revoke', requireAuth, async (req, res) => {
     const uid = req.user.uid;
     await firebaseAuth.revokeRefreshTokens(uid);
     clearSessionCookie(res);
+    recordAuthEvent('session_revoked', { uid });
     return res.json({ ok: true });
   } catch (err) {
     console.error('Failed to revoke sessions:', err);

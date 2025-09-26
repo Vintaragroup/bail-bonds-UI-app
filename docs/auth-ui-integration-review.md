@@ -126,7 +126,8 @@ Once we settle the decisions above, we can begin editing `package.json`, `vite.c
 - **2025-01-14 @ 13:45:** Wired email/password flow to Firebase session exchange; build still passes (`npm run build`). Verified new `/api/auth/*` paths appear in Swagger after server restart.
 - **2025-01-14 @ 14:05:** Integrated Firebase email magic-link flow (send & callback) via updated `useUser` context; build still passes.
 - **2025-01-14 @ 14:25:** Enabled Google/Apple sign-in via Firebase providers, wired buttons to context, and confirmed build (`npm run build`).
-- **Next:** Flesh out `/api/auth` error handling/audit logging and begin integrating auth state into protected dashboard routes.
+- **2025-01-14 @ 14:40:** Added basic auth event logging, enforced `requireAuth` on dashboard/case routes, build still passes.
+- **Next:** Expand auth error handling/audit persistence and start enforcing role-based access inside protected route handlers.
 
 ## 7. Backend/Firebase Integration Checklist (In Progress)
 - **Environment & Secrets**

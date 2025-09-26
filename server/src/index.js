@@ -17,6 +17,7 @@ import cases from './routes/cases.js';
 import checkins from './routes/checkins.js';
 import documents from './routes/documents.js';
 import authRoutes from './routes/auth.js';
+import { requireAuth } from './middleware/auth.js';
 
 const app = express();
 
@@ -63,10 +64,10 @@ app.use(rateLimit({ windowMs: 60_000, max: 120 }));
 app.use('/api/health', health);
 app.get('/api/health/light', (_req, res) => res.json({ ok: true, pid: process.pid, ts: new Date().toISOString() }));
 app.use('/api/auth', authRoutes);
-app.use('/api/dashboard', dashboard);
-app.use('/api/cases', cases);
-app.use('/api/checkins', checkins);
-app.use('/api/cases', documents);
+app.use('/api/dashboard', requireAuth, dashboard);
+app.use('/api/cases', requireAuth, cases);
+app.use('/api/checkins', requireAuth, checkins);
+app.use('/api/cases', requireAuth, documents);
 app.use('/uploads', express.static(new URL('../uploads', import.meta.url).pathname));
 
 const port = Number(process.env.PORT || 8080);
