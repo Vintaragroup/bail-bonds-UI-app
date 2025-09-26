@@ -11,8 +11,8 @@
     "server:dev": "npm --prefix server run dev",
     "server:start": "npm --prefix server run start",
     "validate:windows": "npm --prefix server run validate:windows",
-    "smoke:dashboard": "npm --prefix server run smoke:dashboard"
-    ,"smoke:trends": "npm --prefix server run smoke:trends"
+    "smoke:dashboard": "npm --prefix server run smoke:dashboard",
+    "smoke:trends": "npm --prefix server run smoke:trends"
   },
   "dependencies": {
     "@radix-ui/react-accordion": "^1.2.3",
@@ -46,6 +46,7 @@
     "clsx": "^2.1.1",
     "cmdk": "^1.1.1",
     "embla-carousel-react": "^8.6.0",
+    "firebase": "^11.10.0",
     "input-otp": "^1.4.2",
     "lucide-react": "^0.487.0",
     "next-themes": "^0.4.6",
@@ -64,8 +65,8 @@
     "@apidevtools/swagger-parser": "^12.0.0",
     "@eslint/js": "^9.33.0",
     "@tanstack/react-query-devtools": "^5.87.3",
-    "@types/react": "^19.1.10",
     "@types/node": "^22.10.1",
+    "@types/react": "^19.1.10",
     "@types/react-dom": "^19.1.7",
     "@vitejs/plugin-react": "^5.0.0",
     "autoprefixer": "^10.4.21",

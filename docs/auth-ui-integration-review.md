@@ -107,9 +107,38 @@ Once we settle the decisions above, we can begin editing `package.json`, `vite.c
 - **Styling:** Import `src/styles/globals.css` before `index.css` in `main.jsx`, extend Tailwind with CSS-variable driven theming, and backfill missing tokens (`--spacing`, `--text-*`) to match design output. Keep existing dashboard styles intact by layering new tokens rather than overwriting legacy classes.
 - **Routing integration:** Stage the new auth screens under a dedicated `/auth` router branch once the UI library compiles, leaving existing dashboard routes untouched until Firebase auth plumbing is ready.
 - **Validation cadence:** After each milestone (tooling, styling, routing) run `npm run build` and smoke the dashboard UI to ensure no regression. Document findings or deltas in this file’s changelog.
-+ **Status (2025-01-14 @ 09:45):** tsconfig added, Vite aliases configured, Tailwind/global styles layered. `package.json` updated but `npm install` needs to run outside the restricted sandbox to fetch dependencies before the next check-in.
-+ **Status (2025-01-14 @ 10:05):** Removed unused `react-day-picker` dependency and calendar wrapper to keep the stack React 19 compatible prior to installing new packages.
-+ **Status (2025-01-14 @ 10:20):** Hardened `DashboardDebugPanel` variant rendering to guard against nested metric objects and prevent crashes while navigating the existing dashboard.
-+ **Status (2025-01-14 @ 10:30):** Working branch `feature/auth-integration-prep` created to isolate scaffold changes from the main dashboard work.
-+ **Status (2025-01-14 @ 11:05):** Added `/auth/preview` route with selector-based wrapper so design stakeholders can review Figma-generated screens inside the running app without touching production flows.
-+ **Status (2025-01-14 @ 11:20):** Removed unused Figma scaffolding (`tmp/`, duplicate `.jsx` copies, `src/figmaCSS`) now that TypeScript variants are wired, keeping the repo lean for integration work.
+
+- **Validation cadence:** After each milestone (tooling, styling, routing) run `npm run build` and smoke the dashboard UI to ensure no regression. Document findings or deltas in this file’s changelog.
+
+### Status Log
+- **2025-01-14 @ 09:45:** tsconfig added, Vite aliases configured, Tailwind/global styles layered. `package.json` updated but `npm install` needs to run outside the restricted sandbox to fetch dependencies before the next check-in.
+- **2025-01-14 @ 10:05:** Removed unused `react-day-picker` dependency and calendar wrapper to keep the stack React 19 compatible prior to installing new packages.
+- **2025-01-14 @ 10:20:** Hardened `DashboardDebugPanel` variant rendering to guard against nested metric objects and prevent crashes while navigating the existing dashboard.
+- **2025-01-14 @ 10:30:** Working branch `feature/auth-integration-prep` created to isolate scaffold changes from the main dashboard work.
+- **2025-01-14 @ 11:05:** Added `/auth/preview` route with selector-based wrapper so design stakeholders can review Figma-generated screens inside the running app without touching production flows.
+- **2025-01-14 @ 11:20:** Removed unused Figma scaffolding (`tmp/`, duplicate `.jsx` copies, `src/figmaCSS`) now that TypeScript variants are wired, keeping the repo lean for integration work.
+- **2025-01-14 @ 11:25:** Dependencies installed cleanly on `feature/auth-integration-prep`; dashboard and `/auth/preview` verified after restart with no regressions observed.
+- **2025-01-14 @ 11:45:** Firebase Admin key generated (stored outside repo), env placeholders added, and Firebase client/admin dependencies noted for upcoming auth wiring.
+- **2025-01-14 @ 12:05:** Added Firebase Admin helper, auth middleware/routes, `User` model, and frontend client bootstrap to begin wiring session handling.
+
+## 7. Backend/Firebase Integration Checklist (In Progress)
+- **Environment & Secrets**
+  - Add placeholders to `server/.env.example` for `FIREBASE_PROJECT_ID`, `GOOGLE_APPLICATION_CREDENTIALS`, optional `FIREBASE_AUTH_EMULATOR_HOST`, and session cookie secrets.
+  - Document where the Firebase service-account JSON lives (vault, CI secret) and how deployments reference it.
+  - If service-account key creation is blocked, either (a) adjust org policy to allow it for this project or (b) use Workload Identity/ADC by granting Cloud IAM roles directly.
+- **Server Tooling**
+  - Install `firebase-admin` in `server/package.json`; create `server/src/lib/firebaseAdmin.js` to initialize the SDK.
+  - Introduce auth middleware (`server/src/middleware/auth.js`) that verifies Firebase ID tokens, loads Mongo user profile, and attaches `{ uid, roles, departments }` to `req.user`.
+  - Implement `/api/auth/session` (exchange ID token for secure cookie) and `/api/auth/me` (return profile/roles) endpoints; update existing routes to require auth where appropriate.
+  - Gate dev-only helpers (e.g., `/auth/preview`) behind an env flag when running in production.
+- **Data Model Updates**
+  - Extend `server/src/models/User.js` with schema described in `Schema_Authentication.md` (UID, roles, departments, status, MFA enforcement, audit timestamps).
+  - Optionally add `sessionRevocations` collection to coordinate forced logout flows.
+- **Client Wiring**
+  - Add `src/lib/firebaseClient.ts` to initialize Firebase SDK with Vite env vars (`VITE_FIREBASE_*`).
+  - Replace `/auth/preview` selector with real `/auth/*` routes that invoke backend endpoints, keeping preview mode behind a feature flag.
+  - Implement authenticated user context/provider hooked up to backend `/auth/me`, removing mock data from `UserContext.tsx`.
+- **Testing & Validation**
+  - Configure Firebase Authentication emulator for local development and document commands for seeding test users.
+  - Add integration/unit tests (or manual checklist) covering login, token refresh, role enforcement, and failure modes.
+  - Run `npm run build` and smoke dashboard flows after each integration milestone.
