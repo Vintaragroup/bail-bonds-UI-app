@@ -17,7 +17,7 @@ interface AuthAuditProps {
 }
 
 export function AuthAudit({ onNavigate }: AuthAuditProps) {
-  const { currentUser, users } = useUser();
+  const { currentUser, users, signOut } = useUser();
   const [timeRange, setTimeRange] = useState('7d');
   const [eventFilter, setEventFilter] = useState('all');
 
@@ -144,7 +144,10 @@ export function AuthAudit({ onNavigate }: AuthAuditProps) {
                 showStatus
                 onProfileClick={() => onNavigate('profile-settings')}
                 onSettingsClick={() => console.log('Settings clicked')}
-                onSignOutClick={() => onNavigate('landing')}
+                onSignOutClick={async () => {
+                  await signOut();
+                  onNavigate('landing');
+                }}
               />
             </div>
           </div>

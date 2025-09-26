@@ -18,7 +18,7 @@ interface ProfileSettingsProps {
 }
 
 export function ProfileSettings({ onNavigate }: ProfileSettingsProps) {
-  const { currentUser } = useUser();
+  const { currentUser, signOut } = useUser();
   const [emailNotifications, setEmailNotifications] = useState(true);
   const [smsNotifications, setSmsNotifications] = useState(false);
 
@@ -57,7 +57,10 @@ export function ProfileSettings({ onNavigate }: ProfileSettingsProps) {
                 showStatus
                 onProfileClick={() => console.log('Profile clicked')}
                 onSettingsClick={() => console.log('Settings clicked')}
-                onSignOutClick={() => onNavigate('landing')}
+                onSignOutClick={async () => {
+                  await signOut();
+                  onNavigate('landing');
+                }}
               />
             </div>
           </div>

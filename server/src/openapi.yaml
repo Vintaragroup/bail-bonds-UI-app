@@ -115,8 +115,75 @@ paths:
                 properties:
                   items:
                     type: array
-                    items:
-                      $ref: '#/components/schemas/CountySnapshotItem'
+            items:
+              $ref: '#/components/schemas/CountySnapshotItem'
+  /auth/session:
+    post:
+      summary: Exchange Firebase ID token for server session
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [idToken]
+              properties:
+                idToken:
+                  type: string
+                  description: Firebase ID token obtained on the client
+      responses:
+        '200':
+          description: Session cookie set
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AuthSessionResponse'
+        '401':
+          description: Invalid token
+        '400':
+          description: Missing idToken
+  /auth/me:
+    get:
+      summary: Current authenticated user profile
+      responses:
+        '200':
+          description: Authenticated user
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AuthProfileResponse'
+        '401':
+          description: Not authenticated
+  /auth/logout:
+    post:
+      summary: Clear session cookie and sign out
+      responses:
+        '200':
+          description: Logged out
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:
+                    type: boolean
+        '401':
+          description: Not authenticated
+  /auth/session/revoke:
+    post:
+      summary: Revoke Firebase refresh tokens for current user
+      responses:
+        '200':
+          description: Sessions revoked
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:
+                    type: boolean
+        '401':
+          description: Not authenticated
 components:
   schemas:
     Money:
@@ -198,6 +265,45 @@ components:
         booking_date: { $ref: '#/components/schemas/DateYMD' }
         bond_amount: { $ref: '#/components/schemas/Money' }
         contacted: { type: boolean }
+    AuthUser:
+      type: object
+      properties:
+        uid: { type: string }
+        email: { type: string, nullable: true }
+        emailVerified: { type: boolean }
+        displayName: { type: string, nullable: true }
+        roles:
+          type: array
+          items: { type: string }
+        departments:
+          type: array
+          items: { type: string }
+        status:
+          type: string
+        mfaEnforced:
+          type: boolean
+        lastLoginAt:
+          type: string
+          format: date-time
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+    AuthSessionResponse:
+      type: object
+      properties:
+        ok: { type: boolean }
+        user: { $ref: '#/components/schemas/AuthUser' }
+        sessionExpiresAt:
+          type: string
+          format: date-time
+    AuthProfileResponse:
+      type: object
+      properties:
+        ok: { type: boolean }
+        user: { $ref: '#/components/schemas/AuthUser' }
         offense: { type: string }
         case_number: { type: string }
     CountySnapshotItem:

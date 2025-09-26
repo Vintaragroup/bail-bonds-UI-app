@@ -19,7 +19,7 @@ interface AdminUserManagementProps {
 }
 
 export function AdminUserManagement({ onNavigate }: AdminUserManagementProps) {
-  const { currentUser, users: contextUsers } = useUser();
+  const { currentUser, users: contextUsers, signOut } = useUser();
   const [searchQuery, setSearchQuery] = useState('');
   const [roleFilter, setRoleFilter] = useState('all');
   const [statusFilter, setStatusFilter] = useState('all');
@@ -141,7 +141,10 @@ export function AdminUserManagement({ onNavigate }: AdminUserManagementProps) {
                 showStatus
                 onProfileClick={() => onNavigate('profile-settings')}
                 onSettingsClick={() => console.log('Settings clicked')}
-                onSignOutClick={() => onNavigate('landing')}
+                onSignOutClick={async () => {
+                  await signOut();
+                  onNavigate('landing');
+                }}
               />
             </div>
           </div>

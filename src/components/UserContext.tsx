@@ -1,88 +1,190 @@
-import React, { createContext, useContext, useState } from 'react';
-import { UserProfile } from './ui/user-avatar';
+import React, {
+  createContext,
+  useContext,
+  useEffect,
+  useMemo,
+  useState,
+  useCallback,
+} from 'react';
+import {
+  signInWithEmailAndPassword,
+  onAuthStateChanged,
+  signOut as firebaseSignOut,
+  User as FirebaseUser,
+} from 'firebase/auth';
+import { firebaseAuthClient } from '../lib/firebaseClient';
+import type { UserProfile } from './ui/user-avatar';
+
+type AuthenticatedUser = UserProfile & {
+  uid: string;
+  roles: string[];
+  departments: string[];
+  status: string;
+  mfaEnforced?: boolean;
+};
 
 interface UserContextType {
-  currentUser: UserProfile | null;
-  setCurrentUser: (user: UserProfile | null) => void;
-  users: UserProfile[];
-  updateUserProfile: (userId: string, updates: Partial<UserProfile>) => void;
+  currentUser: AuthenticatedUser | null;
+  loading: boolean;
+  error: string | null;
+  signInWithEmail: (email: string, password: string) => Promise<void>;
+  signOut: () => Promise<void>;
+  refreshProfile: () => Promise<void>;
+  users: AuthenticatedUser[];
 }
 
 const UserContext = createContext<UserContextType | undefined>(undefined);
 
-// Sample users with different avatar configurations
-const sampleUsers: UserProfile[] = [
-  {
-    id: '1',
-    name: 'Sarah Johnson',
-    email: 'sarah.johnson@bailbonds.com',
-    role: 'Admin',
-    initials: 'SJ',
-    avatarIcon: 'crown',
-    avatarColor: 'purple'
-  },
-  {
-    id: '2', 
-    name: 'Mike Rodriguez',
-    email: 'mike.rodriguez@bailbonds.com',
-    role: 'Agent',
-    initials: 'MR',
-    avatarIcon: 'shield',
-    avatarColor: 'blue'
-  },
-  {
-    id: '3',
-    name: 'Lisa Chen', 
-    email: 'lisa.chen@bailbonds.com',
-    role: 'Agent',
-    initials: 'LC',
-    avatarIcon: 'star',
-    avatarColor: 'emerald'
-  },
-  {
-    id: '4',
-    name: 'David Thompson',
-    email: 'david.thompson@bailbonds.com', 
-    role: 'Supervisor',
-    initials: 'DT',
-    avatarIcon: 'briefcase',
-    avatarColor: 'indigo'
-  },
-  {
-    id: '5',
-    name: 'Jennifer Walsh',
-    email: 'jennifer.walsh@bailbonds.com',
-    role: 'Agent',
-    initials: 'JW',
-    avatarIcon: 'userCheck',
-    avatarColor: 'teal'
+async function exchangeSession(idToken: string) {
+  const response = await fetch('/api/auth/session', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    credentials: 'include',
+    body: JSON.stringify({ idToken }),
+  });
+
+  if (!response.ok) {
+    const message = await response.text();
+    throw new Error(message || 'Failed to establish session');
   }
-];
+}
+
+async function fetchProfile(): Promise<AuthenticatedUser | null> {
+  const response = await fetch('/api/auth/me', {
+    method: 'GET',
+    credentials: 'include',
+  });
+
+  if (response.status === 401) {
+    return null;
+  }
+
+  if (!response.ok) {
+    const message = await response.text();
+    throw new Error(message || 'Profile request failed');
+  }
+
+  const payload = await response.json();
+  return mapProfile(payload?.user);
+}
+
+function mapProfile(user: any): AuthenticatedUser | null {
+  if (!user) return null;
+  const name = user.displayName || user.name || user.email || user.uid;
+  const email = user.email || '';
+  const primaryRole = Array.isArray(user.roles) && user.roles.length ? user.roles[0] : 'BondClient';
+  const initials = typeof name === 'string'
+    ? name
+        .split(' ')
+        .map((part: string) => part.charAt(0))
+        .join('')
+        .slice(0, 2)
+        .toUpperCase()
+    : 'BB';
+
+  return {
+    uid: user.uid,
+    id: user.uid,
+    name,
+    email,
+    role: primaryRole,
+    initials,
+    avatarIcon: user.avatarIcon || 'user',
+    avatarColor: user.avatarColor || 'blue',
+    roles: Array.isArray(user.roles) ? user.roles : [primaryRole],
+    departments: Array.isArray(user.departments) ? user.departments : [],
+    status: user.status || 'active',
+    mfaEnforced: Boolean(user.mfaEnforced),
+    displayName: user.displayName || name,
+    profileImage: user.profileImage || undefined,
+  };
+}
 
 export function UserProvider({ children }: { children: React.ReactNode }) {
-  const [currentUser, setCurrentUser] = useState<UserProfile | null>(sampleUsers[0]);
-  const [users, setUsers] = useState<UserProfile[]>(sampleUsers);
+  const [currentUser, setCurrentUser] = useState<AuthenticatedUser | null>(null);
+  const [loading, setLoading] = useState<boolean>(true);
+  const [error, setError] = useState<string | null>(null);
 
-  const updateUserProfile = (userId: string, updates: Partial<UserProfile>) => {
-    setUsers(prev => prev.map(user => 
-      user.id === userId ? { ...user, ...updates } : user
-    ));
-    
-    if (currentUser?.id === userId) {
-      setCurrentUser(prev => prev ? { ...prev, ...updates } : null);
+  const handleFirebaseUser = useCallback(async (fbUser: FirebaseUser | null) => {
+    if (!fbUser) {
+      setCurrentUser(null);
+      setLoading(false);
+      return;
     }
-  };
 
-  return (
-    <UserContext.Provider value={{
-      currentUser,
-      setCurrentUser,
-      users,
-      updateUserProfile
-    }}>
-      {children}
-    </UserContext.Provider>
-  );
+    try {
+      const idToken = await fbUser.getIdToken(true);
+      await exchangeSession(idToken);
+      const profile = await fetchProfile();
+      setCurrentUser(profile);
+      setError(null);
+    } catch (err) {
+      console.error('Failed to sync Firebase session:', err);
+      setError(err instanceof Error ? err.message : String(err));
+      setCurrentUser(null);
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    const unsubscribe = onAuthStateChanged(firebaseAuthClient, (fbUser) => {
+      setLoading(true);
+      handleFirebaseUser(fbUser);
+    });
+    return () => unsubscribe();
+  }, [handleFirebaseUser]);
+
+  const signInWithEmail = useCallback(async (email: string, password: string) => {
+    setLoading(true);
+    setError(null);
+    try {
+      const credential = await signInWithEmailAndPassword(firebaseAuthClient, email, password);
+      const idToken = await credential.user.getIdToken(true);
+      await exchangeSession(idToken);
+      const profile = await fetchProfile();
+      setCurrentUser(profile);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Failed to sign in';
+      setError(message);
+      throw err;
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  const signOut = useCallback(async () => {
+    setLoading(true);
+    try {
+      await fetch('/api/auth/logout', { method: 'POST', credentials: 'include' });
+      await firebaseSignOut(firebaseAuthClient);
+      setCurrentUser(null);
+      setError(null);
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  const refreshProfile = useCallback(async () => {
+    try {
+      const profile = await fetchProfile();
+      setCurrentUser(profile);
+    } catch (err) {
+      console.error('Failed to refresh profile:', err);
+    }
+  }, []);
+
+  const value = useMemo<UserContextType>(() => ({
+    currentUser,
+    loading,
+    error,
+    signInWithEmail,
+    signOut,
+    refreshProfile,
+    users: currentUser ? [currentUser] : [],
+  }), [currentUser, loading, error, signInWithEmail, signOut, refreshProfile]);
+
+  return <UserContext.Provider value={value}>{children}</UserContext.Provider>;
 }
 
 export function useUser() {
@@ -92,3 +194,5 @@ export function useUser() {
   }
   return context;
 }
+
+export type { AuthenticatedUser };

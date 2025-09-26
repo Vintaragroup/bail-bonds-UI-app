@@ -11,23 +11,31 @@ import Admin from "./pages/Admin";
 import Login from "./pages/Login";
 import Reports from "./pages/Reports";
 import AuthPreview from "./pages/AuthPreview";
+import AuthRoutes from "./pages/AuthRoutes";
+import { UserProvider } from "./components/UserContext";
+
+const AUTH_PREVIEW_ENABLED = import.meta.env.VITE_ENABLE_AUTH_PREVIEW === "true" || import.meta.env.DEV;
 
 export default function App() {
   return (
-    <Routes>
-      <Route path="/login" element={<Login />} />
-      <Route path="/auth/preview" element={<AuthPreview />} />
-      <Route element={<AppLayout />}>
-        <Route path="/" element={<Dashboard />} />
-        <Route path="/cases" element={<Cases />} />
-        <Route path="/cases/:caseId" element={<CaseDetail />} />
-        <Route path="/check-ins" element={<CheckIns />} />
-        <Route path="/calendar" element={<Calendar />} />
-        <Route path="/payments" element={<Payments />} />
-        <Route path="/messages" element={<Messages />} />
-        <Route path="/reports" element={<Reports />} />
-        <Route path="/admin" element={<Admin />} />
-      </Route>
-    </Routes>
+    <UserProvider>
+      <Routes>
+        <Route path="/login" element={<Login />} />
+        <Route path="/auth" element={<AuthRoutes />} />
+        <Route path="/auth/:screen" element={<AuthRoutes />} />
+        {AUTH_PREVIEW_ENABLED && <Route path="/auth/preview" element={<AuthPreview />} />}
+        <Route element={<AppLayout />}>
+          <Route path="/" element={<Dashboard />} />
+          <Route path="/cases" element={<Cases />} />
+          <Route path="/cases/:caseId" element={<CaseDetail />} />
+          <Route path="/check-ins" element={<CheckIns />} />
+          <Route path="/calendar" element={<Calendar />} />
+          <Route path="/payments" element={<Payments />} />
+          <Route path="/messages" element={<Messages />} />
+          <Route path="/reports" element={<Reports />} />
+          <Route path="/admin" element={<Admin />} />
+        </Route>
+      </Routes>
+    </UserProvider>
   );
 }

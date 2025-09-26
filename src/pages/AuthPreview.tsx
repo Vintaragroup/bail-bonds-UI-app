@@ -13,7 +13,6 @@ import { AdminUserManagement } from '../components/auth/AdminUserManagement';
 import { AuthAudit } from '../components/auth/AuthAudit';
 import { DesignSystemGuide } from '../components/DesignSystemGuide';
 import { AvatarShowcase } from '../components/AvatarShowcase';
-import { UserProvider } from '../components/UserContext';
 import type { AuthScreen } from '../components/auth/types';
 
 const SCREEN_COMPONENTS: Record<AuthScreen, (props: { onNavigate: (screen: AuthScreen) => void }) => JSX.Element> = {
@@ -55,23 +54,21 @@ export default function AuthPreview() {
   const CurrentScreen = SCREEN_COMPONENTS[current];
 
   return (
-    <UserProvider>
-      <div className="min-h-screen bg-background">
-        <div className="fixed top-4 right-4 z-50 flex gap-2">
-          <select
-            value={current}
-            onChange={(event) => setCurrent(event.target.value as AuthScreen)}
-            className="bg-white border border-accent rounded-lg px-3 py-2 text-sm shadow-sm"
-          >
-            {SCREEN_OPTIONS.map((option) => (
-              <option key={option.value} value={option.value}>
-                {option.label}
-              </option>
-            ))}
-          </select>
-        </div>
-        <CurrentScreen onNavigate={setCurrent} />
+    <div className="min-h-screen bg-background">
+      <div className="fixed top-4 right-4 z-50 flex gap-2">
+        <select
+          value={current}
+          onChange={(event) => setCurrent(event.target.value as AuthScreen)}
+          className="bg-white border border-accent rounded-lg px-3 py-2 text-sm shadow-sm"
+        >
+          {SCREEN_OPTIONS.map((option) => (
+            <option key={option.value} value={option.value}>
+              {option.label}
+            </option>
+          ))}
+        </select>
       </div>
-    </UserProvider>
+      <CurrentScreen onNavigate={setCurrent} />
+    </div>
   );
 }

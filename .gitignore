@@ -31,3 +31,4 @@ tmp/*HAR_v*.har
 
 # Secrets & Firebase keys
 .secrets/
+.env

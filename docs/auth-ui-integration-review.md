@@ -120,6 +120,9 @@ Once we settle the decisions above, we can begin editing `package.json`, `vite.c
 - **2025-01-14 @ 11:25:** Dependencies installed cleanly on `feature/auth-integration-prep`; dashboard and `/auth/preview` verified after restart with no regressions observed.
 - **2025-01-14 @ 11:45:** Firebase Admin key generated (stored outside repo), env placeholders added, and Firebase client/admin dependencies noted for upcoming auth wiring.
 - **2025-01-14 @ 12:05:** Added Firebase Admin helper, auth middleware/routes, `User` model, and frontend client bootstrap to begin wiring session handling.
+- **2025-01-14 @ 12:40:** Implemented React auth context backed by Firebase + `/api/auth` endpoints; build passes (`npm run build`).
+- **2025-01-14 @ 13:00:** Added `/auth/*` router integration with Firebase-backed context (preview gated via env flag) and verified production build; populated local Vite env with Firebase web config to eliminate `auth/invalid-api-key` errors.
+- **Next:** Define `/api/auth/session`, `/api/auth/me`, `/api/auth/logout`, and `/api/auth/session/revoke` contracts in `server/src/openapi.yaml` and align Express handlers with the documented responses.
 
 ## 7. Backend/Firebase Integration Checklist (In Progress)
 - **Environment & Secrets**
