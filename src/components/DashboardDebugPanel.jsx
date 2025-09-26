@@ -101,9 +101,24 @@ export default function DashboardDebugPanel({ refreshInterval = 60000 }) {
                   <td className="px-1 py-0.5 text-right tabular-nums text-red-600">{r.errors||0}</td>
                   <td className="px-1 py-0.5 text-right tabular-nums">{prettyMillis(r.p95)}</td>
                   <td className="px-1 py-0.5 text-right tabular-nums">
-                    {r.variants && typeof r.variants === 'object' ? Object.entries(r.variants).map(([v,c]) => (
-                      <span key={v} className="inline-block px-1 bg-slate-200 rounded mr-0.5" title={v}>{v}:{c}</span>
-                    )) : null}
+                    {r.variants && typeof r.variants === 'object'
+                      ? Object.entries(r.variants).map(([v, c]) => {
+                          const value = typeof c === 'object' && c !== null
+                            ? Object.entries(c)
+                                .map(([key, val]) => `${key}:${val}`)
+                                .join(',')
+                            : c;
+                          return (
+                            <span
+                              key={v}
+                              className="inline-block px-1 bg-slate-200 rounded mr-0.5"
+                              title={v}
+                            >
+                              {v}:{value}
+                            </span>
+                          );
+                        })
+                      : null}
                   </td>
                 </tr>
               ))}
