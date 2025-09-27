@@ -15,6 +15,14 @@ import { AdminUserManagement } from '../components/auth/AdminUserManagement';
 import { AuthAudit } from '../components/auth/AuthAudit';
 import { DesignSystemGuide } from '../components/DesignSystemGuide';
 import { AvatarShowcase } from '../components/AvatarShowcase';
+import { BillingDashboard } from '../components/payments/BillingDashboard';
+import { PaymentMethods } from '../components/payments/PaymentMethods';
+import { PaymentForm } from '../components/payments/PaymentForm';
+import { PaymentConfirmation } from '../components/payments/PaymentConfirmation';
+import { PaymentHistory } from '../components/payments/PaymentHistory';
+import { PaymentSettings } from '../components/payments/PaymentSettings';
+import { RefundProcessing } from '../components/payments/RefundProcessing';
+import { PaymentDisputes } from '../components/payments/PaymentDisputes';
 import type { AuthScreen } from '../components/auth/types';
 import { useUser } from '../components/UserContext';
 
@@ -33,6 +41,14 @@ const SCREEN_COMPONENTS: Record<AuthScreen, React.ComponentType<{ onNavigate: (s
   'auth-audit': AuthAudit,
   'design-guide': DesignSystemGuide,
   'avatar-showcase': AvatarShowcase,
+  'billing-dashboard': BillingDashboard,
+  'payment-methods': PaymentMethods,
+  'payment-form': PaymentForm,
+  'payment-confirmation': PaymentConfirmation,
+  'payment-history': PaymentHistory,
+  'payment-settings': PaymentSettings,
+  'refund-processing': RefundProcessing,
+  'payment-disputes': PaymentDisputes,
 };
 
 export function AuthRoutes() {

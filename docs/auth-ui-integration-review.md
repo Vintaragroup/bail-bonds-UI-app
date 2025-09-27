@@ -141,6 +141,8 @@ Once we settle the decisions above, we can begin editing `package.json`, `vite.c
 - **2025-01-15 @ 16:30:** Wired Admin user management to `/api/metadata`, replacing hard-coded role/county lists with dynamic values, scoped validation, and fallback messaging; added `useMetadataWithFallback` hook and re-validated with `npm run build`.
 - **2025-01-15 @ 16:45:** Finalized metadata-driven admin tools, cut a branch push (`feature/auth-integration-prep`), and prepped for QA handoff.
 - **2025-01-15 @ 17:10:** Locked down deployment playbook (`docs/deployment-containerization.md`), ran smoke `npm run build`, and staged final auth deliverables for production readiness review.
+- **2025-01-15 @ 17:40:** Scaffolded `/api/payments/*` endpoints with stub data + OpenAPI docs, extended role permissions (`billing:*`), and introduced `Payment` model ahead of Stripe integration.
+- **2025-01-15 @ 18:05:** Wired payment preview screens to the new `/api/payments` hooks (metrics, history, methods, refunds, disputes) and surfaced optimistic toasts for mutations.
 - **Next:** Fine-tune role-based permissions within individual handlers and prepare E2E auth tests.
 
 ## 8. Go-Live Touchpoints

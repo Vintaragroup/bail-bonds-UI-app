@@ -12,4 +12,12 @@ export type AuthScreen =
   | 'admin-users'
   | 'auth-audit'
   | 'design-guide'
-  | 'avatar-showcase';
+  | 'avatar-showcase'
+  | 'billing-dashboard'
+  | 'payment-methods'
+  | 'payment-form'
+  | 'payment-confirmation'
+  | 'payment-history'
+  | 'payment-settings'
+  | 'refund-processing'
+  | 'payment-disputes';

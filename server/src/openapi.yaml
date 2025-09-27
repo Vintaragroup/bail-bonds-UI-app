@@ -328,6 +328,256 @@ paths:
           description: Forbidden
         '404':
           description: User not found
+  /payments:
+    get:
+      summary: List payment transactions
+      tags: [Payments]
+      parameters:
+        - in: query
+          name: status
+          schema:
+            type: string
+            description: Filter by payment status
+        - in: query
+          name: method
+          schema:
+            type: string
+            description: Filter by payment method (card, ach_debit, wire, check)
+        - in: query
+          name: search
+          schema:
+            type: string
+            description: Match transaction ID, client name, or bond number (case-insensitive)
+      responses:
+        '200':
+          description: Payments list
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PaymentListResponse'
+        '403':
+          description: Forbidden
+    post:
+      summary: Create a payment (placeholder until gateway integration)
+      tags: [Payments]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PaymentCreateRequest'
+      responses:
+        '202':
+          description: Payment accepted for processing
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PaymentCreateResponse'
+        '400':
+          description: Validation error
+        '403':
+          description: Forbidden
+
+  /payments/metrics:
+    get:
+      summary: Payment dashboard metrics
+      tags: [Payments]
+      responses:
+        '200':
+          description: Metrics payload
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PaymentMetricsResponse'
+        '403':
+          description: Forbidden
+
+  /payments/{id}:
+    get:
+      summary: Retrieve a payment detail record
+      tags: [Payments]
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          description: Payment detail
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PaymentDetailResponse'
+        '403':
+          description: Forbidden
+        '404':
+          description: Not found
+
+  /payments/{id}/refund:
+    post:
+      summary: Submit a refund request for a payment
+      tags: [Payments]
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PaymentRefundRequest'
+      responses:
+        '202':
+          description: Refund accepted
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PaymentRefundResponse'
+        '400':
+          description: Validation error
+        '403':
+          description: Forbidden
+        '404':
+          description: Payment not found
+
+  /payments/methods:
+    get:
+      summary: List stored payment methods
+      tags: [Payments]
+      responses:
+        '200':
+          description: Payment methods
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PaymentMethodsResponse'
+        '403':
+          description: Forbidden
+    post:
+      summary: Add a payment method (placeholder)
+      tags: [Payments]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PaymentMethodCreateRequest'
+      responses:
+        '201':
+          description: Payment method created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PaymentMethodCreateResponse'
+        '400':
+          description: Validation error
+        '403':
+          description: Forbidden
+
+  /payments/settings:
+    get:
+      summary: Retrieve payment configuration settings
+      tags: [Payments]
+      responses:
+        '200':
+          description: Settings payload
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PaymentSettingsResponse'
+        '403':
+          description: Forbidden
+    put:
+      summary: Update payment configuration settings
+      tags: [Payments]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PaymentSettings'
+      responses:
+        '200':
+          description: Updated settings
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PaymentSettingsResponse'
+        '400':
+          description: Validation error
+        '403':
+          description: Forbidden
+
+  /payments/refunds/eligible:
+    get:
+      summary: List transactions eligible for refunds
+      tags: [Payments]
+      responses:
+        '200':
+          description: Eligible transactions
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PaymentRefundEligibleResponse'
+        '403':
+          description: Forbidden
+
+  /payments/refunds/requests:
+    get:
+      summary: List refund requests and their statuses
+      tags: [Payments]
+      responses:
+        '200':
+          description: Refund requests
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PaymentRefundRequestListResponse'
+        '403':
+          description: Forbidden
+
+  /payments/disputes:
+    get:
+      summary: List active payment disputes
+      tags: [Payments]
+      responses:
+        '200':
+          description: Disputes list
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PaymentDisputesResponse'
+        '403':
+          description: Forbidden
+
+  /payments/disputes/{id}/resolve:
+    post:
+      summary: Submit supporting information for a dispute
+      tags: [Payments]
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PaymentDisputeResolveRequest'
+      responses:
+        '200':
+          description: Dispute updated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PaymentDisputeResponse'
+        '403':
+          description: Forbidden
+        '404':
+          description: Dispute not found
   /access-requests:
     get:
       summary: List pending access requests
@@ -582,6 +832,277 @@ components:
           type: string
           enum: ['active','suspended','invited','pending_mfa','deleted']
         mfaEnforced: { type: boolean }
+    Payment:
+      type: object
+      properties:
+        id: { type: string }
+        transactionId: { type: string }
+        amount: { $ref: '#/components/schemas/Money' }
+        fees: { $ref: '#/components/schemas/Money', nullable: true }
+        netAmount: { $ref: '#/components/schemas/Money', nullable: true }
+        currency: { type: string, example: 'usd' }
+        method: { type: string, example: 'card' }
+        status: { type: string, example: 'completed' }
+        bondNumber: { type: string, nullable: true }
+        clientName: { type: string, nullable: true }
+        clientEmail: { type: string, format: email, nullable: true }
+        processedAt: { type: string, format: date-time, nullable: true }
+        createdAt: { type: string, format: date-time, nullable: true }
+        updatedAt: { type: string, format: date-time, nullable: true }
+        flags:
+          type: array
+          items: { type: string }
+        failureReason: { type: string, nullable: true }
+        processor:
+          type: object
+          additionalProperties: true
+    PaymentListResponse:
+      type: object
+      properties:
+        items:
+          type: array
+          items: { $ref: '#/components/schemas/Payment' }
+        total: { type: integer }
+    PaymentCreateRequest:
+      type: object
+      required: [amount]
+      properties:
+        amount: { $ref: '#/components/schemas/Money' }
+        currency: { type: string, default: 'usd' }
+        method: { type: string, default: 'card' }
+        clientName: { type: string }
+        clientEmail: { type: string, format: email }
+        bondNumber: { type: string }
+        metadata:
+          type: object
+          additionalProperties: true
+    PaymentCreateResponse:
+      type: object
+      properties:
+        payment:
+          $ref: '#/components/schemas/Payment'
+    PaymentDetailResponse:
+      type: object
+      properties:
+        payment:
+          $ref: '#/components/schemas/Payment'
+    PaymentRefundRequest:
+      type: object
+      required: [amount]
+      properties:
+        amount: { $ref: '#/components/schemas/Money' }
+        reason: { type: string }
+    PaymentRefund:
+      type: object
+      properties:
+        id: { type: string }
+        transactionId: { type: string }
+        amount: { $ref: '#/components/schemas/Money' }
+        currency: { type: string }
+        status: { type: string }
+        requestedAt: { type: string, format: date-time }
+        resolvedAt: { type: string, format: date-time, nullable: true }
+    PaymentRefundResponse:
+      type: object
+      properties:
+        refund:
+          $ref: '#/components/schemas/PaymentRefund'
+    PaymentMethod:
+      type: object
+      properties:
+        id: { type: string }
+        type: { type: string, example: 'card' }
+        brand: { type: string, nullable: true }
+        last4: { type: string, nullable: true }
+        expiryMonth: { type: integer, nullable: true }
+        expiryYear: { type: integer, nullable: true }
+        bankName: { type: string, nullable: true }
+        accountType: { type: string, nullable: true }
+        label: { type: string, nullable: true }
+        isDefault: { type: boolean }
+        status: { type: string }
+    PaymentMethodsResponse:
+      type: object
+      properties:
+        methods:
+          type: array
+          items: { $ref: '#/components/schemas/PaymentMethod' }
+    PaymentMethodCreateRequest:
+      type: object
+      properties:
+        type: { type: string, default: 'card' }
+        brand: { type: string }
+        last4: { type: string }
+        expiryMonth: { type: integer }
+        expiryYear: { type: integer }
+        label: { type: string }
+        isDefault: { type: boolean }
+    PaymentMethodCreateResponse:
+      type: object
+      properties:
+        method:
+          $ref: '#/components/schemas/PaymentMethod'
+    PaymentSettings:
+      type: object
+      properties:
+        defaultMethodId: { type: string }
+        acceptedMethods:
+          type: array
+          items: { type: string }
+        autoCapture: { type: boolean }
+        autoCaptureDelayMinutes: { type: integer, nullable: true }
+        receiptEmailEnabled: { type: boolean }
+        approvalThreshold: { type: integer, nullable: true }
+        twoPersonApproval: { type: boolean }
+        notifyOnLargePayment: { type: boolean }
+        notifyRecipients:
+          type: array
+          items: { type: string, format: email }
+        automationRules:
+          type: array
+          items:
+            type: object
+            properties:
+              id: { type: string }
+              title: { type: string }
+              enabled: { type: boolean }
+    PaymentSettingsResponse:
+      type: object
+      properties:
+        settings:
+          $ref: '#/components/schemas/PaymentSettings'
+    PaymentRefundEligibleItem:
+      type: object
+      properties:
+        id: { type: string }
+        caseNumber: { type: string }
+        client: { type: string }
+        originalAmount: { $ref: '#/components/schemas/Money' }
+        refundableAmount: { $ref: '#/components/schemas/Money' }
+        status: { type: string }
+        daysAgo: { type: integer }
+    PaymentRefundEligibleResponse:
+      type: object
+      properties:
+        items:
+          type: array
+          items: { $ref: '#/components/schemas/PaymentRefundEligibleItem' }
+    PaymentRefundRequestItem:
+      type: object
+      properties:
+        id: { type: string }
+        transactionId: { type: string }
+        client: { type: string }
+        requestedAt: { type: string, format: date-time }
+        amount: { $ref: '#/components/schemas/Money' }
+        status: { type: string }
+        reason: { type: string }
+        requestedBy: { type: string, nullable: true }
+    PaymentRefundRequestListResponse:
+      type: object
+      properties:
+        items:
+          type: array
+          items: { $ref: '#/components/schemas/PaymentRefundRequestItem' }
+    PaymentDispute:
+      type: object
+      properties:
+        id: { type: string }
+        transactionId: { type: string }
+        amount: { $ref: '#/components/schemas/Money' }
+        openedAt: { type: string, format: date-time }
+        client: { type: string }
+        reason: { type: string }
+        status: { type: string }
+        responseDeadline: { type: string, format: date-time, nullable: true }
+        resolvedAt: { type: string, format: date-time, nullable: true }
+        notes: { type: string, nullable: true }
+    PaymentDisputesResponse:
+      type: object
+      properties:
+        items:
+          type: array
+          items: { $ref: '#/components/schemas/PaymentDispute' }
+    PaymentDisputeResolveRequest:
+      type: object
+      properties:
+        notes: { type: string }
+        documents:
+          type: array
+          items:
+            type: object
+            properties:
+              name: { type: string }
+              url: { type: string, format: uri }
+    PaymentDisputeResponse:
+      type: object
+      properties:
+        dispute:
+          $ref: '#/components/schemas/PaymentDispute'
+    PaymentMetricsResponse:
+      type: object
+      properties:
+        summary:
+          type: object
+          properties:
+            totalRevenue:
+              type: object
+              properties:
+                value: { $ref: '#/components/schemas/Money' }
+                currency: { type: string }
+                changeRatio: { type: number }
+                label: { type: string }
+            activeBonds:
+              type: object
+              properties:
+                value: { type: integer }
+                change: { type: integer }
+                label: { type: string }
+            successRate:
+              type: object
+              properties:
+                value: { type: number }
+                change: { type: number }
+                label: { type: string }
+            pendingPayments:
+              type: object
+              properties:
+                value: { type: integer }
+                change: { type: integer }
+                label: { type: string }
+        methodBreakdown:
+          type: array
+          items:
+            type: object
+            properties:
+              method: { type: string }
+              percentage: { type: number }
+        revenueTrend:
+          type: array
+          items:
+            type: object
+            properties:
+              month: { type: string }
+              amount: { $ref: '#/components/schemas/Money' }
+        alerts:
+          type: array
+          items:
+            type: object
+            properties:
+              id: { type: string }
+              severity: { type: string }
+              title: { type: string }
+              description: { type: string }
+        upcomingPayouts:
+          type: array
+          items:
+            type: object
+            properties:
+              id: { type: string }
+              arrivalDate: { type: string, format: date-time }
+              amount: { $ref: '#/components/schemas/Money' }
+              status: { type: string }
+              method: { type: string }
     AccessRequest:
       type: object
       properties:

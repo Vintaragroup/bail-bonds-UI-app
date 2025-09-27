@@ -5,20 +5,26 @@ export const ROLE_PERMISSIONS = {
     'cases:read',
     'cases:write',
     'users:manage',
+    'billing:read',
+    'billing:manage',
   ],
   DepartmentLead: [
     'dashboard:read',
     'cases:read',
     'cases:write:department',
     'users:manage:department',
+    'billing:read',
+    'billing:manage:department',
   ],
   Employee: [
     'dashboard:read',
     'cases:read:department',
+    'billing:read',
   ],
   Sales: [
     'dashboard:read',
     'cases:read:department',
+    'billing:read',
   ],
   BondClient: ['cases:read:self'],
 };
