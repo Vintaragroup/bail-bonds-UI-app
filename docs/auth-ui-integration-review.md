@@ -127,7 +127,18 @@ Once we settle the decisions above, we can begin editing `package.json`, `vite.c
 - **2025-01-14 @ 14:05:** Integrated Firebase email magic-link flow (send & callback) via updated `useUser` context; build still passes.
 - **2025-01-14 @ 14:25:** Enabled Google/Apple sign-in via Firebase providers, wired buttons to context, and confirmed build (`npm run build`).
 - **2025-01-14 @ 14:40:** Added basic auth event logging, enforced `requireAuth` on dashboard/case routes, build still passes.
-- **2025-01-14 @ 15:05:** Persisting auth audits to Mongo and introducing `requireAuth` guards on protected routes (`npm run build` OK).
+- **2025-01-14 @ 15:05:** Persisted auth audits to Mongo, introduced `requireAuth` guards, added role helper; `npm run build` OK.
+- **2025-01-15 @ 10:45:** Extended authz helper across `/api/cases`, `/api/checkins`, and `/api/cases/*documents` to enforce read/write permissions and department scoping (where data supports it).
+- **2025-01-15 @ 11:30:** Wired frontend to Firebase auth: added `RequireAuth` guard, login redirect flow, and ensured all API fetches send cookies (`credentials:include`); verified with `npm run build`.
+- **2025-01-15 @ 13:20:** Landed `/api/users` management endpoints (list/create/update/revoke), added county-aware scoping + new user schema fields (`counties`, `invitedAt`, `lastRoleChangeAt`), and refreshed OpenAPI docs; `npm run build` still passes.
+- **2025-01-15 @ 14:25:** Wired Admin UI to new `/api/users` endpoints (React Query data table, invite/edit dialogs, session revoke) and added client hooks; build validated with `npm run build`.
+- **2025-01-15 @ 14:55:** Replaced self-service signup with access-request flow (`/api/auth/access-request` + login dialog); request form logs invites for admins and build still passes.
+- **2025-01-15 @ 15:05:** Added `npm run server:firebase:create-user` helper script (wraps Firebase Admin SDK) to bootstrap the first SuperUser account.
+- **2025-01-15 @ 15:20:** Added Vite dev proxy for `/api/*` so local front-end hits the Node API (cookie-based session exchange now works without manual host overrides).
+- **2025-01-15 @ 15:35:** Header now shows role-aware avatar (SuperUser/Admin icons) that links to profile settings and keeps a visible sign-out control.
+- **2025-01-15 @ 15:40:** Added back-navigation to profile settings header so admins can return to the main auth hub quickly.
+- **2025-01-15 @ 16:05:** Surfaced access-request queue in Admin UI with approve/reject actions; added `/api/access-requests` endpoints + React Query hooks to manage statuses.
+- **2025-01-15 @ 16:30:** Wired Admin user management to `/api/metadata`, replacing hard-coded role/county lists with dynamic values, scoped validation, and fallback messaging; added `useMetadataWithFallback` hook and re-validated with `npm run build`.
 - **Next:** Fine-tune role-based permissions within individual handlers and prepare E2E auth tests.
 
 ## 7. Backend/Firebase Integration Checklist (In Progress)

@@ -1543,7 +1543,10 @@ function ProbeSection({ county, countyKey, selectedDayLabel }) {
     const started = performance.now();
     let status = 0, ok = false, ms = 0, summary = '', data = null;
     try {
-      const res = await fetch(url, { headers: { 'Cache-Control': 'no-cache' } });
+      const res = await fetch(url, {
+        headers: { 'Cache-Control': 'no-cache' },
+        credentials: 'include',
+      });
       status = res.status;
       ok = res.ok;
       data = await res.json().catch(() => null);

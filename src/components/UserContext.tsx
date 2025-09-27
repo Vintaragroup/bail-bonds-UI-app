@@ -25,6 +25,7 @@ type AuthenticatedUser = UserProfile & {
   uid: string;
   roles: string[];
   departments: string[];
+  counties: string[];
   status: string;
   mfaEnforced?: boolean;
 };
@@ -90,6 +91,25 @@ function mapProfile(user: any): AuthenticatedUser | null {
         .toUpperCase()
     : 'BB';
 
+  let avatarIcon = user.avatarIcon || null;
+  let avatarColor = user.avatarColor || null;
+  const roles = Array.isArray(user.roles) ? user.roles : [primaryRole];
+
+  if (!avatarIcon) {
+    if (roles.includes('SuperUser')) avatarIcon = 'crown';
+    else if (roles.includes('Admin')) avatarIcon = 'shield';
+    else if (roles.includes('DepartmentLead')) avatarIcon = 'briefcase';
+    else if (roles.includes('Employee')) avatarIcon = 'userCheck';
+    else avatarIcon = 'user';
+  }
+
+  if (!avatarColor) {
+    if (roles.includes('SuperUser')) avatarColor = 'purple';
+    else if (roles.includes('Admin')) avatarColor = 'indigo';
+    else if (roles.includes('DepartmentLead')) avatarColor = 'emerald';
+    else avatarColor = 'blue';
+  }
+
   return {
     uid: user.uid,
     id: user.uid,
@@ -97,10 +117,11 @@ function mapProfile(user: any): AuthenticatedUser | null {
     email,
     role: primaryRole,
     initials,
-    avatarIcon: user.avatarIcon || 'user',
-    avatarColor: user.avatarColor || 'blue',
-    roles: Array.isArray(user.roles) ? user.roles : [primaryRole],
+    avatarIcon,
+    avatarColor,
+    roles,
     departments: Array.isArray(user.departments) ? user.departments : [],
+    counties: Array.isArray(user.counties) ? user.counties : [],
     status: user.status || 'active',
     mfaEnforced: Boolean(user.mfaEnforced),
     displayName: user.displayName || name,

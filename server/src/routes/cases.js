@@ -3,6 +3,7 @@ import mongoose from 'mongoose';
 import Case from '../models/Case.js';
 import Message from '../models/Message.js';
 import CaseAudit from '../models/CaseAudit.js';
+import { assertPermission as ensurePermission, filterByDepartment } from './utils/authz.js';
 
 // Per-file DB timeout for potentially expensive queries (env overridable)
 // Bump a bit for wide attention scans to avoid near-miss timeouts
@@ -57,6 +58,18 @@ const CRM_CHECKLIST = [
   { key: 'collateral', label: 'Collateral documented', required: false },
   { key: 'co_signer', label: 'Co-signer interviewed', required: false },
 ];
+
+const CASE_SCOPE_FIELDS = [
+  'crm_details.assignedDepartment',
+  'crm_details.department',
+  'crm_details.assignedTo',
+  'department',
+  'county',
+];
+
+function scopedCaseFilter(req, baseFilter = {}, options = { includeUnassigned: true }) {
+  return filterByDepartment(baseFilter, req, CASE_SCOPE_FIELDS, options);
+}
 
 function ensureMongoConnected(res) {
   if (!mongoose.connection || mongoose.connection.readyState !== 1) {
@@ -223,21 +236,34 @@ r.get('/meta', (_req, res) => {
   });
 });
 
-r.get('/stats', async (_req, res) => {
+r.get('/stats', async (req, res) => {
   try {
     if (!ensureMongoConnected(res)) return;
-    const cacheKey = 'cases:stats:v1';
+    ensurePermission(req, ['cases:read', 'cases:read:department']);
+
+    const rolesKey = Array.isArray(req.user?.roles)
+      ? [...req.user.roles].sort().join(',')
+      : 'none';
+    const deptKey = Array.isArray(req.user?.departments)
+      ? [...req.user.departments].sort().join(',')
+      : 'none';
+    const cacheKey = `cases:stats:v1:${rolesKey}:${deptKey}`;
+
     const { fromCache, data } = await withCache(cacheKey, async () => {
+      const startOfToday = new Date();
+      startOfToday.setHours(0, 0, 0, 0);
+      const endOfToday = new Date(startOfToday);
+      endOfToday.setDate(endOfToday.getDate() + 1);
+      const upcomingEnd = new Date(startOfToday);
+      upcomingEnd.setDate(upcomingEnd.getDate() + 7);
 
-    const startOfToday = new Date();
-    startOfToday.setHours(0, 0, 0, 0);
-    const endOfToday = new Date(startOfToday);
-    endOfToday.setDate(endOfToday.getDate() + 1);
-    const upcomingEnd = new Date(startOfToday);
-    upcomingEnd.setDate(upcomingEnd.getDate() + 7);
+      const scopedMatch = scopedCaseFilter(req, {});
+      const pipeline = [];
+      if (Object.keys(scopedMatch).length) {
+        pipeline.push({ $match: scopedMatch });
+      }
 
-    const agg = Case.aggregate([
-      {
+      pipeline.push({
         $facet: {
           stages: [
             {
@@ -429,86 +455,90 @@ r.get('/stats', async (_req, res) => {
             },
           ],
         },
-      },
-    ]).option({ maxTimeMS: MAX_DB_MS, allowDiskUse: true });
-
-    const [result] = await withTimeout(agg.exec(), MAX_DB_MS, 'stats.aggregate').catch((err) => {
-      console.error('GET /cases/stats aggregate failed', err?.message);
-      return [{}];
-    });
-
-    const stageCounts = {};
-    let totalCases = 0;
-    if (Array.isArray(result?.stages)) {
-      result.stages.forEach((row) => {
-        const key = row?._id || 'unknown';
-        const count = Number(row?.count || 0);
-        stageCounts[key] = count;
-        totalCases += count;
       });
-    }
-    CRM_STAGES.forEach((stage) => {
-      if (!Object.prototype.hasOwnProperty.call(stageCounts, stage)) {
-        stageCounts[stage] = 0;
+
+      const agg = Case.aggregate(pipeline).option({ maxTimeMS: MAX_DB_MS, allowDiskUse: true });
+
+      const [result] = await withTimeout(agg.exec(), MAX_DB_MS, 'stats.aggregate').catch((err) => {
+        console.error('GET /cases/stats aggregate failed', err?.message);
+        return [{}];
+      });
+
+      const stageCounts = {};
+      let totalCases = 0;
+      if (Array.isArray(result?.stages)) {
+        result.stages.forEach((row) => {
+          const key = row?._id || 'unknown';
+          const count = Number(row?.count || 0);
+          stageCounts[key] = count;
+          totalCases += count;
+        });
       }
-    });
-
-    const followRaw = Array.isArray(result?.followUps) ? result.followUps[0] || {} : {};
-    const followUps = {
-      overdue: Number(followRaw.overdue || 0),
-      dueToday: Number(followRaw.dueToday || 0),
-      upcoming: Number(followRaw.upcoming || 0),
-      unscheduled: Number(followRaw.unscheduled || 0),
-    };
-
-    const checklistRaw = Array.isArray(result?.checklist) ? result.checklist[0] || {} : {};
-    const checklist = {
-      totalPending: Number(checklistRaw.totalPending || 0),
-      requiredPending: Number(checklistRaw.requiredPending || 0),
-      casesMissingRequired: Number(checklistRaw.casesMissingRequired || 0),
-    };
-
-    const assignments = { assigned: 0, unassigned: 0 };
-    if (Array.isArray(result?.assignments)) {
-      result.assignments.forEach((row) => {
-        if (!row?._id) return;
-        if (row._id === 'unassigned') assignments.unassigned = Number(row.count || 0);
-        else assignments.assigned += Number(row.count || 0);
+      CRM_STAGES.forEach((stage) => {
+        if (!Object.prototype.hasOwnProperty.call(stageCounts, stage)) {
+          stageCounts[stage] = 0;
+        }
       });
-    }
 
-    const tags = {};
-    if (Array.isArray(result?.tags)) {
-      result.tags.forEach((row) => {
-        if (!row?._id) return;
-        tags[row._id] = Number(row.count || 0);
-      });
-    }
+      const followRaw = Array.isArray(result?.followUps) ? result.followUps[0] || {} : {};
+      const followUps = {
+        overdue: Number(followRaw.overdue || 0),
+        dueToday: Number(followRaw.dueToday || 0),
+        upcoming: Number(followRaw.upcoming || 0),
+        unscheduled: Number(followRaw.unscheduled || 0),
+      };
 
-    const attentionRaw = Array.isArray(result?.attention) ? result.attention[0] || {} : {};
-    const attention = {
-      needsAttention: Number(attentionRaw.needsAttention || 0),
-      referToMagistrate: Number(attentionRaw.referToMagistrate || 0),
-      letterSuffix: Number(attentionRaw.letterSuffix || 0),
-    };
+      const checklistRaw = Array.isArray(result?.checklist) ? result.checklist[0] || {} : {};
+      const checklist = {
+        totalPending: Number(checklistRaw.totalPending || 0),
+        requiredPending: Number(checklistRaw.requiredPending || 0),
+        casesMissingRequired: Number(checklistRaw.casesMissingRequired || 0),
+      };
 
-    return {
-      stages: stageCounts,
-      followUps,
-      checklist,
-      assignments,
-      tags,
-      attention,
-      totals: {
-        cases: totalCases,
-      },
-      generatedAt: new Date().toISOString(),
-    };
+      const assignments = { assigned: 0, unassigned: 0 };
+      if (Array.isArray(result?.assignments)) {
+        result.assignments.forEach((row) => {
+          if (!row?._id) return;
+          if (row._id === 'unassigned') assignments.unassigned = Number(row.count || 0);
+          else assignments.assigned += Number(row.count || 0);
+        });
+      }
+
+      const tags = {};
+      if (Array.isArray(result?.tags)) {
+        result.tags.forEach((row) => {
+          if (!row?._id) return;
+          tags[row._id] = Number(row.count || 0);
+        });
+      }
+
+      const attentionRaw = Array.isArray(result?.attention) ? result.attention[0] || {} : {};
+      const attention = {
+        needsAttention: Number(attentionRaw.needsAttention || 0),
+        referToMagistrate: Number(attentionRaw.referToMagistrate || 0),
+        letterSuffix: Number(attentionRaw.letterSuffix || 0),
+      };
+
+      return {
+        stages: stageCounts,
+        followUps,
+        checklist,
+        assignments,
+        tags,
+        attention,
+        totals: {
+          cases: totalCases,
+        },
+        generatedAt: new Date().toISOString(),
+      };
     });
     res.set('X-Cache', data && fromCache ? 'HIT' : 'MISS');
     res.json(data);
   } catch (err) {
     console.error('GET /cases/stats error:', err);
+    if (err?.statusCode) {
+      return res.status(err.statusCode).json({ error: err.message || 'Forbidden' });
+    }
     res.status(500).json({ error: 'Internal server error' });
   }
 });
@@ -535,6 +565,7 @@ r.get('/stats', async (_req, res) => {
 r.get('/', async (req, res) => {
   try {
     if (!ensureMongoConnected(res)) return;
+    ensurePermission(req, ['cases:read', 'cases:read:department']);
     const {
       query = '',
       county,
@@ -713,15 +744,17 @@ r.get('/', async (req, res) => {
       bond: 1,
     };
 
+    const scopedFilter = scopedCaseFilter(req, filter);
+
     const qFind = Case
-      .find(filter)
+      .find(scopedFilter)
       .select(projection)
       .sort({ [sortField]: sortDir, booking_date: -1, _id: -1 })
       .limit(limitNum)
       .lean();
 
   const wantCount = !noCount || !TRUE_SET.has(String(noCount).toLowerCase());
-  const qCount = wantCount ? Case.countDocuments(filter) : null;
+  const qCount = wantCount ? Case.countDocuments(scopedFilter) : null;
 
     // Apply maxTimeMS when the driver/query supports it, and wrap with a timeout
     let items = await withTimeout((qFind.maxTimeMS ? qFind.maxTimeMS(MAX_DB_MS) : qFind), MAX_DB_MS).catch((e) => {
@@ -808,6 +841,9 @@ r.get('/', async (req, res) => {
   res.json({ items: limitedItems, count: mappedItems.length, total: count });
   } catch (err) {
     console.error('GET /cases error:', err);
+    if (err?.statusCode) {
+      return res.status(err.statusCode).json({ error: err.message || 'Forbidden' });
+    }
     res.status(500).json({ error: 'Internal server error' });
   }
 });
@@ -815,6 +851,7 @@ r.get('/', async (req, res) => {
 r.patch('/:id/tags', async (req, res) => {
   try {
     if (!ensureMongoConnected(res)) return;
+    ensurePermission(req, ['cases:write', 'cases:write:department']);
     const incoming = Array.isArray(req.body?.tags) ? req.body.tags : null;
     if (!incoming) {
       return res.status(400).json({ error: 'tags array is required' });
@@ -831,8 +868,9 @@ r.patch('/:id/tags', async (req, res) => {
       return res.status(400).json({ error: `Invalid tags: ${invalid.join(', ')}` });
     }
 
+    const selector = scopedCaseFilter(req, { _id: req.params.id });
     const existing = await withTimeout(
-      Case.findById(req.params.id).select({ manual_tags: 1 }),
+      Case.findOne(selector).select({ manual_tags: 1 }),
       MAX_DB_MS
     );
 
@@ -840,12 +878,13 @@ r.patch('/:id/tags', async (req, res) => {
       return res.status(404).json({ error: 'Case not found' });
     }
 
+    const updateQuery = Case.updateOne(
+      selector,
+      { $set: { manual_tags: normalized, updatedAt: new Date() } }
+    );
+
     await withTimeout(
-      Case.findByIdAndUpdate(
-        req.params.id,
-        { $set: { manual_tags: normalized, updatedAt: new Date() } },
-        { new: false }
-      ),
+      (updateQuery.maxTimeMS ? updateQuery.maxTimeMS(MAX_DB_MS) : updateQuery),
       MAX_DB_MS
     );
 
@@ -863,6 +902,9 @@ r.patch('/:id/tags', async (req, res) => {
     res.json({ manual_tags: normalized });
   } catch (err) {
     console.error('PATCH /cases/:id/tags error:', err);
+    if (err?.statusCode) {
+      return res.status(err.statusCode).json({ error: err.message || 'Forbidden' });
+    }
     if (err?.name === 'CastError') {
       return res.status(400).json({ error: 'Invalid case id' });
     }
@@ -877,7 +919,9 @@ r.patch('/:id/tags', async (req, res) => {
 r.get('/:id', async (req, res) => {
   try {
     if (!ensureMongoConnected(res)) return;
-    const qGet = Case.findById(req.params.id).lean();
+    ensurePermission(req, ['cases:read', 'cases:read:department']);
+    const selector = scopedCaseFilter(req, { _id: req.params.id });
+    const qGet = Case.findOne(selector).lean();
     const doc = await withTimeout((qGet.maxTimeMS ? qGet.maxTimeMS(MAX_DB_MS) : qGet), MAX_DB_MS).catch((e) => {
       console.error('GET /cases/:id timed out or failed', e?.message);
       return null;
@@ -925,6 +969,9 @@ r.get('/:id', async (req, res) => {
     res.json(doc);
   } catch (err) {
     console.error('GET /cases/:id error:', err);
+    if (err?.statusCode) {
+      return res.status(err.statusCode).json({ error: err.message || 'Forbidden' });
+    }
     res.status(500).json({ error: 'Internal server error' });
   }
 });
@@ -937,6 +984,13 @@ r.get('/:id/messages', async (req, res) => {
       objectId = new mongoose.Types.ObjectId(req.params.id);
     } catch {
       return res.status(400).json({ error: 'Invalid case id' });
+    }
+
+    ensurePermission(req, ['cases:read', 'cases:read:department']);
+    const selector = scopedCaseFilter(req, { _id: objectId });
+    const accessible = await Case.findOne(selector).select({ _id: 1 }).lean();
+    if (!accessible) {
+      return res.status(404).json({ error: 'Case not found' });
     }
 
     const qMsg = Message.find({ caseId: objectId })
@@ -972,6 +1026,9 @@ r.get('/:id/messages', async (req, res) => {
     res.json({ items, traces: traceIds });
   } catch (err) {
     console.error('GET /cases/:id/messages error:', err);
+    if (err?.statusCode) {
+      return res.status(err.statusCode).json({ error: err.message || 'Forbidden' });
+    }
     res.status(500).json({ error: 'Internal server error' });
   }
 });
@@ -986,6 +1043,13 @@ r.post('/:caseId/messages/:messageId/resend', async (req, res) => {
       messageObjectId = new mongoose.Types.ObjectId(req.params.messageId);
     } catch {
       return res.status(400).json({ error: 'Invalid identifiers provided' });
+    }
+
+    ensurePermission(req, ['cases:write', 'cases:write:department']);
+    const selector = scopedCaseFilter(req, { _id: caseObjectId });
+    const accessible = await Case.findOne(selector).select({ _id: 1 }).lean();
+    if (!accessible) {
+      return res.status(404).json({ error: 'Case not found' });
     }
 
     const original = await Message.findOne({ _id: messageObjectId, caseId: caseObjectId }).lean();
@@ -1029,6 +1093,9 @@ r.post('/:caseId/messages/:messageId/resend', async (req, res) => {
     res.status(201).json({ id: doc._id.toString(), status: doc.status, queuedAt: doc.createdAt });
   } catch (err) {
     console.error('POST /cases/:caseId/messages/:messageId/resend error:', err);
+    if (err?.statusCode) {
+      return res.status(err.statusCode).json({ error: err.message || 'Forbidden' });
+    }
     res.status(500).json({ error: 'Internal server error' });
   }
 });
@@ -1036,6 +1103,7 @@ r.post('/:caseId/messages/:messageId/resend', async (req, res) => {
 r.patch('/:id/stage', async (req, res) => {
   try {
     if (!ensureMongoConnected(res)) return;
+    ensurePermission(req, ['cases:write', 'cases:write:department']);
     const stage = String(req.body?.stage || '').toLowerCase();
     const note = req.body?.note ? String(req.body.note) : undefined;
 
@@ -1043,8 +1111,9 @@ r.patch('/:id/stage', async (req, res) => {
       return res.status(400).json({ error: 'Invalid stage' });
     }
 
+    const selector = scopedCaseFilter(req, { _id: req.params.id });
     const existing = await withTimeout(
-      Case.findById(req.params.id).select({ crm_stage: 1 }),
+      Case.findOne(selector).select({ crm_stage: 1 }),
       MAX_DB_MS
     );
 
@@ -1061,15 +1130,16 @@ r.patch('/:id/stage', async (req, res) => {
       note,
     };
 
+    const updateQuery = Case.updateOne(
+      selector,
+      {
+        $set: { crm_stage: stage, updatedAt: new Date() },
+        $push: { crm_stage_history: historyEntry },
+      }
+    );
+
     await withTimeout(
-      Case.findByIdAndUpdate(
-        req.params.id,
-        {
-          $set: { crm_stage: stage, updatedAt: new Date() },
-          $push: { crm_stage_history: historyEntry },
-        },
-        { new: false }
-      ),
+      (updateQuery.maxTimeMS ? updateQuery.maxTimeMS(MAX_DB_MS) : updateQuery),
       MAX_DB_MS
     );
 
@@ -1083,6 +1153,9 @@ r.patch('/:id/stage', async (req, res) => {
     res.json({ crm_stage: stage });
   } catch (err) {
     console.error('PATCH /cases/:id/stage error:', err);
+    if (err?.statusCode) {
+      return res.status(err.statusCode).json({ error: err.message || 'Forbidden' });
+    }
     if (err?.name === 'CastError') {
       return res.status(400).json({ error: 'Invalid case id' });
     }
@@ -1093,8 +1166,10 @@ r.patch('/:id/stage', async (req, res) => {
 r.patch('/:id/crm', async (req, res) => {
   try {
     if (!ensureMongoConnected(res)) return;
+    ensurePermission(req, ['cases:write', 'cases:write:department']);
+    const selector = scopedCaseFilter(req, { _id: req.params.id });
     const existing = await withTimeout(
-      Case.findById(req.params.id).lean(),
+      Case.findOne(selector).lean(),
       MAX_DB_MS
     ).catch((err) => {
       console.error('PATCH /cases/:id/crm load error', err?.message);
@@ -1157,8 +1232,10 @@ r.patch('/:id/crm', async (req, res) => {
 
     update.updatedAt = new Date();
 
+    const updateQuery = Case.findOneAndUpdate(selector, { $set: update }, { new: true });
+    const queryWithLean = updateQuery.lean();
     const doc = await withTimeout(
-      Case.findByIdAndUpdate(req.params.id, { $set: update }, { new: true }).lean(),
+      (queryWithLean.maxTimeMS ? queryWithLean.maxTimeMS(MAX_DB_MS) : queryWithLean),
       MAX_DB_MS
     ).catch((err) => {
       console.error('PATCH /cases/:id/crm update error', err?.message);
@@ -1181,6 +1258,9 @@ r.patch('/:id/crm', async (req, res) => {
     res.json({ crm_details: doc.crm_details, crm_stage: doc.crm_stage });
   } catch (err) {
     console.error('PATCH /cases/:id/crm error:', err);
+    if (err?.statusCode) {
+      return res.status(err.statusCode).json({ error: err.message || 'Forbidden' });
+    }
     if (err?.name === 'CastError') {
       return res.status(400).json({ error: 'Invalid case id' });
     }
@@ -1196,6 +1276,13 @@ r.post('/:id/activity', async (req, res) => {
       objectId = new mongoose.Types.ObjectId(req.params.id);
     } catch {
       return res.status(400).json({ error: 'Invalid case id' });
+    }
+
+    ensurePermission(req, ['cases:write', 'cases:write:department']);
+    const selector = scopedCaseFilter(req, { _id: objectId });
+    const accessible = await Case.findOne(selector).select({ _id: 1 }).lean();
+    if (!accessible) {
+      return res.status(404).json({ error: 'Case not found' });
     }
 
     const note = typeof req.body?.note === 'string' ? req.body.note.trim() : '';
@@ -1229,7 +1316,7 @@ r.post('/:id/activity', async (req, res) => {
         updatedAt: new Date(),
       };
       await withTimeout(
-        Case.findByIdAndUpdate(objectId, { $set: update }, { new: false }),
+        Case.updateOne(selector, { $set: update }),
         MAX_DB_MS
       ).catch(() => {});
     }
@@ -1245,6 +1332,9 @@ r.post('/:id/activity', async (req, res) => {
     res.status(201).json({ event });
   } catch (err) {
     console.error('POST /cases/:id/activity error:', err);
+    if (err?.statusCode) {
+      return res.status(err.statusCode).json({ error: err.message || 'Forbidden' });
+    }
     res.status(500).json({ error: 'Internal server error' });
   }
 });
@@ -1259,7 +1349,9 @@ r.get('/:id/activity', async (req, res) => {
       return res.status(400).json({ error: 'Invalid case id' });
     }
 
-    const qCase = Case.findById(objectId).lean();
+    ensurePermission(req, ['cases:read', 'cases:read:department']);
+    const selector = scopedCaseFilter(req, { _id: objectId });
+    const qCase = Case.findOne(selector).lean();
     const doc = await withTimeout((qCase.maxTimeMS ? qCase.maxTimeMS(MAX_DB_MS) : qCase), MAX_DB_MS).catch(() => null);
     if (!doc) return res.status(404).json({ error: 'Not found' });
 
@@ -1343,6 +1435,9 @@ r.get('/:id/activity', async (req, res) => {
     res.json({ events });
   } catch (err) {
     console.error('GET /cases/:id/activity error:', err);
+    if (err?.statusCode) {
+      return res.status(err.statusCode).json({ error: err.message || 'Forbidden' });
+    }
     res.status(500).json({ error: 'Internal server error' });
   }
 });

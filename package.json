@@ -10,6 +10,7 @@
     "preview": "vite preview",
     "server:dev": "npm --prefix server run dev",
     "server:start": "npm --prefix server run start",
+    "server:firebase:create-user": "npm --prefix server run firebase:create-user",
     "validate:windows": "npm --prefix server run validate:windows",
     "smoke:dashboard": "npm --prefix server run smoke:dashboard",
     "smoke:trends": "npm --prefix server run smoke:trends"

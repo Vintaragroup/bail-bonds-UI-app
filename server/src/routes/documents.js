@@ -6,6 +6,7 @@ import process from 'node:process';
 import mongoose from 'mongoose';
 import Case from '../models/Case.js';
 import CaseAudit from '../models/CaseAudit.js';
+import { assertPermission as ensurePermission, filterByDepartment } from './utils/authz.js';
 
 const uploadDir = path.resolve(process.cwd(), 'uploads');
 if (!fs.existsSync(uploadDir)) {
@@ -26,6 +27,17 @@ const upload = multer({ storage });
 const fsPromises = fs.promises;
 
 const r = Router();
+
+const CASE_SCOPE_FIELDS = [
+  'crm_details.assignedDepartment',
+  'crm_details.department',
+  'crm_details.assignedTo',
+  'department',
+];
+
+function scopedCaseQuery(req, caseId) {
+  return filterByDepartment({ _id: caseId }, req, CASE_SCOPE_FIELDS, { includeUnassigned: true });
+}
 
 function ensureMongoConnected(res) {
   if (!mongoose.connection || mongoose.connection.readyState !== 1) {
@@ -59,7 +71,9 @@ function ensurePlainAttachmentIds(list = []) {
 r.get('/:id/documents', async (req, res) => {
   try {
     if (!ensureMongoConnected(res)) return;
-    const doc = await Case.findById(req.params.id).select({ crm_details: 1 }).lean();
+    ensurePermission(req, ['cases:read', 'cases:read:department']);
+    const selector = scopedCaseQuery(req, req.params.id);
+    const doc = await Case.findOne(selector).select({ crm_details: 1 }).lean();
     if (!doc) return res.status(404).json({ error: 'Case not found' });
 
     const raw = Array.isArray(doc.crm_details?.attachments) ? doc.crm_details.attachments : [];
@@ -77,6 +91,9 @@ r.get('/:id/documents', async (req, res) => {
     res.json({ attachments });
   } catch (err) {
     console.error('GET /cases/:id/documents error', err);
+    if (err?.statusCode) {
+      return res.status(err.statusCode).json({ error: err.message || 'Forbidden' });
+    }
     if (err?.name === 'CastError') {
       return res.status(400).json({ error: 'Invalid case id' });
     }
@@ -87,6 +104,7 @@ r.get('/:id/documents', async (req, res) => {
 r.post('/:id/documents', upload.single('file'), async (req, res) => {
   try {
     if (!ensureMongoConnected(res)) return;
+    ensurePermission(req, ['cases:write', 'cases:write:department']);
     if (!req.file) {
       return res.status(400).json({ error: 'file is required' });
     }
@@ -111,11 +129,17 @@ r.post('/:id/documents', upload.single('file'), async (req, res) => {
       $push: { 'crm_details.attachments': attachment },
     };
 
-    const doc = await Case.findByIdAndUpdate(
-      req.params.id,
+    const selector = scopedCaseQuery(req, req.params.id);
+    const updateQuery = Case.findOneAndUpdate(
+      selector,
       update,
       { new: true, runValidators: false }
     ).lean();
+
+    const doc = await updateQuery.catch((err) => {
+      console.error('POST /cases/:id/documents update error', err?.message);
+      return null;
+    });
 
     if (!doc) {
       fs.unlinkSync(req.file.path);
@@ -132,6 +156,9 @@ r.post('/:id/documents', upload.single('file'), async (req, res) => {
     res.status(201).json({ attachment });
   } catch (err) {
     console.error('POST /cases/:id/documents error', err);
+    if (err?.statusCode) {
+      return res.status(err.statusCode).json({ error: err.message || 'Forbidden' });
+    }
     res.status(500).json({ error: 'Internal server error' });
   }
 });
@@ -139,7 +166,9 @@ r.post('/:id/documents', upload.single('file'), async (req, res) => {
 r.patch('/:id/documents/:attachmentId', async (req, res) => {
   try {
     if (!ensureMongoConnected(res)) return;
-    const caseDoc = await Case.findById(req.params.id);
+    ensurePermission(req, ['cases:write', 'cases:write:department']);
+    const selector = scopedCaseQuery(req, req.params.id);
+    const caseDoc = await Case.findOne(selector);
     if (!caseDoc) return res.status(404).json({ error: 'Case not found' });
 
     caseDoc.crm_details = caseDoc.crm_details || {};
@@ -187,6 +216,9 @@ r.patch('/:id/documents/:attachmentId', async (req, res) => {
     res.json({ attachment: attachmentPlain });
   } catch (err) {
     console.error('PATCH /cases/:id/documents/:attachmentId error', err);
+    if (err?.statusCode) {
+      return res.status(err.statusCode).json({ error: err.message || 'Forbidden' });
+    }
     if (err?.name === 'CastError') {
       return res.status(400).json({ error: 'Invalid identifier' });
     }
@@ -197,7 +229,9 @@ r.patch('/:id/documents/:attachmentId', async (req, res) => {
 r.delete('/:id/documents/:attachmentId', async (req, res) => {
   try {
     if (!ensureMongoConnected(res)) return;
-    const caseDoc = await Case.findById(req.params.id);
+    ensurePermission(req, ['cases:write', 'cases:write:department']);
+    const selector = scopedCaseQuery(req, req.params.id);
+    const caseDoc = await Case.findOne(selector);
     if (!caseDoc) return res.status(404).json({ error: 'Case not found' });
 
     caseDoc.crm_details = caseDoc.crm_details || {};
@@ -246,6 +280,9 @@ r.delete('/:id/documents/:attachmentId', async (req, res) => {
     res.json({ removed });
   } catch (err) {
     console.error('DELETE /cases/:id/documents/:attachmentId error', err);
+    if (err?.statusCode) {
+      return res.status(err.statusCode).json({ error: err.message || 'Forbidden' });
+    }
     if (err?.name === 'CastError') {
       return res.status(400).json({ error: 'Invalid identifier' });
     }

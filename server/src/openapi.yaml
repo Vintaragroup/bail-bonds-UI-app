@@ -182,6 +182,210 @@ paths:
                 properties:
                   ok:
                     type: boolean
+  /auth/access-request:
+    post:
+      summary: Submit an access request
+      description: Allows prospective users to notify administrators that they need an account. No authentication required.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email]
+              properties:
+                email:
+                  type: string
+                  format: email
+                displayName:
+                  type: string
+                message:
+                  type: string
+      responses:
+        '202':
+          description: Request accepted for review
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:
+                    type: boolean
+                  request:
+                    $ref: '#/components/schemas/AccessRequest'
+        '400':
+          description: Validation error
+        '409':
+          description: Account already exists
+
+  /users:
+    get:
+      summary: List users
+      tags: [Users]
+      parameters:
+        - in: query
+          name: role
+          schema: { type: string }
+        - in: query
+          name: status
+          schema: { type: string, enum: ['active','suspended','invited','pending_mfa','deleted'] }
+        - in: query
+          name: search
+          schema: { type: string, description: 'Match email or displayName (case-insensitive)' }
+      responses:
+        '200':
+          description: User list
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  users:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/UserAccount'
+        '403':
+          description: Forbidden
+    post:
+      summary: Create or invite a user
+      tags: [Users]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UserCreateRequest'
+      responses:
+        '201':
+          description: User created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UserCreateResponse'
+        '200':
+          description: User already existed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UserCreateResponse'
+        '400':
+          description: Validation error
+        '403':
+          description: Forbidden
+
+  /users/{uid}:
+    patch:
+      summary: Update an existing user
+      tags: [Users]
+      parameters:
+        - in: path
+          name: uid
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UserUpdateRequest'
+      responses:
+        '200':
+          description: Updated user
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  user:
+                    $ref: '#/components/schemas/UserAccount'
+        '400':
+          description: Validation error
+        '403':
+          description: Forbidden
+        '404':
+          description: User not found
+
+  /users/{uid}/revoke:
+    post:
+      summary: Revoke refresh tokens for a user
+      tags: [Users]
+      parameters:
+        - in: path
+          name: uid
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          description: Revoked
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:
+                    type: boolean
+        '403':
+          description: Forbidden
+        '404':
+          description: User not found
+  /access-requests:
+    get:
+      summary: List pending access requests
+      tags: [Users]
+      parameters:
+        - in: query
+          name: status
+          schema: { type: string, enum: ['pending','reviewed','completed','rejected'] }
+      responses:
+        '200':
+          description: Access requests
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  requests:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/AccessRequest'
+        '403':
+          description: Forbidden
+  /access-requests/{id}:
+    patch:
+      summary: Update access request status
+      tags: [Users]
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [status]
+              properties:
+                status:
+                  type: string
+                  enum: ['pending','reviewed','completed','rejected']
+      responses:
+        '200':
+          description: Updated request
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  request:
+                    $ref: '#/components/schemas/AccessRequest'
+        '400':
+          description: Validation error
+        '403':
+          description: Forbidden
+        '404':
+          description: Not found
         '401':
           description: Not authenticated
 components:
@@ -278,6 +482,9 @@ components:
         departments:
           type: array
           items: { type: string }
+        counties:
+          type: array
+          items: { type: string }
         status:
           type: string
         mfaEnforced:
@@ -306,6 +513,85 @@ components:
         user: { $ref: '#/components/schemas/AuthUser' }
         offense: { type: string }
         case_number: { type: string }
+    UserAccount:
+      type: object
+      properties:
+        uid: { type: string }
+        email: { type: string, format: email }
+        displayName: { type: string, nullable: true }
+        roles:
+          type: array
+          items: { type: string }
+        departments:
+          type: array
+          items: { type: string }
+        counties:
+          type: array
+          items: { type: string }
+        status:
+          type: string
+          enum: ['active','suspended','invited','pending_mfa','deleted']
+        mfaEnforced: { type: boolean }
+        lastLoginAt: { type: string, format: date-time, nullable: true }
+        invitedAt: { type: string, format: date-time, nullable: true }
+        invitedBy: { type: string, nullable: true }
+        lastRoleChangeAt: { type: string, format: date-time, nullable: true }
+        createdAt: { type: string, format: date-time }
+        updatedAt: { type: string, format: date-time }
+    UserCreateRequest:
+      type: object
+      required: [email]
+      properties:
+        email: { type: string, format: email }
+        displayName: { type: string }
+        roles:
+          type: array
+          items: { type: string }
+        departments:
+          type: array
+          items: { type: string }
+        counties:
+          type: array
+          items: { type: string }
+        status:
+          type: string
+          enum: ['active','suspended','invited','pending_mfa','deleted']
+    UserCreateResponse:
+      type: object
+      properties:
+        user: { $ref: '#/components/schemas/UserAccount' }
+        inviteLink:
+          type: string
+          nullable: true
+          description: Password setup link that can be shared securely
+    UserUpdateRequest:
+      type: object
+      properties:
+        email: { type: string, format: email }
+        displayName: { type: string }
+        roles:
+          type: array
+          items: { type: string }
+        departments:
+          type: array
+          items: { type: string }
+        counties:
+          type: array
+          items: { type: string }
+        status:
+          type: string
+          enum: ['active','suspended','invited','pending_mfa','deleted']
+        mfaEnforced: { type: boolean }
+    AccessRequest:
+      type: object
+      properties:
+        id: { type: string }
+        email: { type: string, format: email }
+        displayName: { type: string, nullable: true }
+        message: { type: string, nullable: true }
+        status: { type: string, enum: ['pending','reviewed','completed','rejected'] }
+        createdAt: { type: string, format: date-time }
+        updatedAt: { type: string, format: date-time }
     CountySnapshotItem:
       type: object
       properties:

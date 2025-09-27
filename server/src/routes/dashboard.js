@@ -2,21 +2,14 @@
 /* global process */
 // server/src/routes/dashboard.js
 import { Router } from 'express';
-import { bucketsForWindow, legacyWindowForBucket, V2_BUCKET_ORDER } from '../lib/buckets.js';
-import { userHasPermission } from '../lib/roles.js';
+import { bucketsForWindow, V2_BUCKET_ORDER } from '../lib/buckets.js';
+import { assertPermission as ensurePermission } from './utils/authz.js';
 import mongoose from 'mongoose';
 import Message from '../models/Message.js';   // optional
 import Job from '../models/Job.js';           // optional
 
 const r = Router();
 
-function assertPermission(req, permission) {
-  if (!req.user || !userHasPermission(req.user.roles, permission)) {
-    const err = new Error('Forbidden');
-    err.statusCode = 403;
-    throw err;
-  }
-}
 
 // --- Perf timing middleware (router-local) ---
 r.use((req, res, next) => {
@@ -121,6 +114,7 @@ function withMetrics(routeKey, handler) {
 }
 
 r.get('/metrics', (req, res) => {
+  ensurePermission(req, 'dashboard:read');
   const out = [];
   for (const [k,v] of DASH_METRICS.routes.entries()) {
     const d = v.durations.slice().sort((a,b)=>a-b);
@@ -1013,6 +1007,7 @@ function attentionStages(attentionOnly = false) {
 
 // ===== KPIs =====
 r.get('/kpis', async (req, res) => {
+  ensurePermission(req, 'dashboard:read');
   const db = ensureDb(res); if (!db) return;
   const useV2 = !!req.app?.locals?.flags?.USE_TIME_BUCKET_V2;
   const variant = useV2 ? 'buckets-fast' : 'legacy';
@@ -1134,6 +1129,7 @@ r.get('/kpis', async (req, res) => {
 
 // ===== TOP (by bond value, booking window) =====
 r.get('/top', async (req, res) => {
+  ensurePermission(req, 'dashboard:read');
   const db = ensureDb(res); if (!db) return;
   const limit = Math.min(Math.max(parseInt(req.query.limit || '10', 10), 1), 200);
   const requestedWindow = String(req.query.window || '24h').toLowerCase();
@@ -1296,6 +1292,7 @@ r.get('/top', async (req, res) => {
 
 // ===== NEW (today) =====
 r.get('/new', withMetrics('new', async (req, res) => {
+  ensurePermission(req, 'dashboard:read');
   const db = ensureDb(res); if (!db) return;
   const useV2 = !!req.app?.locals?.flags?.USE_TIME_BUCKET_V2;
   const countyFilter = req.query.county ? { county: req.query.county } : null;
@@ -1375,6 +1372,7 @@ r.get('/new', withMetrics('new', async (req, res) => {
 
 // ===== RECENT (48–72h window) =====
 r.get('/recent', withMetrics('recent', async (req, res) => {
+  ensurePermission(req, 'dashboard:read');
   const db = ensureDb(res); if (!db) return;
   const useV2 = !!req.app?.locals?.flags?.USE_TIME_BUCKET_V2;
   const limit = Math.min(Math.max(parseInt(req.query.limit || '10', 10), 1), 200);
@@ -1495,6 +1493,7 @@ r.get('/recent', withMetrics('recent', async (req, res) => {
 
 // ===== TRENDS (last N calendar days) =====
 r.get('/trends', async (req, res) => {
+  ensurePermission(req, 'dashboard:read');
   const db = ensureDb(res); if (!db) return;
   const days = Math.min(Math.max(parseInt(req.query.days || '7', 10), 1), 60);
   const dates = rangeDayStrs(days); // oldest-first
@@ -1538,6 +1537,7 @@ r.get('/trends', async (req, res) => {
 
 // ===== PER-COUNTY snapshot =====
 r.get('/per-county', withMetrics('per-county', async (req, res) => {
+  ensurePermission(req, 'dashboard:read');
   try {
     const db = ensureDb(res); if (!db) return;
     const win = (req.query.window || '24h').toLowerCase();

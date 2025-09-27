@@ -10,6 +10,7 @@ export const ROLE_PERMISSIONS = {
     'dashboard:read',
     'cases:read',
     'cases:write:department',
+    'users:manage:department',
   ],
   Employee: [
     'dashboard:read',

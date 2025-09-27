@@ -1,5 +1,8 @@
-import { NavLink, Outlet } from "react-router-dom";
+import { NavLink, Outlet, useNavigate } from "react-router-dom";
 import { ToastProvider } from "../components/ToastContext";
+import { useUser } from "../components/UserContext";
+import { PillButton } from "../components/ui/pill-button";
+import { UserAvatar } from "../components/ui/user-avatar";
 
 const tabs = [
   { to: "/", label: "Dashboard", end: true },
@@ -13,6 +16,17 @@ const tabs = [
 ];
 
 export default function AppLayout() {
+  const navigate = useNavigate();
+  const { currentUser, signOut } = useUser();
+
+  const handleSignOut = async () => {
+    try {
+      await signOut();
+    } finally {
+      navigate('/auth/login', { replace: true });
+    }
+  };
+
   return (
     <ToastProvider>
     <div className="min-h-screen bg-gray-50">
@@ -35,6 +49,19 @@ export default function AppLayout() {
               </NavLink>
             ))}
           </nav>
+          <div className="flex items-center gap-3">
+            {currentUser && (
+              <UserAvatar
+                user={currentUser}
+                size="sm"
+                className="cursor-pointer"
+                onClick={() => navigate('/auth/profile-settings')}
+              />
+            )}
+            <PillButton size="sm" variant="outline" onClick={handleSignOut}>
+              Sign out
+            </PillButton>
+          </div>
         </div>
       </header>
 

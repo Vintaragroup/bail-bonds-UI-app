@@ -1,5 +1,6 @@
 import React from 'react';
-import { useNavigate, useParams } from 'react-router-dom';
+import { useEffect } from 'react';
+import { useLocation, useNavigate, useParams } from 'react-router-dom';
 import { AuthLanding } from '../components/auth/AuthLanding';
 import { EmailPasswordLogin } from '../components/auth/EmailPasswordLogin';
 import { MagicLinkRequest } from '../components/auth/MagicLinkRequest';
@@ -15,6 +16,7 @@ import { AuthAudit } from '../components/auth/AuthAudit';
 import { DesignSystemGuide } from '../components/DesignSystemGuide';
 import { AvatarShowcase } from '../components/AvatarShowcase';
 import type { AuthScreen } from '../components/auth/types';
+import { useUser } from '../components/UserContext';
 
 const SCREEN_COMPONENTS: Record<AuthScreen, React.ComponentType<{ onNavigate: (screen: AuthScreen) => void }>> = {
   landing: AuthLanding,
@@ -36,17 +38,26 @@ const SCREEN_COMPONENTS: Record<AuthScreen, React.ComponentType<{ onNavigate: (s
 export function AuthRoutes() {
   const navigate = useNavigate();
   const params = useParams<{ screen?: AuthScreen }>();
+  const location = useLocation();
+  const { currentUser, loading } = useUser();
 
   const screenKey = params.screen ?? 'landing';
   const Component = SCREEN_COMPONENTS[screenKey] ?? AuthLanding;
 
+  const state = (location.state as { from?: string } | null) || undefined;
+  const redirectTarget = state?.from || '/';
+
   const handleNavigate = (next: AuthScreen) => {
-    if (next === 'landing') {
-      navigate('/auth');
-      return;
-    }
-    navigate(`/auth/${next}`);
+    const nextPath = next === 'landing' ? '/auth' : `/auth/${next}`;
+    navigate(nextPath, { state });
   };
+
+  useEffect(() => {
+    const autoRedirectScreens: AuthScreen[] = ['landing', 'login', 'magic-link', 'auth-success'];
+    if (!loading && currentUser && autoRedirectScreens.includes(screenKey)) {
+      navigate(redirectTarget, { replace: true });
+    }
+  }, [currentUser, loading, screenKey, redirectTarget, navigate]);
 
   return <Component onNavigate={handleNavigate} />;
 }

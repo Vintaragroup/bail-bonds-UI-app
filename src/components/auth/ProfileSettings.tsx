@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { User, Shield, Smartphone, Chrome, Apple, Trash2, Plus, MapPin, Calendar, LogOut, Bell, Settings } from 'lucide-react';
+import { User, Shield, Smartphone, Chrome, Apple, Trash2, Plus, MapPin, Calendar, LogOut, Bell, Settings, ArrowLeft } from 'lucide-react';
 import { PillButton } from '../ui/pill-button';
 import { StatusChip } from '../ui/status-chip';
 import { UserAvatar, UserAvatarMenu } from '../ui/user-avatar';
@@ -47,6 +47,13 @@ export function ProfileSettings({ onNavigate }: ProfileSettingsProps) {
         <div className="container mx-auto px-4">
           <div className="flex items-center justify-between h-16">
             <div className="flex items-center space-x-4">
+              <button
+                onClick={() => onNavigate('landing')}
+                className="flex items-center text-sm text-muted-foreground hover:text-foreground transition-colors"
+              >
+                <ArrowLeft className="h-4 w-4 mr-2" />
+                Back
+              </button>
               <h2 className="text-lg">BailBonds Dashboard</h2>
             </div>
             <div className="flex items-center space-x-4">

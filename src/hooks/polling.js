@@ -28,7 +28,11 @@ import { API_BASE } from './dashboard.js';
 import { useQueryClient } from '@tanstack/react-query';
 
 async function fetchJSONWithHeaders(fullUrl) {
-  const res = await fetch(fullUrl, { headers: { 'Accept': 'application/json', 'Cache-Control': 'no-cache' }, cache: 'no-store' });
+  const res = await fetch(fullUrl, {
+    headers: { 'Accept': 'application/json', 'Cache-Control': 'no-cache' },
+    cache: 'no-store',
+    credentials: 'include',
+  });
   if (!res.ok) {
     const text = await res.text();
     const err = new Error(`HTTP ${res.status} ${res.statusText}: ${text.slice(0,200)}`);

@@ -1,6 +1,8 @@
 import { Router } from 'express';
 import mongoose from 'mongoose';
 import CheckIn from '../models/CheckIn.js';
+import { filterByDepartment } from './utils/authz.js';
+import { assertPermission as ensurePermission } from './utils/authz.js';
 
 const r = Router();
 const MAX_DB_MS = 5000;
@@ -58,21 +60,24 @@ function dateRangeForScope(scope = 'today') {
 r.get('/', async (req, res) => {
   try {
     if (!ensureMongoConnected(res)) return;
+    ensurePermission(req, ['cases:read', 'cases:read:department']);
     const scope = String(req.query.scope || 'today').toLowerCase();
     const limit = Math.min(Math.max(parseInt(req.query.limit || '50', 10), 1), 200);
 
     const { start, end, includeDone, overdueOnly } = dateRangeForScope(scope);
-    const filter = {};
+    const baseFilter = {};
 
     if (overdueOnly && start) {
-      filter.dueAt = { $lt: start };
-      filter.status = { $ne: 'done' };
+      baseFilter.dueAt = { $lt: start };
+      baseFilter.status = { $ne: 'done' };
     } else if (start && end) {
-      filter.dueAt = { $gte: start, $lt: end };
-      if (!includeDone) filter.status = { $ne: 'done' };
+      baseFilter.dueAt = { $gte: start, $lt: end };
+      if (!includeDone) baseFilter.status = { $ne: 'done' };
     }
 
-    const cursor = CheckIn.find(filter)
+    const scopedFilter = filterByDepartment(baseFilter, req, ['county'], { includeUnassigned: true });
+
+    const cursor = CheckIn.find(scopedFilter)
       .sort({ dueAt: 1, createdAt: 1 })
       .limit(limit)
       .lean();
@@ -89,17 +94,23 @@ r.get('/', async (req, res) => {
     const todayEnd = new Date(todayStart);
     todayEnd.setDate(todayEnd.getDate() + 1);
 
-    const todayQuery = CheckIn.countDocuments({
-      dueAt: { $gte: todayStart, $lt: todayEnd },
-      status: { $ne: 'done' },
-    });
+    const todayQuery = CheckIn.countDocuments(
+      filterByDepartment({
+        dueAt: { $gte: todayStart, $lt: todayEnd },
+        status: { $ne: 'done' },
+      }, req, ['county'], { includeUnassigned: true })
+    );
 
-    const overdueQuery = CheckIn.countDocuments({
-      dueAt: { $lt: todayStart },
-      status: { $ne: 'done' },
-    });
+    const overdueQuery = CheckIn.countDocuments(
+      filterByDepartment({
+        dueAt: { $lt: todayStart },
+        status: { $ne: 'done' },
+      }, req, ['county'], { includeUnassigned: true })
+    );
 
-    const completedQuery = CheckIn.countDocuments({ status: 'done' });
+    const completedQuery = CheckIn.countDocuments(
+      filterByDepartment({ status: 'done' }, req, ['county'], { includeUnassigned: true })
+    );
 
     const [todayCount, overdueCount, completedCount] = await Promise.all([
       withTimeout((todayQuery.maxTimeMS ? todayQuery.maxTimeMS(MAX_DB_MS) : todayQuery).exec(), MAX_DB_MS).catch(() => 0),
@@ -119,6 +130,9 @@ r.get('/', async (req, res) => {
     });
   } catch (err) {
     console.error('GET /checkins error', err);
+    if (err?.statusCode) {
+      return res.status(err.statusCode).json({ error: err.message || 'Forbidden' });
+    }
     res.status(500).json({ error: 'Internal server error' });
   }
 });
@@ -126,6 +140,7 @@ r.get('/', async (req, res) => {
 r.patch('/:id/status', async (req, res) => {
   try {
     if (!ensureMongoConnected(res)) return;
+    ensurePermission(req, ['cases:write', 'cases:write:department']);
     const status = String(req.body?.status || '').toLowerCase();
     const note = req.body?.note ? String(req.body.note) : undefined;
 
@@ -150,6 +165,9 @@ r.patch('/:id/status', async (req, res) => {
     res.json(normalize(doc));
   } catch (err) {
     console.error('PATCH /checkins/:id/status error', err);
+    if (err?.statusCode) {
+      return res.status(err.statusCode).json({ error: err.message || 'Forbidden' });
+    }
     res.status(500).json({ error: 'Internal server error' });
   }
 });
@@ -157,6 +175,7 @@ r.patch('/:id/status', async (req, res) => {
 r.patch('/:id/contact', async (req, res) => {
   try {
     if (!ensureMongoConnected(res)) return;
+    ensurePermission(req, ['cases:write', 'cases:write:department']);
     const now = new Date();
     const inc = Number(req.body?.increment || 1) || 1;
 
@@ -180,6 +199,9 @@ r.patch('/:id/contact', async (req, res) => {
     res.json(normalize(doc));
   } catch (err) {
     console.error('PATCH /checkins/:id/contact error', err);
+    if (err?.statusCode) {
+      return res.status(err.statusCode).json({ error: err.message || 'Forbidden' });
+    }
     res.status(500).json({ error: 'Internal server error' });
   }
 });

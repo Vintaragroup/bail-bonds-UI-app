@@ -42,6 +42,7 @@ export async function getJSON(path) {
   const p = (async () => {
     const res = await fetch(url, {
       cache: 'no-store',
+      credentials: 'include',
       headers: { 'Accept': 'application/json' },
     });
     if (!res.ok) {
@@ -72,6 +73,7 @@ export async function sendJSON(path, { method = 'POST', body, headers } = {}) {
     },
     body: body !== undefined ? JSON.stringify(body) : undefined,
     cache: 'no-store',
+    credentials: 'include',
   });
 
   if (!res.ok) {
@@ -94,6 +96,7 @@ export async function sendFormData(path, { method = 'POST', formData, headers } 
       ...headers,
     },
     cache: 'no-store',
+    credentials: 'include',
   });
 
   if (!res.ok) {

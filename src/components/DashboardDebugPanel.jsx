@@ -6,7 +6,12 @@ import { API_BASE } from '../hooks/dashboard.js';
 import { useOptionalDashboardAggregated } from './DashboardAggregatedProvider.jsx';
 
 function fetchMetrics(signal) {
-  return fetch(`${API_BASE}/dashboard/metrics?_cb=${Date.now()}`, { signal, headers:{'Accept':'application/json','Cache-Control':'no-cache'}, cache:'no-store' })
+  return fetch(`${API_BASE}/dashboard/metrics?_cb=${Date.now()}`, {
+    signal,
+    headers: { 'Accept': 'application/json', 'Cache-Control': 'no-cache' },
+    cache: 'no-store',
+    credentials: 'include',
+  })
     .then(r => r.ok ? r.json() : r.text().then(t => { throw new Error(t || r.statusText); }))
     .catch(err => ({ error: err.message || String(err) }));
 }

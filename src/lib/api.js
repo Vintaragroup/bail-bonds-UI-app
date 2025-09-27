@@ -8,7 +8,9 @@ const API_BASE = RAW_API_BASE.replace(/\/$/, ''); // normalize: no trailing slas
 
 async function httpGet(path) {
   const fullPath = path.startsWith('/') ? path : `/${path}`;
-  const res = await fetch(`${API_BASE}${fullPath}`);
+  const res = await fetch(`${API_BASE}${fullPath}`, {
+    credentials: 'include',
+  });
   if (!res.ok) {
     const text = await res.text().catch(() => '');
     throw new Error(`HTTP ${res.status} ${res.statusText}: ${text}`);

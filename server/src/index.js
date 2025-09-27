@@ -17,6 +17,9 @@ import cases from './routes/cases.js';
 import checkins from './routes/checkins.js';
 import documents from './routes/documents.js';
 import authRoutes from './routes/auth.js';
+import userRoutes from './routes/users.js';
+import accessRequestRoutes from './routes/accessRequests.js';
+import metadataRoutes from './routes/metadata.js';
 import { requireAuth } from './middleware/auth.js';
 
 const app = express();
@@ -68,6 +71,9 @@ app.use('/api/dashboard', requireAuth, dashboard);
 app.use('/api/cases', requireAuth, cases);
 app.use('/api/checkins', requireAuth, checkins);
 app.use('/api/cases', requireAuth, documents);
+app.use('/api/users', requireAuth, userRoutes);
+app.use('/api/access-requests', requireAuth, accessRequestRoutes);
+app.use('/api/metadata', metadataRoutes);
 app.use('/uploads', express.static(new URL('../uploads', import.meta.url).pathname));
 
 const port = Number(process.env.PORT || 8080);

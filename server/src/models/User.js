@@ -10,6 +10,7 @@ const UserSchema = new Schema(
     displayName: { type: String, default: '' },
     roles: { type: [String], default: ['BondClient'] },
     departments: { type: [String], default: [] },
+    counties: { type: [String], default: [] },
     status: {
       type: String,
       enum: ['active', 'suspended', 'invited', 'pending_mfa', 'deleted'],
@@ -18,6 +19,8 @@ const UserSchema = new Schema(
     mfaEnforced: { type: Boolean, default: false },
     lastLoginAt: { type: Date },
     invitedBy: { type: Schema.Types.ObjectId, ref: 'User' },
+    invitedAt: { type: Date },
+    lastRoleChangeAt: { type: Date },
     termsAcceptedAt: { type: Date },
     privacyNoticeAcceptedAt: { type: Date },
   },

@@ -40,6 +40,7 @@ function serializeUser(userDoc, decoded) {
     email: userDoc.email || decoded?.email || null,
     roles: userDoc.roles || [],
     departments: userDoc.departments || [],
+    counties: userDoc.counties || [],
     status: userDoc.status,
     mfaEnforced: userDoc.mfaEnforced,
     lastLoginAt: userDoc.lastLoginAt,

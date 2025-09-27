@@ -12,7 +12,8 @@
     "test:windows": "node scripts/test-windows.mjs",
     "validate:windows": "node scripts/validate-windows.mjs",
     "lint:api": "node scripts/validate-openapi.js",
-    "lint:api:bundle": "node scripts/validate-openapi.js --out src/openapi.bundle.json"
+    "lint:api:bundle": "node scripts/validate-openapi.js --out src/openapi.bundle.json",
+    "firebase:create-user": "node scripts/create-firebase-user.mjs"
   },
   "dependencies": {
     "cookie-parser": "^1.4.7",

@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { Eye, EyeOff, AlertCircle, ArrowLeft, Chrome, Apple } from 'lucide-react';
+import { Eye, EyeOff, AlertCircle, ArrowLeft, Chrome, Apple, Send, CheckCircle } from 'lucide-react';
 import { PillButton } from '../ui/pill-button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '../ui/card';
 import { Input } from '../ui/input';
@@ -8,6 +8,15 @@ import { Checkbox } from '../ui/checkbox';
 import { Alert, AlertDescription } from '../ui/alert';
 import type { AuthScreen } from './types';
 import { useUser } from '../UserContext';
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogHeader,
+  DialogTitle,
+  DialogTrigger,
+} from '../ui/dialog';
+import { Textarea } from '../ui/textarea';
 
 interface EmailPasswordLoginProps {
   onNavigate: (screen: AuthScreen) => void;
@@ -20,6 +29,12 @@ export function EmailPasswordLogin({ onNavigate }: EmailPasswordLoginProps) {
   const [password, setPassword] = useState('');
   const [rememberMe, setRememberMe] = useState(false);
   const [errors, setErrors] = useState<{email?: string; password?: string; form?: string}>({});
+  const [requestOpen, setRequestOpen] = useState(false);
+  const [requestEmail, setRequestEmail] = useState('');
+  const [requestName, setRequestName] = useState('');
+  const [requestMessage, setRequestMessage] = useState('');
+  const [requestStatus, setRequestStatus] = useState<'idle' | 'submitting' | 'success' | 'error'>('idle');
+  const [requestFeedback, setRequestFeedback] = useState('');
 
   const validateForm = () => {
     const newErrors: {email?: string; password?: string} = {};
@@ -38,6 +53,52 @@ export function EmailPasswordLogin({ onNavigate }: EmailPasswordLoginProps) {
     
     setErrors(newErrors);
     return Object.keys(newErrors).length === 0;
+  };
+
+  const resetRequestForm = () => {
+    setRequestEmail('');
+    setRequestName('');
+    setRequestMessage('');
+    setRequestStatus('idle');
+    setRequestFeedback('');
+  };
+
+  const handleInviteRequest = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setRequestStatus('submitting');
+    setRequestFeedback('');
+
+    const email = requestEmail.trim();
+    if (!email) {
+      setRequestStatus('error');
+      setRequestFeedback('Email is required.');
+      return;
+    }
+
+    try {
+      const response = await fetch('/api/auth/access-request', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          email,
+          displayName: requestName.trim(),
+          message: requestMessage.trim(),
+        }),
+      });
+
+      if (!response.ok) {
+        const payload = await response.json().catch(() => ({}));
+        const message = payload?.error || 'Failed to submit request. Please contact your administrator.';
+        throw new Error(message);
+      }
+
+      setRequestStatus('success');
+      setRequestFeedback('Request sent. An administrator will reach out with next steps.');
+    } catch (err) {
+      setRequestStatus('error');
+      const message = err instanceof Error ? err.message : 'Failed to submit request. Please contact your administrator.';
+      setRequestFeedback(message);
+    }
   };
 
   const handleSubmit = async (e: React.FormEvent) => {
@@ -206,13 +267,90 @@ export function EmailPasswordLogin({ onNavigate }: EmailPasswordLoginProps) {
 
             <div className="text-center mt-6 pt-6 border-t border-muted">
               <p className="text-sm text-muted-foreground">
-                Don't have an account?{' '}
-                <button 
-                  onClick={() => onNavigate('login')}
-                  className="text-primary hover:underline"
-                >
-                  Create one here
-                </button>
+                Need access?{' '}
+                <Dialog open={requestOpen} onOpenChange={(open) => {
+                  setRequestOpen(open);
+                  if (!open) resetRequestForm();
+                }}>
+                  <DialogTrigger asChild>
+                    <button className="text-primary hover:underline">
+                      Request an invite
+                    </button>
+                  </DialogTrigger>
+                  <DialogContent className="max-w-md">
+                    <DialogHeader>
+                      <DialogTitle>Request Access</DialogTitle>
+                      <DialogDescription>
+                        Provide your contact details and an administrator will reach out.
+                      </DialogDescription>
+                    </DialogHeader>
+                    <form className="space-y-4" onSubmit={handleInviteRequest}>
+                      <div className="space-y-2">
+                        <Label htmlFor="request-email">Work email</Label>
+                        <Input
+                          id="request-email"
+                          type="email"
+                          required
+                          value={requestEmail}
+                          onChange={(event) => setRequestEmail(event.target.value)}
+                          placeholder="you@agency.com"
+                        />
+                      </div>
+                      <div className="space-y-2">
+                        <Label htmlFor="request-name">Full name</Label>
+                        <Input
+                          id="request-name"
+                          value={requestName}
+                          onChange={(event) => setRequestName(event.target.value)}
+                          placeholder="Case Manager"
+                        />
+                      </div>
+                      <div className="space-y-2">
+                        <Label htmlFor="request-message">Notes (optional)</Label>
+                        <Textarea
+                          id="request-message"
+                          value={requestMessage}
+                          onChange={(event) => setRequestMessage(event.target.value)}
+                          rows={4}
+                          placeholder="Share your department, counties, or reason for access."
+                        />
+                      </div>
+                      {requestFeedback && (
+                        <div
+                          className={`rounded-md border px-3 py-2 text-sm ${
+                            requestStatus === 'success'
+                              ? 'border-success/60 bg-success/10 text-success'
+                              : 'border-destructive/60 bg-destructive/10 text-destructive'
+                          }`}
+                        >
+                          {requestStatus === 'success' ? (
+                            <span className="flex items-center gap-2">
+                              <CheckCircle className="h-4 w-4" />
+                              {requestFeedback}
+                            </span>
+                          ) : (
+                            requestFeedback
+                          )}
+                        </div>
+                      )}
+                      <div className="flex justify-end gap-2">
+                        <PillButton
+                          type="button"
+                          variant="outline"
+                          onClick={() => {
+                            resetRequestForm();
+                            setRequestOpen(false);
+                          }}
+                        >
+                          Cancel
+                        </PillButton>
+                        <PillButton type="submit" disabled={requestStatus === 'submitting'}>
+                          {requestStatus === 'submitting' ? 'Sending…' : (<span className="flex items-center gap-2"><Send className="h-4 w-4" /> Submit</span>)}
+                        </PillButton>
+                      </div>
+                    </form>
+                  </DialogContent>
+                </Dialog>
               </p>
             </div>
           </CardContent>
