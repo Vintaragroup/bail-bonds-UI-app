@@ -139,7 +139,18 @@ Once we settle the decisions above, we can begin editing `package.json`, `vite.c
 - **2025-01-15 @ 15:40:** Added back-navigation to profile settings header so admins can return to the main auth hub quickly.
 - **2025-01-15 @ 16:05:** Surfaced access-request queue in Admin UI with approve/reject actions; added `/api/access-requests` endpoints + React Query hooks to manage statuses.
 - **2025-01-15 @ 16:30:** Wired Admin user management to `/api/metadata`, replacing hard-coded role/county lists with dynamic values, scoped validation, and fallback messaging; added `useMetadataWithFallback` hook and re-validated with `npm run build`.
+- **2025-01-15 @ 16:45:** Finalized metadata-driven admin tools, cut a branch push (`feature/auth-integration-prep`), and prepped for QA handoff.
+- **2025-01-15 @ 17:10:** Locked down deployment playbook (`docs/deployment-containerization.md`), ran smoke `npm run build`, and staged final auth deliverables for production readiness review.
 - **Next:** Fine-tune role-based permissions within individual handlers and prepare E2E auth tests.
+
+## 8. Go-Live Touchpoints
+- [ ] QA pass covering email/password login, SSO paths, magic link, and MFA flows (document outcomes + any defects).
+- [ ] Validate role enforcement against live data (dashboard, cases, check-ins, documents) using scoped test accounts per role.
+- [ ] Confirm `/api/metadata` stays in sync with production env vars; add monitors/alerts for failures.
+- [ ] Finalize env secret storage (Firebase service account, session secret) and verify `.env.example` mirrors required keys.
+- [ ] Ensure audit trails are exported or mirrored to SIEM before production traffic.
+- [ ] Align with containerization plan (`docs/deployment-containerization.md`) so release process and infrastructure expectations stay in sync.
+- [ ] Collect SOC2 evidence for the release (CI logs, SBOM, approvals) and confirm control owners sign off prior to production cutover.
 
 ## 7. Backend/Firebase Integration Checklist (In Progress)
 - **Environment & Secrets**
