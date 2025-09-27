@@ -1,143 +1,32 @@
 import express from 'express';
 import { nanoid } from 'nanoid';
+import Payment from '../models/Payment.js';
 import { assertPermission } from './utils/authz.js';
+import { getStripe, verifyStripeSignature } from '../lib/stripe.js';
 
 const router = express.Router();
 
-// NOTE: Placeholder data until Stripe integration is wired up.
-const SAMPLE_PAYMENTS = [
-  {
-    id: 'TXN-2024-001',
-    transactionId: 'TXN-2024-001',
-    amount: 2500,
-    fees: 75,
-    netAmount: 2425,
-    currency: 'usd',
-    method: 'card',
-    status: 'completed',
-    bondNumber: 'BOND-27401',
-    clientName: 'Maria Rodriguez',
-    clientEmail: 'maria.rodriguez@example.com',
-    processedAt: '2024-01-15T16:45:00.000Z',
-    createdAt: '2024-01-15T15:30:00.000Z',
-    updatedAt: '2024-01-15T16:45:00.000Z',
-    processor: {
-      provider: 'stripe',
-      chargeId: 'ch_1P1234567890',
-      payoutId: 'po_1P222222',
-    },
-    flags: ['bond-payment'],
-  },
-  {
-    id: 'TXN-2024-002',
-    transactionId: 'TXN-2024-002',
-    amount: 1800,
-    fees: 30,
-    netAmount: 1770,
-    currency: 'usd',
-    method: 'ach_debit',
-    status: 'completed',
-    bondNumber: 'BOND-18273',
-    clientName: 'James Wilson',
-    clientEmail: 'james.wilson@example.com',
-    processedAt: '2024-01-15T14:10:00.000Z',
-    createdAt: '2024-01-15T13:50:00.000Z',
-    updatedAt: '2024-01-15T14:10:00.000Z',
-    processor: {
-      provider: 'stripe',
-      chargeId: 'py_1P888888',
-      payoutId: 'po_1P222223',
-    },
-    flags: ['partial-payment'],
-  },
-  {
-    id: 'TXN-2024-003',
-    transactionId: 'TXN-2024-003',
-    amount: 3200,
-    fees: 64,
-    netAmount: 3136,
-    currency: 'usd',
-    method: 'check',
-    status: 'pending',
-    bondNumber: 'BOND-90341',
-    clientName: 'Sarah Johnson',
-    clientEmail: 'sarah.johnson@example.com',
-    createdAt: '2024-01-14T20:00:00.000Z',
-    updatedAt: '2024-01-14T20:00:00.000Z',
-    processor: {
-      provider: 'manual',
-    },
-    flags: ['bond-payment'],
-  },
-  {
-    id: 'TXN-2024-004',
-    transactionId: 'TXN-2024-004',
-    amount: 950,
-    fees: 28.5,
-    netAmount: 921.5,
-    currency: 'usd',
-    method: 'card',
-    status: 'failed',
-    bondNumber: 'BOND-55231',
-    clientName: 'Michael Chen',
-    clientEmail: 'michael.chen@example.com',
-    createdAt: '2024-01-14T18:15:00.000Z',
-    updatedAt: '2024-01-14T18:20:00.000Z',
-    processor: {
-      provider: 'stripe',
-      chargeId: 'ch_1P999999',
-    },
-    failureReason: 'insufficient_funds',
-    flags: ['fee-payment'],
-  },
-  {
-    id: 'TXN-2024-005',
-    transactionId: 'TXN-2024-005',
-    amount: 4100,
-    fees: 82,
-    netAmount: 4018,
-    currency: 'usd',
-    method: 'wire',
-    status: 'completed',
-    bondNumber: 'BOND-66422',
-    clientName: 'Jennifer Davis',
-    clientEmail: 'jennifer.davis@example.com',
-    processedAt: '2024-01-13T17:45:00.000Z',
-    createdAt: '2024-01-13T16:30:00.000Z',
-    updatedAt: '2024-01-13T17:45:00.000Z',
-    processor: {
-      provider: 'wire',
-      reference: 'WIRE-239001A',
-    },
-    flags: ['bond-payment'],
-  },
-];
+const PAYMENT_TYPE_LABELS = {
+  bond: 'Bond Payment',
+  partial: 'Partial Payment',
+  fee: 'Service Fee',
+  premium: 'Premium Payment',
+};
 
-const SAMPLE_METHODS = [
+const PLACEHOLDER_METHODS = [
   {
     id: 'pm_card_visa',
     type: 'card',
     brand: 'visa',
     last4: '4242',
     expiryMonth: 12,
-    expiryYear: 2025,
+    expiryYear: 2026,
     label: 'Business Account',
     isDefault: true,
     status: 'active',
   },
   {
-    id: 'pm_card_mastercard',
-    type: 'card',
-    brand: 'mastercard',
-    last4: '5555',
-    expiryMonth: 8,
-    expiryYear: 2026,
-    label: 'Emergency Card',
-    isDefault: false,
-    status: 'active',
-  },
-  {
-    id: 'ba_123456789',
+    id: 'pm_bank_1',
     type: 'bank_account',
     bankName: 'First National Bank',
     last4: '7890',
@@ -146,360 +35,425 @@ const SAMPLE_METHODS = [
     isDefault: false,
     status: 'active',
   },
-  {
-    id: 'pm_card_amex',
-    type: 'card',
-    brand: 'amex',
-    last4: '1001',
-    expiryMonth: 3,
-    expiryYear: 2024,
-    label: 'Corporate Card',
-    isDefault: false,
-    status: 'expired',
-  },
 ];
 
-const SAMPLE_REFUND_ELIGIBLE = [
-  {
-    id: 'TXN-2024-006',
-    caseNumber: 'CASE-2024-331',
-    client: 'Olivia Martinez',
-    originalAmount: 5200,
-    refundableAmount: 1800,
-    status: 'eligible',
-    daysAgo: 6,
-  },
-  {
-    id: 'TXN-2024-003',
-    caseNumber: 'BOND-90341',
-    client: 'Sarah Johnson',
-    originalAmount: 3200,
-    refundableAmount: 1200,
-    status: 'partial_refund',
-    daysAgo: 1,
-  },
-  {
-    id: 'TXN-2024-001',
-    caseNumber: 'BOND-27401',
-    client: 'Maria Rodriguez',
-    originalAmount: 2500,
-    refundableAmount: 500,
-    status: 'processing',
-    daysAgo: 0,
-  },
-];
-
-const SAMPLE_REFUND_REQUESTS = [
-  {
-    id: 'RR-2024-001',
-    transactionId: 'TXN-2024-001',
-    client: 'Maria Rodriguez',
-    requestedAt: '2024-01-12T18:30:00.000Z',
-    amount: 500,
-    status: 'in_review',
-    reason: 'Bond conditions met',
-    requestedBy: 'Billing Team',
-  },
-  {
-    id: 'RR-2024-002',
-    transactionId: 'TXN-2024-007',
-    client: 'Ethan Walker',
-    requestedAt: '2024-01-10T14:20:00.000Z',
-    amount: 1200,
-    status: 'awaiting_docs',
-    reason: 'Court adjustment',
-    requestedBy: 'Finance',
-  },
-];
-
-const SAMPLE_DISPUTES = [
-  {
-    id: 'DP-2024-001',
-    transactionId: 'TXN-2024-004',
-    amount: 950,
-    openedAt: '2024-01-14T19:05:00.000Z',
-    client: 'Michael Chen',
-    reason: 'Cardholder reported unrecognized charge',
-    status: 'needs_response',
-    responseDeadline: '2024-01-20T23:59:59.000Z',
-  },
-  {
-    id: 'DP-2024-002',
-    transactionId: 'TXN-2024-010',
-    amount: 1500,
-    openedAt: '2024-01-11T17:10:00.000Z',
-    client: 'Taylor Brooks',
-    reason: 'Service dispute - partial bond release',
-    status: 'under_review',
-    responseDeadline: '2024-01-18T23:59:59.000Z',
-  },
-];
-
-const SAMPLE_SETTINGS = {
-  defaultMethodId: 'pm_card_visa',
-  acceptedMethods: ['card', 'ach_debit', 'wire', 'check'],
-  autoCapture: true,
-  autoCaptureDelayMinutes: 15,
-  receiptEmailEnabled: true,
-  approvalThreshold: 5000,
-  twoPersonApproval: true,
-  notifyOnLargePayment: true,
-  notifyRecipients: ['billing@asapbailbooks.com'],
-  automationRules: [
-    {
-      id: 'auto-reminder',
-      title: 'Send reminder 3 days before due date',
-      enabled: true,
-    },
-    {
-      id: 'auto-retry',
-      title: 'Retry failed card payments twice',
-      enabled: true,
-    },
-  ],
-};
-
-const SAMPLE_ALERTS = [
-  {
-    id: 'alert-001',
-    severity: 'warning',
-    title: 'ACH deposit delayed',
-    description: 'Wire transfer for BOND-90341 pending for 5 business days.',
-  },
-  {
-    id: 'alert-002',
-    severity: 'info',
-    title: 'Settlement notice',
-    description: 'Stripe payout STRP-PO-1234 scheduled for Jan 18.',
-  },
-];
-
-const SAMPLE_PAYOUTS = [
-  {
-    id: 'po_1P222222',
-    arrivalDate: '2024-01-18T09:00:00.000Z',
-    amount: 12450,
-    status: 'scheduled',
-    method: 'ach',
-  },
-  {
-    id: 'po_1P111111',
-    arrivalDate: '2024-01-12T09:00:00.000Z',
-    amount: 10890,
-    status: 'paid',
-    method: 'ach',
-  },
-];
-
-function clone(value) {
-  return JSON.parse(JSON.stringify(value));
+function serializePayment(doc) {
+  if (!doc) return null;
+  const data = typeof doc.toObject === 'function'
+    ? doc.toObject({ versionKey: false })
+    : { ...doc };
+  if (data._id) {
+    data.id = data._id.toString();
+    delete data._id;
+  }
+  return data;
 }
 
-function filterPayments(payments, query = {}) {
-  const { status, method, search } = query;
-  return payments.filter((payment) => {
-    if (status && status !== 'all' && payment.status !== status) return false;
-    if (method && method !== 'all' && payment.method !== method) return false;
-    if (search) {
-      const needle = String(search).toLowerCase();
-      const haystack = [payment.transactionId, payment.clientName, payment.bondNumber]
-        .filter(Boolean)
-        .join(' ')
-        .toLowerCase();
-      if (!haystack.includes(needle)) return false;
-    }
-    return true;
-  });
+function ensureMetadataMap(doc) {
+  if (!doc) return;
+  if (!doc.metadata || typeof doc.metadata.set !== 'function') {
+    const existing = doc.metadata && typeof doc.metadata === 'object'
+      ? doc.metadata
+      : {};
+    doc.metadata = new Map(Object.entries(existing));
+  }
 }
 
-function computeMetrics(payments) {
-  const totalRevenue = payments
-    .filter((p) => p.status === 'completed')
-    .reduce((sum, payment) => sum + payment.amount, 0);
-  const pendingCount = payments.filter((p) => p.status === 'pending' || p.status === 'processing').length;
-  const successRateBase = payments.filter((p) => ['completed', 'failed'].includes(p.status)).length;
-  const successRate = successRateBase === 0
+function parseListQuery(query = {}) {
+  const filters = {};
+  if (query.status && query.status !== 'all') {
+    filters.status = String(query.status);
+  }
+  if (query.method && query.method !== 'all') {
+    filters.method = String(query.method);
+  }
+  if (query.search) {
+    const regex = new RegExp(String(query.search), 'i');
+    filters.$or = [
+      { transactionId: regex },
+      { clientName: regex },
+      { bondNumber: regex },
+    ];
+  }
+  return filters;
+}
+
+function computeMetrics(payments = []) {
+  const completed = payments.filter((payment) => payment.status === 'completed');
+  const failed = payments.filter((payment) => payment.status === 'failed');
+  const processing = payments.filter((payment) => payment.status === 'processing' || payment.status === 'pending');
+  const totalRevenue = completed.reduce((sum, payment) => sum + payment.amount, 0);
+  const successRate = completed.length + failed.length === 0
     ? 1
-    : payments.filter((p) => p.status === 'completed').length / successRateBase;
+    : completed.length / (completed.length + failed.length);
 
   return {
     summary: {
       totalRevenue: {
         value: totalRevenue,
-        currency: 'usd',
-        changeRatio: 0.125,
+        currency: payments[0]?.currency || 'usd',
+        changeRatio: 0,
         label: 'This month',
       },
       activeBonds: {
-        value: 24,
-        change: 3,
-        label: 'Currently processing',
+        value: completed.length,
+        change: 0,
+        label: 'Completed payments',
       },
       successRate: {
         value: successRate,
-        change: 0.008,
+        change: 0,
         label: 'Last 30 days',
       },
       pendingPayments: {
-        value: pendingCount,
-        change: -2,
+        value: processing.length,
+        change: 0,
         label: 'Awaiting processing',
       },
     },
-    methodBreakdown: [
-      { method: 'card', percentage: 0.62 },
-      { method: 'ach_debit', percentage: 0.18 },
-      { method: 'wire', percentage: 0.12 },
-      { method: 'check', percentage: 0.08 },
-    ],
-    revenueTrend: [
-      { month: '2023-10', amount: 98250 },
-      { month: '2023-11', amount: 104200 },
-      { month: '2023-12', amount: 112340 },
-      { month: '2024-01', amount: 127450 },
-    ],
-    alerts: clone(SAMPLE_ALERTS),
-    upcomingPayouts: clone(SAMPLE_PAYOUTS),
+    methodBreakdown: [],
+    revenueTrend: [],
+    alerts: [],
+    upcomingPayouts: [],
   };
 }
 
-router.get('/metrics', (req, res) => {
+function dollarsToCents(amount) {
+  const value = Number(amount);
+  if (!Number.isFinite(value) || value <= 0) {
+    return null;
+  }
+  return Math.round(value * 100);
+}
+
+async function attachChargeDetails(paymentDoc, charge) {
+  if (!paymentDoc || !charge) return;
+  paymentDoc.stripeChargeId = charge.id;
+  if (charge.balance_transaction && typeof charge.balance_transaction === 'string') {
+    try {
+      const stripe = getStripe();
+      const balance = await stripe.balanceTransactions.retrieve(charge.balance_transaction);
+      paymentDoc.fees = typeof balance.fee === 'number' ? balance.fee / 100 : paymentDoc.fees;
+      paymentDoc.netAmount = typeof balance.net === 'number' ? balance.net / 100 : paymentDoc.netAmount;
+    } catch (err) {
+      console.warn('⚠️  Failed to retrieve balance transaction', err.message);
+    }
+  } else if (charge.balance_transaction && typeof charge.balance_transaction === 'object') {
+    paymentDoc.fees = typeof charge.balance_transaction.fee === 'number' ? charge.balance_transaction.fee / 100 : paymentDoc.fees;
+    paymentDoc.netAmount = typeof charge.balance_transaction.net === 'number' ? charge.balance_transaction.net / 100 : paymentDoc.netAmount;
+  }
+}
+
+router.get('/', async (req, res) => {
   assertPermission(req, 'billing:read');
-  const payments = clone(SAMPLE_PAYMENTS);
+  const filters = parseListQuery(req.query);
+  const payments = await Payment.find(filters).sort({ createdAt: -1 }).limit(200).lean();
+  res.json({
+    items: payments.map((payment) => serializePayment(payment)),
+    total: payments.length,
+  });
+});
+
+router.get('/metrics', async (req, res) => {
+  assertPermission(req, 'billing:read');
+  const payments = await Payment.find({}).sort({ createdAt: -1 }).lean();
   res.json(computeMetrics(payments));
 });
 
 router.get('/methods', (req, res) => {
   assertPermission(req, 'billing:read');
-  res.json({ methods: clone(SAMPLE_METHODS) });
+  res.json({ methods: PLACEHOLDER_METHODS });
 });
 
 router.post('/methods', (req, res) => {
   assertPermission(req, 'billing:manage');
-  const payload = req.body || {};
-  const id = nanoid();
-  const method = {
-    id,
-    type: payload.type || 'card',
-    brand: payload.brand || 'unknown',
-    last4: payload.last4 || '0000',
-    expiryMonth: payload.expiryMonth || null,
-    expiryYear: payload.expiryYear || null,
-    label: payload.label || 'New Method',
-    isDefault: Boolean(payload.isDefault),
-    status: 'active',
-  };
-  // TODO: persist once Stripe integration is live.
-  res.status(201).json({ method });
+  res.status(501).json({ error: 'Managing payment methods is handled directly via Stripe dashboard.' });
 });
 
 router.get('/settings', (req, res) => {
   assertPermission(req, 'billing:read');
-  res.json({ settings: clone(SAMPLE_SETTINGS) });
+  res.json({
+    settings: {
+      defaultMethodId: PLACEHOLDER_METHODS[0]?.id || null,
+      acceptedMethods: ['card', 'ach_debit', 'wire', 'check'],
+      autoCapture: true,
+      autoCaptureDelayMinutes: 15,
+      receiptEmailEnabled: true,
+      approvalThreshold: 5000,
+      twoPersonApproval: true,
+      notifyOnLargePayment: true,
+      notifyRecipients: ['billing@example.com'],
+      automationRules: [],
+    },
+  });
 });
 
 router.put('/settings', (req, res) => {
   assertPermission(req, 'billing:manage');
-  const payload = req.body || {};
-  const updated = { ...clone(SAMPLE_SETTINGS), ...payload };
-  // TODO: persist settings per-tenant.
-  res.json({ settings: updated });
+  res.status(200).json({ settings: req.body || {} });
 });
 
-router.get('/refunds/eligible', (req, res) => {
-  assertPermission(req, 'billing:read');
-  res.json({ items: clone(SAMPLE_REFUND_ELIGIBLE) });
-});
-
-router.get('/refunds/requests', (req, res) => {
-  assertPermission(req, 'billing:read');
-  res.json({ items: clone(SAMPLE_REFUND_REQUESTS) });
-});
-
-router.post('/:id/refund', (req, res) => {
+router.post('/', async (req, res) => {
   assertPermission(req, 'billing:manage');
-  const { id } = req.params;
   const payload = req.body || {};
-  const amount = Number(payload.amount || 0);
-  if (!amount || Number.isNaN(amount)) {
-    return res.status(400).json({ error: 'Refund amount is required' });
+  const cents = dollarsToCents(payload.amount);
+  if (!cents) {
+    return res.status(400).json({ error: 'amount is required and must be greater than zero' });
   }
-  const transaction = SAMPLE_PAYMENTS.find((payment) => payment.id === id);
-  if (!transaction) {
-    return res.status(404).json({ error: 'Transaction not found' });
-  }
-  const refund = {
-    id: `rf_${nanoid(10)}`,
-    transactionId: transaction.id,
-    amount,
-    currency: transaction.currency,
+  const currency = (payload.currency || 'usd').toLowerCase();
+  const method = payload.method || 'card';
+  const transactionId = `TXN-${new Date().getFullYear()}-${nanoid(6).toUpperCase()}`;
+  const stripe = getStripe();
+
+  const paymentIntent = await stripe.paymentIntents.create({
+    amount: cents,
+    currency,
+    description: payload.description || `${PAYMENT_TYPE_LABELS?.[payload.paymentType] || 'Payment'} ${transactionId}`,
+    metadata: {
+      transactionId,
+      bondNumber: payload.bondNumber || '',
+      paymentType: payload.paymentType || 'bond',
+    },
+    automatic_payment_methods: { enabled: true },
+    receipt_email: payload.clientEmail || undefined,
+  });
+
+  const paymentDoc = await Payment.create({
+    transactionId,
+    amount: Number(payload.amount),
+    currency,
+    fees: 0,
+    netAmount: 0,
+    method,
     status: 'processing',
-    requestedAt: new Date().toISOString(),
-  };
-  res.status(202).json({ refund });
-});
+    description: payload.description || '',
+    bondNumber: payload.metadata?.caseNumber || payload.bondNumber || '',
+    clientName: payload.clientName || '',
+    clientEmail: payload.clientEmail || '',
+    metadata: payload.metadata || {},
+    stripePaymentIntentId: paymentIntent.id,
+    createdByUid: req.user?.uid || '',
+  });
 
-router.get('/disputes', (req, res) => {
-  assertPermission(req, 'billing:read');
-  res.json({ items: clone(SAMPLE_DISPUTES) });
-});
-
-router.post('/disputes/:id/resolve', (req, res) => {
-  assertPermission(req, 'billing:manage');
-  const { id } = req.params;
-  const dispute = SAMPLE_DISPUTES.find((item) => item.id === id);
-  if (!dispute) {
-    return res.status(404).json({ error: 'Dispute not found' });
-  }
-  const resolution = {
-    ...clone(dispute),
-    status: 'submitted',
-    resolvedAt: new Date().toISOString(),
-    notes: req.body?.notes || '',
-  };
-  res.json({ dispute: resolution });
-});
-
-router.get('/', (req, res) => {
-  assertPermission(req, 'billing:read');
-  const payments = filterPayments(clone(SAMPLE_PAYMENTS), req.query);
-  res.json({
-    items: payments,
-    total: payments.length,
+  res.status(202).json({
+    payment: serializePayment(paymentDoc),
+    clientSecret: paymentIntent.client_secret,
   });
 });
 
-router.get('/:id', (req, res) => {
+router.get('/:id', async (req, res) => {
   assertPermission(req, 'billing:read');
-  const payment = SAMPLE_PAYMENTS.find((item) => item.id === req.params.id);
+  const payment = await Payment.findOne({ transactionId: req.params.id }).lean();
   if (!payment) {
     return res.status(404).json({ error: 'Payment not found' });
   }
-  res.json({ payment: clone(payment) });
+  res.json({ payment: serializePayment(payment) });
 });
 
-router.post('/', (req, res) => {
+router.post('/:id/refund', async (req, res) => {
   assertPermission(req, 'billing:manage');
-  const payload = req.body || {};
-  const id = `TXN-${new Date().getFullYear()}-${Math.floor(Math.random() * 900 + 100)}`;
-  const payment = {
-    id,
-    transactionId: id,
-    amount: Number(payload.amount || 0),
-    currency: payload.currency || 'usd',
-    method: payload.method || 'card',
-    status: 'processing',
-    clientName: payload.clientName || 'Pending Client',
-    clientEmail: payload.clientEmail || '',
-    bondNumber: payload.bondNumber || '',
-    createdAt: new Date().toISOString(),
-    updatedAt: new Date().toISOString(),
-    metadata: payload.metadata || {},
-  };
-  if (!payment.amount) {
-    return res.status(400).json({ error: 'Amount is required' });
+  const payment = await Payment.findOne({ transactionId: req.params.id });
+  if (!payment) {
+    return res.status(404).json({ error: 'Payment not found' });
   }
-  res.status(202).json({ payment });
+  if (!payment.stripePaymentIntentId) {
+    return res.status(400).json({ error: 'Payment is not associated with Stripe payment intent' });
+  }
+  const amount = dollarsToCents(req.body?.amount ?? payment.amount);
+  if (!amount) {
+    return res.status(400).json({ error: 'Refund amount is required' });
+  }
+
+  const stripe = getStripe();
+  let chargeId = payment.stripeChargeId;
+  if (!chargeId) {
+    const intent = await stripe.paymentIntents.retrieve(payment.stripePaymentIntentId, {
+      expand: ['latest_charge'],
+    });
+    chargeId = intent?.latest_charge?.id || intent?.charges?.data?.[0]?.id;
+  }
+  if (!chargeId) {
+    return res.status(400).json({ error: 'Unable to locate Stripe charge for refund' });
+  }
+
+  const refund = await stripe.refunds.create({
+    charge: chargeId,
+    amount,
+    reason: req.body?.reason || undefined,
+  });
+
+  payment.status = 'refunded';
+  payment.refundedAt = new Date();
+  ensureMetadataMap(payment);
+  payment.metadata.set('lastRefundId', refund.id);
+  if (req.body?.reason) {
+    payment.metadata.set('refundReason', req.body.reason);
+  }
+  await payment.save();
+
+  res.status(202).json({
+    refund: {
+      id: refund.id,
+      transactionId: payment.transactionId,
+      amount: refund.amount / 100,
+      currency: refund.currency,
+      status: refund.status,
+      requestedAt: refund.created * 1000,
+    },
+  });
 });
+
+router.get('/refunds/eligible', async (req, res) => {
+  assertPermission(req, 'billing:read');
+  const payments = await Payment.find({ status: { $in: ['completed', 'processing'] } }).sort({ createdAt: -1 }).limit(50).lean();
+  const items = payments.map((payment) => {
+    const created = payment.createdAt ? new Date(payment.createdAt) : new Date();
+    const daysAgo = Math.max(0, Math.round((Date.now() - created.getTime()) / (1000 * 60 * 60 * 24)));
+    return {
+      id: payment.transactionId,
+      caseNumber: payment.bondNumber || '—',
+      client: payment.clientName || '—',
+      originalAmount: payment.amount,
+      refundableAmount: Math.max(0, payment.amount - (payment.fees || 0)),
+      status: payment.status === 'completed' ? 'eligible' : 'processing',
+      daysAgo,
+    };
+  });
+  res.json({ items });
+});
+
+router.get('/refunds/requests', async (req, res) => {
+  assertPermission(req, 'billing:read');
+  const payments = await Payment.find({ status: 'refunded' }).sort({ refundedAt: -1 }).limit(50).lean();
+  const items = payments.map((payment) => ({
+    id: payment.metadata?.get?.('lastRefundId') || `refund-${payment.transactionId}`,
+    transactionId: payment.transactionId,
+    client: payment.clientName || '—',
+    requestedAt: payment.refundedAt || payment.updatedAt || payment.createdAt,
+    amount: payment.amount,
+    status: 'completed',
+    reason: payment.metadata?.get?.('refundReason') || '',
+    requestedBy: payment.createdByUid || undefined,
+  }));
+  res.json({ items });
+});
+
+router.get('/disputes', async (req, res) => {
+  assertPermission(req, 'billing:read');
+  const disputes = await Payment.find({ status: 'disputed' }).sort({ disputedAt: -1 }).limit(50).lean();
+  const items = disputes.map((payment) => ({
+    id: payment.transactionId,
+    transactionId: payment.transactionId,
+    amount: payment.amount,
+    openedAt: payment.disputedAt || payment.updatedAt || payment.createdAt,
+    client: payment.clientName || '—',
+    reason: payment.metadata?.get?.('disputeReason') || 'Dispute reported',
+    status: 'needs_response',
+    responseDeadline: null,
+    notes: payment.metadata?.get?.('disputeNotes') || null,
+  }));
+  res.json({ items });
+});
+
+router.post('/disputes/:id/resolve', async (req, res) => {
+  assertPermission(req, 'billing:manage');
+  const payment = await Payment.findOne({ transactionId: req.params.id });
+  if (!payment) {
+    return res.status(404).json({ error: 'Dispute not found' });
+  }
+  payment.status = 'completed';
+  payment.disputedAt = new Date();
+  ensureMetadataMap(payment);
+  payment.metadata.set('disputeNotes', req.body?.notes || '');
+  await payment.save();
+  res.json({ dispute: {
+    id: payment.transactionId,
+    transactionId: payment.transactionId,
+    status: 'resolved',
+    resolvedAt: payment.disputedAt,
+    notes: payment.metadata.get('disputeNotes') || '',
+  } });
+});
+
+export async function stripeWebhookHandler(req, res) {
+  const signature = req.headers['stripe-signature'];
+  const webhookSecret = process.env.STRIPE_WEBHOOK_SECRET;
+  if (!signature || !webhookSecret) {
+    return res.status(400).send('Missing Stripe webhook signature or secret');
+  }
+
+  let event;
+  try {
+    event = verifyStripeSignature(req.body, signature, webhookSecret);
+  } catch (err) {
+    console.error('⚠️  Stripe webhook verification failed:', err.message);
+    return res.status(400).send(`Webhook Error: ${err.message}`);
+  }
+
+  try {
+    const stripe = getStripe();
+    switch (event.type) {
+      case 'payment_intent.succeeded': {
+        const pi = event.data.object;
+        const payment = await Payment.findOne({ stripePaymentIntentId: pi.id });
+        if (payment) {
+          payment.status = 'completed';
+          payment.processedAt = new Date();
+          payment.netAmount = typeof pi.amount_received === 'number' ? pi.amount_received / 100 : payment.netAmount;
+          if (pi.charges?.data?.length) {
+            const charge = pi.charges.data[0];
+            await attachChargeDetails(payment, charge);
+          }
+          ensureMetadataMap(payment);
+          await payment.save();
+        }
+        break;
+      }
+      case 'payment_intent.payment_failed': {
+        const pi = event.data.object;
+        const payment = await Payment.findOne({ stripePaymentIntentId: pi.id });
+        if (payment) {
+          payment.status = 'failed';
+          ensureMetadataMap(payment);
+          payment.metadata.set('failureReason', pi.last_payment_error?.message || 'Payment failed');
+          await payment.save();
+        }
+        break;
+      }
+      case 'charge.refunded': {
+        const charge = event.data.object;
+        const payment = await Payment.findOne({ stripeChargeId: charge.id })
+          || await Payment.findOne({ stripePaymentIntentId: charge.payment_intent });
+        if (payment) {
+          payment.status = 'refunded';
+          payment.refundedAt = new Date();
+          ensureMetadataMap(payment);
+          payment.metadata.set('lastRefundId', charge.refunds?.data?.[0]?.id || charge.id);
+          await payment.save();
+        }
+        break;
+      }
+      case 'charge.dispute.created': {
+        const dispute = event.data.object;
+        const payment = await Payment.findOne({ stripeChargeId: dispute.charge });
+        if (payment) {
+          payment.status = 'disputed';
+          payment.disputedAt = new Date();
+          ensureMetadataMap(payment);
+          payment.metadata.set('disputeReason', dispute.reason || 'dispute');
+          await payment.save();
+        }
+        break;
+      }
+      default:
+        break;
+    }
+  } catch (err) {
+    console.error('⚠️  Error handling Stripe webhook:', err);
+    return res.status(500).send('Error processing webhook');
+  }
+
+  res.json({ received: true });
+}
 
 export default router;

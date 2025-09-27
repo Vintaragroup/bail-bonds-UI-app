@@ -80,6 +80,9 @@ Track the remaining feature work required before we containerize and promote the
 ## 8. Progress Log
 - **2025-01-15:** Added `/api/payments` route family with placeholder data, updated role permissions (`billing:*`), published OpenAPI schemas, and introduced `Payment` model scaffold for upcoming Stripe integration.
 - **2025-01-15:** Connected payment UI screens to backend stubs (React Query hooks for metrics, history, methods, refunds, disputes), replacing mock data and enabling toast-driven mutation flows.
+- **2025-01-15:** Replaced legacy `/payments` page with routed billing dashboard + sub-pages (`/payments/*`), so authenticated users access the new payment experience directly.
+- **2025-01-15:** Bootstrapped Stripe integration (env keys, SDK helper, webhook route, PaymentIntent creation) and wrapped payments UI with a Stripe Elements provider for future card entry flows.
+- **2025-01-15:** Enabled live Stripe test flows in `PaymentForm` using CardElement + `confirmCardPayment`, with fallbacks for non-Stripe setups.
 
 ---
 Primary owner: Application Engineering. Update this tracker as each milestone is completed.

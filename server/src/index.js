@@ -20,7 +20,7 @@ import authRoutes from './routes/auth.js';
 import userRoutes from './routes/users.js';
 import accessRequestRoutes from './routes/accessRequests.js';
 import metadataRoutes from './routes/metadata.js';
-import paymentRoutes from './routes/payments.js';
+import paymentRoutes, { stripeWebhookHandler } from './routes/payments.js';
 import { requireAuth } from './middleware/auth.js';
 
 const app = express();
@@ -46,6 +46,7 @@ app.use(helmet({
   contentSecurityPolicy: false,
   crossOriginResourcePolicy: { policy: 'cross-origin' },
 }));
+app.post('/api/payments/stripe/webhook', express.raw({ type: 'application/json' }), stripeWebhookHandler);
 app.use(express.json({ limit: '1mb' }));
 app.use(cookieParser());
 

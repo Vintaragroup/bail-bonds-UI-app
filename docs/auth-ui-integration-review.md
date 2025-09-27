@@ -143,6 +143,8 @@ Once we settle the decisions above, we can begin editing `package.json`, `vite.c
 - **2025-01-15 @ 17:10:** Locked down deployment playbook (`docs/deployment-containerization.md`), ran smoke `npm run build`, and staged final auth deliverables for production readiness review.
 - **2025-01-15 @ 17:40:** Scaffolded `/api/payments/*` endpoints with stub data + OpenAPI docs, extended role permissions (`billing:*`), and introduced `Payment` model ahead of Stripe integration.
 - **2025-01-15 @ 18:05:** Wired payment preview screens to the new `/api/payments` hooks (metrics, history, methods, refunds, disputes) and surfaced optimistic toasts for mutations.
+- **2025-01-15 @ 18:45:** Added Stripe server groundwork (env placeholders, SDK helper, PaymentIntent-based API, webhook endpoint) and introduced Stripe Elements scaffolding on the payments routes.
+- **2025-01-15 @ 19:10:** Wired payment form to Stripe Elements (CardElement + `confirmCardPayment`), so card flows now hit live test mode while preserving the mock fallback.
 - **Next:** Fine-tune role-based permissions within individual handlers and prepare E2E auth tests.
 
 ## 8. Go-Live Touchpoints

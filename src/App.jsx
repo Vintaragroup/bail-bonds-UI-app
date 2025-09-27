@@ -5,7 +5,7 @@ import Cases from "./pages/Cases";
 import CaseDetail from "./pages/CaseDetail";
 import CheckIns from "./pages/CheckIns";
 import Calendar from "./pages/Calendar";
-import Payments from "./pages/Payments";
+import PaymentsRoutes from "./pages/PaymentsRoutes";
 import Messages from "./pages/Messages";
 import Admin from "./pages/Admin";
 import Reports from "./pages/Reports";
@@ -30,7 +30,7 @@ export default function App() {
           <Route path="/cases/:caseId" element={<CaseDetail />} />
           <Route path="/check-ins" element={<CheckIns />} />
           <Route path="/calendar" element={<Calendar />} />
-          <Route path="/payments" element={<Payments />} />
+          <Route path="/payments/*" element={<PaymentsRoutes />} />
           <Route path="/messages" element={<Messages />} />
           <Route path="/reports" element={<Reports />} />
           <Route path="/admin" element={<Admin />} />

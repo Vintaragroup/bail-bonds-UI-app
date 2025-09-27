@@ -227,8 +227,17 @@ export function useResolveDispute() {
 export function useCreatePayment() {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: async (payload: { amount: number; currency?: string; method?: string; clientName?: string; clientEmail?: string; bondNumber?: string; metadata?: Record<string, unknown> }) =>
-      sendJSON('/payments', { method: 'POST', body: payload }),
+    mutationFn: async (payload: {
+      amount: number;
+      currency?: string;
+      method?: string;
+      clientName?: string;
+      clientEmail?: string;
+      paymentType?: string;
+      description?: string;
+      bondNumber?: string;
+      metadata?: Record<string, unknown>;
+    }) => sendJSON<{ payment: Payment; clientSecret?: string }>('/payments', { method: 'POST', body: payload }),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['payments', 'list'] });
       queryClient.invalidateQueries({ queryKey: ['payments', 'metrics'] });

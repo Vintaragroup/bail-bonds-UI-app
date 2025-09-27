@@ -578,6 +578,24 @@ paths:
           description: Forbidden
         '404':
           description: Dispute not found
+  /payments/stripe/webhook:
+    post:
+      summary: Stripe webhook callback (raw payload)
+      tags: [Payments]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              description: Event payload delivered by Stripe
+      responses:
+        '200':
+          description: Acknowledged
+        '400':
+          description: Signature verification failed
+        '500':
+          description: Internal processing error
   /access-requests:
     get:
       summary: List pending access requests
@@ -856,6 +874,9 @@ components:
         processor:
           type: object
           additionalProperties: true
+        stripePaymentIntentId: { type: string, nullable: true }
+        stripeChargeId: { type: string, nullable: true }
+        createdByUid: { type: string, nullable: true }
     PaymentListResponse:
       type: object
       properties:
@@ -881,6 +902,9 @@ components:
       properties:
         payment:
           $ref: '#/components/schemas/Payment'
+        clientSecret:
+          type: string
+          description: Stripe payment intent client secret (use with Stripe.js)
     PaymentDetailResponse:
       type: object
       properties:

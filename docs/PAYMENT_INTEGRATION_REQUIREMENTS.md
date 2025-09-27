@@ -26,6 +26,9 @@ All payment components have been implemented with `.jsx` extensions:
 - Design system consistency maintained
 - Demo navigation dropdown includes payment section
 - Payment screens now consume live React Query hooks backed by `/api/payments/*` placeholder routes
+- `/payments/*` routes added to the authenticated app shell, exposing Billing Dashboard, methods, history, settings, refunds, and disputes in production navigation.
+- Stripe integration scaffolding added: server-side PaymentIntent creation, webhook endpoint, and a Stripe Elements provider wrapping the payments UI (card capture onboarding still in progress).
+- Stripe Elements CardElement is now live on the Payment Form; submissions call `confirmCardPayment` with the client secret returned by `/api/payments`.
 
 ## Required Updates
 
@@ -84,20 +87,24 @@ All payment components have been implemented with `.jsx` extensions:
 
 ### API Endpoints Needed
 
-**Payment Processing**:
+**Payment Processing** (current implementation)
 ```
-POST /api/payments/process
-POST /api/payments/refund
-GET  /api/payments/history
-PUT  /api/payments/methods
+POST /api/payments                 # creates a Stripe PaymentIntent and returns { payment, clientSecret }
+POST /api/payments/:id/refund      # issues a refund via Stripe
+POST /api/payments/stripe/webhook  # receives Stripe event callbacks (raw payload)
 ```
 
-**Payment Management**:
+**Payment Management**
 ```
-GET  /api/billing/dashboard
+GET  /api/payments                 # paginated payment list
+GET  /api/payments/metrics         # dashboard summary
+GET  /api/payments/methods         # placeholder list until Stripe customer vault is wired
+GET  /api/payments/settings        # retrieve billing settings
+PUT  /api/payments/settings        # update billing settings
+GET  /api/payments/refunds/eligible
+GET  /api/payments/refunds/requests
 GET  /api/payments/disputes
-PUT  /api/payments/settings
-POST /api/payments/export
+POST /api/payments/disputes/:id/resolve
 ```
 
 ### Data Models Required
@@ -134,6 +141,7 @@ interface PaymentMethod {
 - Implement tokenization for payment methods
 - Ensure secure transmission of payment data
 - Add audit logging for all payment operations
+- Verify Stripe webhook signatures (`STRIPE_WEBHOOK_SECRET`) and never log raw card data.
 
 **Authentication Integration**:
 - Verify user authentication before payment processing
@@ -176,19 +184,14 @@ interface PaymentMethod {
 ### Required Environment Variables
 
 ```env
-# Payment Processing
-PAYMENT_PROCESSOR_API_KEY=your_api_key
-PAYMENT_PROCESSOR_SECRET=your_secret
-PAYMENT_PROCESSOR_ENDPOINT=https://api.processor.com
+# Backend
+STRIPE_SECRET_KEY=sk_test_xxx
+STRIPE_WEBHOOK_SECRET=whsec_xxx
 
-# Security
-ENCRYPTION_KEY=your_encryption_key
-JWT_SECRET=your_jwt_secret
+# Frontend
+VITE_STRIPE_PUBLISHABLE_KEY=pk_test_xxx
 
-# Feature Flags
-ENABLE_PAYMENT_DISPUTES=true
-ENABLE_WIRE_TRANSFERS=true
-ENABLE_CHECK_PROCESSING=true
+# Existing Firebase + session variables remain in `.env.example` / `server/.env.example`
 ```
 
 ### Development vs Production
