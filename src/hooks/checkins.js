@@ -1,10 +1,23 @@
 import { useQuery, useMutation } from '@tanstack/react-query';
 import { getJSON, sendJSON } from './dashboard';
 
-export function useCheckins(scope = 'today', options = {}) {
+function buildQueryString(filters = {}) {
+  const params = new URLSearchParams();
+  Object.entries(filters).forEach(([key, value]) => {
+    if (value !== undefined && value !== null && value !== '') {
+      params.append(key, value);
+    }
+  });
+  const query = params.toString();
+  return query ? `?${query}` : '';
+}
+
+export function useCheckins(filters = { scope: 'today' }, options = {}) {
+  const normalized = typeof filters === 'string' ? { scope: filters } : filters;
+  const queryString = buildQueryString({ scope: 'today', ...normalized });
   return useQuery({
-    queryKey: ['checkins', scope],
-    queryFn: () => getJSON(`/checkins?scope=${encodeURIComponent(scope)}`),
+    queryKey: ['checkins', queryString],
+    queryFn: () => getJSON(`/checkins${queryString}`),
     staleTime: 30_000,
     ...options,
   });
@@ -27,6 +40,56 @@ export function useLogCheckinContact(options = {}) {
       sendJSON(`/checkins/${encodeURIComponent(id)}/contact`, {
         method: 'PATCH',
         body: { increment },
+      }),
+    ...options,
+  });
+}
+
+export function useCheckInDetail(id, options = {}) {
+  return useQuery({
+    enabled: Boolean(id),
+    queryKey: ['checkins', 'detail', id],
+    queryFn: () => getJSON(`/checkins/${encodeURIComponent(id)}`),
+    ...options,
+  });
+}
+
+export function useCheckInTimeline(id, options = {}) {
+  return useQuery({
+    enabled: Boolean(id),
+    queryKey: ['checkins', 'timeline', id],
+    queryFn: () => getJSON(`/checkins/${encodeURIComponent(id)}/timeline`),
+    ...options,
+  });
+}
+
+export function useCreateCheckIn(options = {}) {
+  return useMutation({
+    mutationFn: (payload) =>
+      sendJSON('/checkins', {
+        method: 'POST',
+        body: payload,
+      }),
+    ...options,
+  });
+}
+
+export function useUpdateCheckIn(options = {}) {
+  return useMutation({
+    mutationFn: ({ id, ...payload }) =>
+      sendJSON(`/checkins/${encodeURIComponent(id)}`, {
+        method: 'PUT',
+        body: payload,
+      }),
+    ...options,
+  });
+}
+
+export function useTriggerCheckInPing(options = {}) {
+  return useMutation({
+    mutationFn: (id) =>
+      sendJSON(`/checkins/${encodeURIComponent(id)}/pings/manual`, {
+        method: 'POST',
       }),
     ...options,
   });

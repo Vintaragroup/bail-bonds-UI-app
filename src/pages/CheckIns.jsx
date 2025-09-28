@@ -1,25 +1,63 @@
 import { useMemo, useState } from 'react';
-import { PageHeader, SummaryStat, PageToolbar, SectionCard } from '../components/PageToolkit';
+import { Button } from '../components/ui/button';
 import { useToast } from '../components/ToastContext';
-import { useCheckins, useUpdateCheckinStatus, useLogCheckinContact } from '../hooks/checkins';
+import {
+  useCheckins,
+  useUpdateCheckinStatus,
+  useLogCheckinContact,
+  useCheckInDetail,
+  useCheckInTimeline,
+  useTriggerCheckInPing,
+  useCreateCheckIn,
+} from '../hooks/checkins';
+import CheckInSummary from '../components/checkins/CheckInSummary';
+import CheckInFilters from '../components/checkins/CheckInFilters';
+import CheckInList from '../components/checkins/CheckInList';
+import CheckInDetailDrawer from '../components/checkins/CheckInDetailDrawer';
+import CheckInFormModal from '../components/checkins/CheckInFormModal';
 
-const TABS = [
-  { id: 'today', label: 'Today' },
-  { id: 'overdue', label: 'Overdue', tone: 'warn' },
-  { id: 'all', label: 'All' },
-];
+const OFFICER_OPTIONS = [];
 
-const formatDateTime = (value) => {
-  if (!value) return '—';
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) return value;
-  return `${date.toLocaleDateString()} ${date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}`;
-};
+function mapToListItems(items = []) {
+  return items.map((item) => ({
+    id: item.id,
+    clientName: item.person || 'Unknown',
+    caseNumber: item.caseNumber || null,
+    county: item.county || null,
+    dueAt: item.dueAt || null,
+    status: item.status || 'pending',
+    contactCount: item.contactCount || 0,
+    lastContactAt: item.lastContactAt || null,
+    method: item.method || null,
+    note: item.note || null,
+    location: item.location || null,
+    gpsEnabled: Boolean(item.gpsEnabled),
+  }));
+}
 
 export default function CheckIns() {
-  const [activeTab, setActiveTab] = useState('today');
+  const [filters, setFilters] = useState({ scope: 'today', officer: 'all', search: '' });
+  const [selectedCheckInId, setSelectedCheckInId] = useState(null);
+  const [isDrawerOpen, setDrawerOpen] = useState(false);
+  const [isFormOpen, setFormOpen] = useState(false);
+
   const { pushToast } = useToast();
-  const { data, isLoading, isError, error, refetch } = useCheckins(activeTab);
+
+  const queryFilters = useMemo(() => {
+    const params = { scope: filters.scope };
+    if (filters.officer && filters.officer !== 'all') params.officer = filters.officer;
+    if (filters.search) params.search = filters.search;
+    return params;
+  }, [filters]);
+
+  const {
+    data,
+    isLoading,
+    isError,
+    error,
+    refetch,
+  } = useCheckins(queryFilters);
+
   const updateStatus = useUpdateCheckinStatus({
     onSuccess: () => {
       pushToast({ variant: 'success', title: 'Updated', message: 'Check-in status updated.' });
@@ -29,6 +67,7 @@ export default function CheckIns() {
       pushToast({ variant: 'error', title: 'Update failed', message: err?.message || 'Unable to update status.' });
     },
   });
+
   const logContact = useLogCheckinContact({
     onSuccess: () => {
       pushToast({ variant: 'success', title: 'Contact logged', message: 'Contact recorded successfully.' });
@@ -39,10 +78,59 @@ export default function CheckIns() {
     },
   });
 
-  const stats = data?.stats || { totalToday: 0, overdue: 0, completed: 0 };
-  const items = data?.items || [];
+  const triggerPing = useTriggerCheckInPing({
+    onSuccess: () => {
+      pushToast({ variant: 'success', title: 'Ping queued', message: 'Manual ping request queued.' });
+    },
+    onError: (err) => {
+      pushToast({ variant: 'error', title: 'Ping failed', message: err?.message || 'Unable to trigger ping.' });
+    },
+  });
 
-  const handleComplete = (id) => {
+  const createCheckIn = useCreateCheckIn({
+    onSuccess: () => {
+      pushToast({ variant: 'success', title: 'Check-in scheduled', message: 'New check-in created.' });
+      setFormOpen(false);
+      refetch();
+    },
+    onError: (err) => {
+      pushToast({ variant: 'error', title: 'Create failed', message: err?.message || 'Unable to schedule check-in.' });
+    },
+  });
+
+  const summary = useMemo(() => {
+    const stats = data?.stats || {};
+    return {
+      upcoming: stats.totalToday ?? 0,
+      overdue: stats.overdue ?? 0,
+      completed: stats.completed ?? 0,
+      gpsEnabled: stats.gpsEnabled ?? 0,
+    };
+  }, [data]);
+
+  const listItems = useMemo(() => mapToListItems(data?.items), [data]);
+  const detailQuery = useCheckInDetail(selectedCheckInId, {
+    enabled: isDrawerOpen && Boolean(selectedCheckInId),
+  });
+  const timelineQuery = useCheckInTimeline(selectedCheckInId, {
+    enabled: isDrawerOpen && Boolean(selectedCheckInId),
+  });
+
+  const activeCheckIn = detailQuery.data?.checkIn
+    ? {
+        ...detailQuery.data.checkIn,
+        timeline: timelineQuery.data?.timeline || [],
+        gpsEnabled: detailQuery.data.checkIn.gpsEnabled,
+        lastPingAt: detailQuery.data.checkIn.lastPingAt,
+        note: detailQuery.data.checkIn.note,
+      }
+    : null;
+
+  const handleScopeChange = (scope) => {
+    setFilters((prev) => ({ ...prev, scope }));
+  };
+
+  const handleMarkDone = (id) => {
     updateStatus.mutate({ id, status: 'done' });
   };
 
@@ -50,137 +138,83 @@ export default function CheckIns() {
     logContact.mutate({ id, increment: 1 });
   };
 
+  const handleOpenDetail = (id) => {
+    setSelectedCheckInId(id);
+    setDrawerOpen(true);
+  };
+
+  const handleCreateCheckIn = async () => {
+    setFormOpen(true);
+  };
+
   return (
     <div className="space-y-6">
-      <PageHeader
-        title="Check-ins"
-        subtitle="Monitor today’s check-ins and quickly follow up on overdue clients."
-        actions={(
-          <button
-            type="button"
-            className="rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-1.5 text-sm font-medium text-emerald-700 hover:border-emerald-300"
-          >
-            Send batch reminder
-          </button>
-        )}
-      />
-
-      <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
-        <SummaryStat label="Today" value={stats.totalToday} tone="info" />
-        <SummaryStat label="Overdue" value={stats.overdue} tone="warn" />
-        <SummaryStat label="Completed" value={stats.completed} tone="success" />
+      <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+        <div>
+          <h1 className="text-3xl font-semibold text-slate-900">Check-ins</h1>
+          <p className="text-sm text-slate-600">Monitor daily assignments, GPS pings, and follow-up tasks.</p>
+        </div>
+        <div className="flex flex-wrap gap-2">
+          <Button variant="outline">Send batch reminder</Button>
+          <Button onClick={handleCreateCheckIn}>Schedule check-in</Button>
+        </div>
       </div>
 
-      <PageToolbar>
-        <div className="flex flex-wrap gap-2">
-          {TABS.map((tab) => (
-            <button
-              key={tab.id}
-              type="button"
-              onClick={() => setActiveTab(tab.id)}
-              className={`rounded-full px-4 py-1.5 text-sm font-medium transition ${
-                activeTab === tab.id
-                  ? 'bg-blue-600 text-white shadow'
-                  : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
-              }`}
-            >
-              {tab.label}
-            </button>
-          ))}
-        </div>
-        <div className="flex flex-col gap-2 text-sm text-slate-600 sm:flex-row sm:items-center sm:gap-4">
-          <span>Scope: <strong className="text-slate-800">{activeTab}</strong></span>
-          <button type="button" className="text-blue-600 hover:text-blue-700">
-            Configure reminders
-          </button>
-        </div>
-      </PageToolbar>
+      <CheckInSummary stats={summary} isLoading={isLoading} />
 
-      <SectionCard
-        title={`${TABS.find((tab) => tab.id === activeTab)?.label || 'Results'} check-ins`}
-        subtitle={items.length ? `${items.length} assignment${items.length === 1 ? '' : 's'} in queue` : 'All caught up!'}
-      >
-        {isError ? (
-          <div className="rounded-xl border border-rose-200 bg-rose-50 p-4 text-sm text-rose-700">
-            Failed to load check-ins: {error?.message || 'Unknown error'}
-          </div>
-        ) : isLoading ? (
-          <div className="rounded-xl border border-slate-200 bg-slate-50 p-6 text-center text-sm text-slate-500">
-            Loading check-ins…
-          </div>
-        ) : (
-          <div className="space-y-3">
-            {items.length === 0 ? (
-              <div className="rounded-xl border border-slate-200 bg-slate-50 p-6 text-center text-sm text-slate-500">
-                Nothing to do right now.
-              </div>
-            ) : (
-              items.map((item) => (
-                <article
-                  key={item.id}
-                  className="flex flex-col gap-2 rounded-xl border border-slate-200 bg-white p-4 shadow-sm sm:flex-row sm:items-center sm:justify-between"
-                >
-                  <div className="space-y-1">
-                    <div className="text-sm font-semibold text-slate-900">{item.person}</div>
-                    <div className="text-xs text-slate-500">
-                      {item.county?.charAt(0).toUpperCase() + item.county?.slice(1)} • Due {formatDateTime(item.dueAt)} • via {item.method?.toUpperCase?.() || 'SMS'}
-                    </div>
-                    <div className="flex flex-wrap gap-2 text-[11px] text-slate-500">
-                      <span>Contacted: {item.contactCount || 0}</span>
-                      <span>Last contact: {item.lastContactAt ? formatDateTime(item.lastContactAt) : '—'}</span>
-                      {item.location ? (
-                        <span>
-                          Location: {item.location.lat?.toFixed?.(3)}, {item.location.lng?.toFixed?.(3)}
-                        </span>
-                      ) : null}
-                    </div>
-                    {item.note ? <div className="text-xs text-slate-500">{item.note}</div> : null}
-                  </div>
-                  <div className="flex flex-wrap items-center gap-2">
-                    <span
-                      className={`inline-flex items-center rounded-full px-2 py-0.5 text-xs ${
-                        item.status === 'done'
-                          ? 'bg-emerald-50 text-emerald-700'
-                          : item.status === 'overdue'
-                            ? 'bg-amber-50 text-amber-700'
-                            : 'bg-blue-50 text-blue-700'
-                      }`}
-                    >
-                      {item.status === 'done' ? 'Completed' : item.status === 'overdue' ? 'Overdue' : 'Pending'}
-                    </span>
-                    <button
-                      type="button"
-                      onClick={() => handleLogContact(item.id)}
-                      disabled={logContact.isPending}
-                      className="rounded-lg border border-slate-300 px-3 py-1 text-xs font-medium text-slate-600 hover:border-blue-300 hover:text-blue-600 disabled:cursor-not-allowed disabled:opacity-50"
-                    >
-                      Log contact
-                    </button>
-                    {item.status !== 'done' ? (
-                      <button
-                        type="button"
-                        onClick={() => handleComplete(item.id)}
-                        disabled={updateStatus.isPending}
-                        className="rounded-lg border border-emerald-300 bg-emerald-50 px-3 py-1 text-xs font-medium text-emerald-700 hover:bg-emerald-100 disabled:cursor-not-allowed disabled:opacity-50"
-                      >
-                        Mark done
-                      </button>
-                    ) : (
-                      <button
-                        type="button"
-                        className="rounded-lg border border-slate-200 px-3 py-1 text-xs text-slate-400"
-                        disabled
-                      >
-                        Done
-                      </button>
-                    )}
-                  </div>
-                </article>
-              ))
-            )}
-          </div>
-        )}
-      </SectionCard>
+      <CheckInFilters
+        scope={filters.scope}
+        onScopeChange={handleScopeChange}
+        officer={filters.officer}
+        onOfficerChange={(value) => setFilters((prev) => ({ ...prev, officer: value }))}
+        search={filters.search}
+        onSearchChange={(value) => setFilters((prev) => ({ ...prev, search: value }))}
+        officers={OFFICER_OPTIONS}
+        onOpenReminderSettings={() => pushToast({ variant: 'info', title: 'Coming soon', message: 'Reminder settings will be available after provider setup.' })}
+      />
+
+      {isError ? (
+        <div className="rounded-xl border border-rose-200 bg-rose-50 p-4 text-sm text-rose-700">
+          Failed to load check-ins: {error?.message || 'Unknown error'}
+        </div>
+      ) : (
+        <CheckInList
+          isLoading={isLoading}
+          items={listItems}
+          onMarkDone={handleMarkDone}
+          onLogContact={handleLogContact}
+          onOpenDetail={handleOpenDetail}
+        />
+      )}
+
+      <CheckInDetailDrawer
+        open={isDrawerOpen}
+        onOpenChange={setDrawerOpen}
+        checkIn={activeCheckIn}
+        onTriggerPing={(id) => triggerPing.mutate(id)}
+      />
+
+      <CheckInFormModal
+        open={isFormOpen}
+        onOpenChange={setFormOpen}
+        onSubmit={async (values) =>
+          createCheckIn.mutateAsync({
+            clientId: values.clientId,
+            officerId: values.officerId,
+            dueAt: values.scheduleAt,
+            timezone: values.timezone,
+            method: values.method,
+            notes: values.notes,
+            remindersEnabled: values.remindersEnabled,
+            gpsEnabled: values.gpsEnabled,
+            pingsPerDay: values.pingsPerDay,
+            locationText: values.location,
+          })
+        }
+        clients={[]}
+        officers={OFFICER_OPTIONS}
+        isSubmitting={createCheckIn.isPending}
+      />
     </div>
   );
 }

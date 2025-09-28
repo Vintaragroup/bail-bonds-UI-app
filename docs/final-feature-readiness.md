@@ -8,7 +8,7 @@ Track the remaining feature work required before we containerize and promote the
 ## 2. Feature Snapshot
 | Feature Area | Pages / Views | Current Status | Key Dependencies | Notes |
 | --- | --- | --- | --- | --- |
-| Payments | Billing Dashboard, Payment Form, Methods, Confirmation, History, Settings, Refunds, Disputes | Stripe test integration landed; webhook QA + automation pending | Payment processor SDK, secure vault for keys, transaction schema | Primary focus; blocks invoicing + revenue metrics. |
+| Payments | Billing Dashboard, Payment Form, Methods, Confirmation, History, Settings, Refunds, Disputes | ✅ Feature work complete – awaiting containerization/staging rollout tasks | Payment processor SDK, secure vault for keys, transaction schema | Monitoring/SOC2 evidence will be finalized during infrastructure deployment. |
 | Check-ins | Check-in scheduler, attendance log, compliance alerts | Needs UI wiring + API endpoints | Calendar utilities, notification service | Should follow payments to leverage shared scheduling primitives. |
 | Calendar | Global schedule, court dates, staff allocation | Design assets ready; no data plumbing yet | Time-zone handling, ICS export optional | Supports both check-ins and case management. |
 | Messages | Inbox, templates, automated reminders | Messaging provider decision outstanding | Notification gateway (Twilio, SendGrid, etc.) | Coordinate with compliance for logging/retention. |
@@ -42,12 +42,12 @@ Track the remaining feature work required before we containerize and promote the
 ## 4. Payments Checklist (Pre-Staging)
 - [x] Choose processor and obtain sandbox credentials. *(Stripe test workspace + restricted key configured 2025-01-15.)*
 - [x] Implement backend payment models, CRUD endpoints, and service layer.
-- [x] Configure webhook endpoint with signature validation. *(Validated via Stripe CLI listener 2025-01-15.)*
+- [x] Configure webhook endpoint with signature validation. *(Validated via Stripe CLI listener 2025-01-15; live endpoint to be added post-deploy.)*
 - [x] Wire frontend components (dashboard widgets, transaction list, forms) to API responses.
 - [x] Add environment variables to `.env.example` (API keys, webhook secret, currency settings).
 - [x] Write automated tests (unit + integration) and add manual QA script.
-- [ ] Document refund/dispute SOP and share with operations.
-- [ ] Capture SOC2 evidence: architecture diagram, data flow, control owners sign-off.
+- [x] Document refund/dispute SOP and share with operations. *(See `docs/payments-operations-sop.md`.)*
+- [ ] Capture SOC2 evidence: architecture diagram, data flow, control owners sign-off. *(In progress – evidence folder to be compiled.)*
 
 ## 5. Provider Comparison & Recommendation
 | Provider | Typical Fees* | Integration Effort | Feature Highlights | Considerations |
@@ -72,9 +72,16 @@ Track the remaining feature work required before we containerize and promote the
 - Regularly reconcile processor payouts with internal ledger; consider nightly jobs.
 
 ## 7. Next Up After Payments
-1. **Check-ins:** integrate scheduling service, push reminders (SMS/Email), audit trail for attendance.
-2. **Calendar:** merge case events, check-ins, and court dates with timezone-aware components.
-3. **Messages:** select communications provider (Twilio/SendGrid), implement template management, ensure retention compliance.
+1. **Check-ins (priority):**
+   - Wire generated UI components to existing case/check-in APIs.
+   - Implement check-in creation/edit modals with validation, officer assignment, and location/timezone handling.
+   - Add reminder delivery hooks (email/SMS placeholders) + audit logging for attendance outcomes.
+   - Build list/detail views with filters (status, upcoming vs missed) and React Query integration.
+2. **Messaging:**
+   - Choose provider (Twilio/SendGrid) and define messaging service wrapper in server.
+   - Implement message composer/templates UI, delivery history, and status indicators.
+   - Ensure retention/export controls for compliance (logging, opt-out handling).
+3. **Calendar:** merge case events, check-ins, and court dates with timezone-aware components.
 4. **Reports:** finalize data sources, build export flows, integrate with go-live compliance checklist.
 
 ## 8. Progress Log
@@ -87,6 +94,7 @@ Track the remaining feature work required before we containerize and promote the
 - **2025-01-15:** Ran Stripe CLI end-to-end payment test (TXN-2025-*), fixed confirmation view to use persisted totals, and confirmed Mongo/Stripe records match.
 - **2025-01-15:** Published payments QA checklist & operations SOP, outlined automated test suite plan to close out remaining checklist items.
 - **2025-01-15:** Landed automated payment tests (Vitest/RTL + Supertest) and documented webhook monitoring/SOC2 evidence expectations.
+- **2025-01-15:** Kicked off check-ins refresh—added dedicated UI components, refactored `/check-ins` page to new layout, expanded hooks, and delivered first API updates (schema, timeline, create/update, manual ping).
 
 ---
 Primary owner: Application Engineering. Update this tracker as each milestone is completed.
