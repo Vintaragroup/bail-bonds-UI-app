@@ -22,6 +22,7 @@ import { Separator } from '../ui/separator';
 import { useCreatePayment, usePaymentMethods } from '../../hooks/payments';
 import { useToast } from '../ToastContext';
 import { hasStripeKey } from '../../lib/stripeClient';
+import { useNavigate } from 'react-router-dom';
 
 const PAYMENT_TYPE_LABELS = {
   bond: 'Bond Payment',
@@ -72,6 +73,7 @@ export function PaymentForm({ onNavigate }) {
   const stripe = useStripe();
   const elements = useElements();
   const [processing, setProcessing] = useState(false);
+  const navigate = useNavigate();
 
   const paymentMethods = useMemo(() => methodsData?.methods ?? [], [methodsData]);
   const selectedMethod = paymentMethods.find((method) => method.id === selectedMethodId);
@@ -126,6 +128,8 @@ export function PaymentForm({ onNavigate }) {
           caseNumber: caseNumber || undefined,
           notes: notes || undefined,
           paymentType,
+          serviceFee,
+          processingFee,
         },
       });
 
@@ -166,7 +170,15 @@ export function PaymentForm({ onNavigate }) {
         const cardElement = elements.getElement(CardElement);
         cardElement?.clear();
       }
-      onNavigate('payment-confirmation');
+      const transactionId = response?.payment?.transactionId;
+      if (transactionId) {
+        navigate(`/payments/confirmation?transactionId=${encodeURIComponent(transactionId)}`, {
+          replace: true,
+          state: { transactionId },
+        });
+      } else {
+        onNavigate('payment-confirmation');
+      }
     } catch (err) {
       pushToast({
         variant: 'error',

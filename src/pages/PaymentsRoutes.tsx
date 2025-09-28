@@ -24,12 +24,14 @@ const SCREEN_TO_PATH: Partial<Record<AuthScreen, string>> = {
   'payment-disputes': '/payments/disputes',
 };
 
+type NavigateOptions = Parameters<ReturnType<typeof useNavigate>>[1];
+
 function usePaymentNavigation() {
   const navigate = useNavigate();
   return useCallback(
-    (screen: AuthScreen) => {
+    (screen: AuthScreen, options?: NavigateOptions) => {
       const target = SCREEN_TO_PATH[screen] || '/payments';
-      navigate(target);
+      navigate(target, options);
     },
     [navigate]
   );

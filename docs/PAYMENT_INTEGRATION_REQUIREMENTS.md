@@ -83,6 +83,15 @@ All payment components have been implemented with `.jsx` extensions:
 - Lucide React icons
 - Recharts for payment analytics
 
+### 5. Latest Progress (2025-01-15)
+- Stripe server/client SDKs installed and committed with updated lockfiles.
+- `/api/payments` routes now create PaymentIntents, process refunds, and react to Stripe webhooks.
+- Payments UI runs inside Stripe Elements; `PaymentForm` confirms intents with live test keys when present.
+- `.env.example` files include `STRIPE_SECRET_KEY`, `STRIPE_WEBHOOK_SECRET`, and `VITE_STRIPE_PUBLISHABLE_KEY` placeholders.
+- Stripe CLI webhook run (`stripe listen --forward-to http://localhost:8080/api/payments/stripe-webhook`) validated the processing flow with test card 4242…; payment document moved to `completed` and confirmation screen now reflects stored totals.
+- Next up: add webhook monitoring/alerting and finalize PCI/SOC2 evidence package.
+- Vitest and Supertest harnesses added with initial smoke tests (`PaymentForm` validation + `/api/payments` intent creation`).
+
 ## Backend Integration Requirements
 
 ### API Endpoints Needed
@@ -194,11 +203,29 @@ VITE_STRIPE_PUBLISHABLE_KEY=pk_test_xxx
 # Existing Firebase + session variables remain in `.env.example` / `server/.env.example`
 ```
 
+### 6. QA & Operations Assets
+- **Manual QA script:** `docs/payments-qa-checklist.md` (card flow, webhook verification, access control).
+- **Operations SOP:** `docs/payments-operations-sop.md` (refunds, disputes, monitoring).
+- **Automated tests:** Vitest + RTL smoke test for `PaymentForm`, Vitest + Supertest units for payment creation/refund/dispute handlers.
+
+#### Automated Test Coverage Plan
+- Component tests (PaymentForm, history widgets) using React Testing Library + jsdom.
+- React Query hooks mocked via MSW for `/api/payments` endpoints. *(todo)*
+- Server unit tests (Vitest + Supertest) for create/refund/dispute handlers with Stripe SDK mocked.
+- Webhook handler test ensuring signature validation + status transitions. *(todo)*
+
+### 7. Monitoring & SOC2 Evidence
+- **Webhook uptime:** Configure Stripe webhook alerting (dashboard > Developers > Webhooks > Failure alerts) and external monitor hitting `/api/health` every 1 min.
+- **Log aggregation:** Ship `stripeWebhookHandler` errors to central logging (Datadog/Splunk) with alert on `Webhook Error` or `StripeAuthenticationError` signatures.
+- **Daily reconciliation:** Schedule job comparing Stripe payouts vs. `Payment` collection; export signed CSV for finance review.
+- **Evidence artifacts:** Retain QA checklist runs, webhook alert configuration screenshots, payout reconciliation reports, and test logs for SOC2 control CM-6 / SI-4.
+- **Secrets management:** Document storage/rotation of Stripe keys in secret manager; rotate quarterly and log approvals.
+
 ### Development vs Production
 
 **Development**:
 - Use sandbox payment processor
-- Mock payment responses
+- Mock payment responses when Stripe keys absent
 - Enable debug logging
 - Use test payment methods
 
@@ -214,11 +241,16 @@ VITE_STRIPE_PUBLISHABLE_KEY=pk_test_xxx
 
 - [ ] Convert all auth components to `.jsx`
 - [ ] Update import statements in `App.tsx`
-- [ ] Implement backend API endpoints
-- [ ] Configure payment processor integration
-- [ ] Set up environment variables
-- [ ] Create database tables for payment data
-- [ ] Implement security measures (PCI compliance)
+- [x] Implement backend API endpoints
+- [x] Configure payment processor integration
+- [x] Set up environment variables
+- [x] Create database tables for payment data
+- [ ] Implement security measures (PCI compliance) *(webhook monitoring, audit logging & SOPs pending)*
+- [x] Implement automated test suite baseline (Vitest/RTL + Supertest smoke tests)
+- [x] Publish manual QA script (`docs/payments-qa-checklist.md`)
+- [x] Document refund/dispute SOP and share with operations (`docs/payments-operations-sop.md`)
+- [ ] Configure webhook monitoring & alerting (Stripe dashboard + external uptime check)
+- [ ] Archive SOC2 evidence bundle (QA runs, monitoring screenshots, reconciliation report)
 
 ### Post-Deployment Verification
 

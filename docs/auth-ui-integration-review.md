@@ -145,7 +145,10 @@ Once we settle the decisions above, we can begin editing `package.json`, `vite.c
 - **2025-01-15 @ 18:05:** Wired payment preview screens to the new `/api/payments` hooks (metrics, history, methods, refunds, disputes) and surfaced optimistic toasts for mutations.
 - **2025-01-15 @ 18:45:** Added Stripe server groundwork (env placeholders, SDK helper, PaymentIntent-based API, webhook endpoint) and introduced Stripe Elements scaffolding on the payments routes.
 - **2025-01-15 @ 19:10:** Wired payment form to Stripe Elements (CardElement + `confirmCardPayment`), so card flows now hit live test mode while preserving the mock fallback.
-- **Next:** Fine-tune role-based permissions within individual handlers and prepare E2E auth tests.
+- **2025-01-15 @ 19:45:** Committed Stripe integration baseline (env templates, SDK helpers, payments routes/UI) and synchronized docs ahead of webhook listener + QA pass.
+- **2025-01-15 @ 20:30:** Completed Stripe CLI listen test, verified payment lifecycle updates/confirmation UI with test transaction (`TXN-2025-*`), and logged secrets locally (not committed).
+- **2025-01-15 @ 21:10:** Added Vitest/RTL and Supertest harness with baseline payment smoke tests; published QA + operations SOP docs.
+- **Next:** Expand payments/auth test coverage, automate monitoring/alerting, and fold SOP artifacts into PCI/SOC2 evidence.
 
 ## 8. Go-Live Touchpoints
 - [ ] QA pass covering email/password login, SSO paths, magic link, and MFA flows (document outcomes + any defects).

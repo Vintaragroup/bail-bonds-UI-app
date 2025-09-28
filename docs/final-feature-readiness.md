@@ -8,7 +8,7 @@ Track the remaining feature work required before we containerize and promote the
 ## 2. Feature Snapshot
 | Feature Area | Pages / Views | Current Status | Key Dependencies | Notes |
 | --- | --- | --- | --- | --- |
-| Payments | Billing Dashboard, Payment Form, Methods, Confirmation, History, Settings, Refunds, Disputes | UI mockups delivered (see Figma); backend integration pending | Payment processor SDK, secure vault for keys, transaction schema | Primary focus; blocks invoicing + revenue metrics. |
+| Payments | Billing Dashboard, Payment Form, Methods, Confirmation, History, Settings, Refunds, Disputes | Stripe test integration landed; webhook QA + automation pending | Payment processor SDK, secure vault for keys, transaction schema | Primary focus; blocks invoicing + revenue metrics. |
 | Check-ins | Check-in scheduler, attendance log, compliance alerts | Needs UI wiring + API endpoints | Calendar utilities, notification service | Should follow payments to leverage shared scheduling primitives. |
 | Calendar | Global schedule, court dates, staff allocation | Design assets ready; no data plumbing yet | Time-zone handling, ICS export optional | Supports both check-ins and case management. |
 | Messages | Inbox, templates, automated reminders | Messaging provider decision outstanding | Notification gateway (Twilio, SendGrid, etc.) | Coordinate with compliance for logging/retention. |
@@ -40,12 +40,12 @@ Track the remaining feature work required before we containerize and promote the
    - Update go-live checklist with payment gateway credentials and runbooks.
 
 ## 4. Payments Checklist (Pre-Staging)
-- [ ] Choose processor and obtain sandbox credentials.
-- [ ] Implement backend payment models, CRUD endpoints, and service layer.
-- [ ] Configure webhook endpoint with signature validation.
-- [ ] Wire frontend components (dashboard widgets, transaction list, forms) to API responses.
-- [ ] Add environment variables to `.env.example` (API keys, webhook secret, currency settings).
-- [ ] Write automated tests (unit + integration) and add manual QA script.
+- [x] Choose processor and obtain sandbox credentials. *(Stripe test workspace + restricted key configured 2025-01-15.)*
+- [x] Implement backend payment models, CRUD endpoints, and service layer.
+- [x] Configure webhook endpoint with signature validation. *(Validated via Stripe CLI listener 2025-01-15.)*
+- [x] Wire frontend components (dashboard widgets, transaction list, forms) to API responses.
+- [x] Add environment variables to `.env.example` (API keys, webhook secret, currency settings).
+- [x] Write automated tests (unit + integration) and add manual QA script.
 - [ ] Document refund/dispute SOP and share with operations.
 - [ ] Capture SOC2 evidence: architecture diagram, data flow, control owners sign-off.
 
@@ -83,6 +83,10 @@ Track the remaining feature work required before we containerize and promote the
 - **2025-01-15:** Replaced legacy `/payments` page with routed billing dashboard + sub-pages (`/payments/*`), so authenticated users access the new payment experience directly.
 - **2025-01-15:** Bootstrapped Stripe integration (env keys, SDK helper, webhook route, PaymentIntent creation) and wrapped payments UI with a Stripe Elements provider for future card entry flows.
 - **2025-01-15:** Enabled live Stripe test flows in `PaymentForm` using CardElement + `confirmCardPayment`, with fallbacks for non-Stripe setups.
+- **2025-01-15:** Captured Stripe integration baseline in git/docs after updating env templates, lockfiles, and Elements wiring; next focus is webhook QA + automated testing.
+- **2025-01-15:** Ran Stripe CLI end-to-end payment test (TXN-2025-*), fixed confirmation view to use persisted totals, and confirmed Mongo/Stripe records match.
+- **2025-01-15:** Published payments QA checklist & operations SOP, outlined automated test suite plan to close out remaining checklist items.
+- **2025-01-15:** Landed automated payment tests (Vitest/RTL + Supertest) and documented webhook monitoring/SOC2 evidence expectations.
 
 ---
 Primary owner: Application Engineering. Update this tracker as each milestone is completed.

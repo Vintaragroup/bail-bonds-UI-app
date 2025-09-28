@@ -193,7 +193,7 @@ router.put('/settings', (req, res) => {
   res.status(200).json({ settings: req.body || {} });
 });
 
-router.post('/', async (req, res) => {
+export async function createPaymentHandler(req, res) {
   assertPermission(req, 'billing:manage');
   const payload = req.body || {};
   const cents = dollarsToCents(payload.amount);
@@ -239,7 +239,9 @@ router.post('/', async (req, res) => {
     payment: serializePayment(paymentDoc),
     clientSecret: paymentIntent.client_secret,
   });
-});
+}
+
+router.post('/', createPaymentHandler);
 
 router.get('/:id', async (req, res) => {
   assertPermission(req, 'billing:read');
@@ -250,7 +252,7 @@ router.get('/:id', async (req, res) => {
   res.json({ payment: serializePayment(payment) });
 });
 
-router.post('/:id/refund', async (req, res) => {
+export async function refundPaymentHandler(req, res) {
   assertPermission(req, 'billing:manage');
   const payment = await Payment.findOne({ transactionId: req.params.id });
   if (!payment) {
@@ -301,7 +303,9 @@ router.post('/:id/refund', async (req, res) => {
       requestedAt: refund.created * 1000,
     },
   });
-});
+}
+
+router.post('/:id/refund', refundPaymentHandler);
 
 router.get('/refunds/eligible', async (req, res) => {
   assertPermission(req, 'billing:read');
@@ -355,7 +359,7 @@ router.get('/disputes', async (req, res) => {
   res.json({ items });
 });
 
-router.post('/disputes/:id/resolve', async (req, res) => {
+export async function resolveDisputeHandler(req, res) {
   assertPermission(req, 'billing:manage');
   const payment = await Payment.findOne({ transactionId: req.params.id });
   if (!payment) {
@@ -373,7 +377,9 @@ router.post('/disputes/:id/resolve', async (req, res) => {
     resolvedAt: payment.disputedAt,
     notes: payment.metadata.get('disputeNotes') || '',
   } });
-});
+}
+
+router.post('/disputes/:id/resolve', resolveDisputeHandler);
 
 export async function stripeWebhookHandler(req, res) {
   const signature = req.headers['stripe-signature'];
