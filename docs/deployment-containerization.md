@@ -1,6 +1,6 @@
 # Deployment & Containerization Guide
 
-_Last updated: 2025-01-15_
+_Last updated: 2025-09-28_
 
 ## 1. Objectives
 - Provide a repeatable way to run the full stack (Node API, React front-end, supporting services) in development, staging, and production.
@@ -102,6 +102,72 @@ Notes:
    - Retag images to `:prod` and deploy to production cluster.
    - Run post-deploy validation + rollback plan (previous tag).
 
+### 5.1 Branching & Release Management
+- Branch naming:
+  - Feature work: `feature/<short-scope>`
+  - Infrastructure/containerization: `infra/containerization-<YYYY-MM-DD>`
+- PR flow:
+  - Always open a PR to merge into the integration branch or `main`.
+  - Require review from Dev + Ops for infra changes.
+- Tagging conventions:
+  - `baseline/last-known-good-<YYYY-MM-DD>`: points to `main` prior to a rollout.
+  - `baseline/staging-verified-<YYYY-MM-DD>`: after staging validation completes.
+
+Commands:
+```sh
+# Create an annotated baseline tag pointing to main
+git fetch origin
+git tag -a baseline/last-known-good-$(date +%F) origin/main \
+  -m "baseline: last-known-good prior to rollout ($(date +%F))"
+git push origin baseline/last-known-good-$(date +%F)
+
+# After staging verification completes
+git tag -a baseline/staging-verified-$(date +%F) HEAD \
+  -m "baseline: staging verified ($(date +%F))"
+git push origin baseline/staging-verified-$(date +%F)
+```
+
+### 5.2 Rollback Procedures
+If the deployment introduces regressions, use the most recent baseline tag.
+
+Option A — Git rollback and redeploy (Compose-based staging):
+```sh
+# Return repo to last-known-good and bring up staging stack
+git fetch --tags
+git checkout baseline/last-known-good-YYYY-MM-DD
+npm run compose:staging:down
+npm run compose:staging:up
+```
+
+Option B — Re-deploy images (CI/CD-managed):
+- Retag previous known-good images to `:staging`/`:prod` and redeploy via your orchestrator.
+- Keep image SBOM and signature verification enabled.
+
+### 5.3 PR Checklist (Infra/Containerization)
+- Docs updated in `docs/deployment-containerization.md` (sections touched listed in PR).
+- OpenAPI validates and bundles successfully.
+- Compose files pass a basic sanity check and services start.
+- Smoke tests pass against local/staging environment.
+- No secrets committed; `.env` and `.secrets` patterns respected.
+
+Helpful commands:
+```sh
+# Validate and bundle OpenAPI
+node server/scripts/validate-openapi.js server/src/openapi.yaml --out server/src/openapi.bundle.json
+
+# Local dev stack (foreground) / teardown
+npm run compose:dev:up
+npm run compose:dev:down
+
+# Staging stack (detached) / teardown
+npm run compose:staging:up
+npm run compose:staging:down
+
+# API smoke checks
+npm run smoke:dashboard
+npm run smoke:trends
+```
+
 ## 6. Environment Configuration
 - **Common variables**
   - `NODE_ENV`, `PORT`, `MONGO_URI`, `MONGO_DB`, `SESSION_SECRET`.
@@ -131,6 +197,15 @@ Staging Compose specifics (`docker-compose.staging.yml`):
   - Verify image signatures and archive SBOM attestation to support SOC2 evidence requests.
 - **Performance**
   - Optional load tests on `/api/dashboard` and login endpoints.
+
+### 7.1 Staging Verification Checklist
+- API health: `GET /api/health` (if present) responds 200 and includes commit/version.
+- Swagger docs: `/api/docs` loads, Checkins endpoints are present and examples render.
+- Auth: Can log in with a staging user; Firebase project matches environment.
+- Dashboard: Non-zero counts for expected windows; no 24–48h zero anomalies.
+- Checkins: Create/list/update basic happy path works.
+- Payments (if applicable): Test card flow on test keys succeeds.
+- Logs: No error spam; expected metrics/headers present in responses.
 
 ## 8. Onboarding Checklist
 1. Install prerequisites (Docker, Node, npm, Firebase CLI).
@@ -166,3 +241,6 @@ _Primary owners: DevOps + Application Engineering. Update this doc as infrastruc
   - Added Compose stacks for dev and staging (`docker-compose.dev.yml`, `docker-compose.staging.yml`).
   - Added npm scripts to run compose flows from root package.json.
   - Documented environment variables and secret mounting for staging.
+
+- 2025-09-28
+  - Added branching, tagging, rollback procedures, PR and staging verification checklists.
