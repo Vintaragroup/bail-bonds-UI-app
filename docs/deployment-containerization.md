@@ -83,6 +83,32 @@ Notes:
 - If you prefer Vite hot reload, run `npm run dev` outside of Compose for the web app.
 - In dev, Firebase emulators can be added later; for now, use test credentials or mocked flows as documented.
 
+### Quickstart: Docker Staging (local)
+Run the production-like stack locally with minimal env:
+
+```sh
+# Required env in your shell
+export MONGO_URI="<your Mongo connection string>"
+export WEB_ORIGIN="http://localhost:5173"
+# Optional (defaults to warrantdb)
+export MONGO_DB="warrantdb"
+
+# Ensure Firebase admin secret exists
+ls ./.secrets/*firebase*.json
+
+# Bring up staging stack (detached)
+npm run compose:staging:up
+
+# Tear down
+npm run compose:staging:down
+```
+
+Endpoints:
+- API: http://localhost:8080 (Swagger at /api/docs)
+- Web: http://localhost:5173
+
+Validate with the PR and Staging Verification checklists below.
+
 ## 5. Production Deployment Workflow
 1. **Build phase** (CI)
    - Install dependencies (`npm ci` front-end & server).

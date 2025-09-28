@@ -23,4 +23,4 @@ services:
       - "5173:80"
 secrets:
   firebase:
-    file: ./.secrets/firebase-admin.json
+    file: ./.secrets/asap-bail-books-firebase-adminsdk-fbsvc-71506047b4.json
