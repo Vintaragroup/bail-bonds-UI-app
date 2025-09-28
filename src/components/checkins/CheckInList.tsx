@@ -17,6 +17,7 @@ export interface CheckInListItem {
   note?: string | null;
   location?: { lat?: number | null; lng?: number | null } | null;
   gpsEnabled?: boolean;
+  attendance?: { status: string; recordedAt?: string | null } | null;
 }
 
 export interface CheckInListProps {
@@ -25,6 +26,7 @@ export interface CheckInListProps {
   onMarkDone?: (id: string) => void;
   onLogContact?: (id: string) => void;
   onOpenDetail?: (id: string) => void;
+  isMarking?: boolean;
 }
 
 function formatDate(value?: string | null) {
@@ -47,7 +49,14 @@ function statusBadge(status: CheckInListItem['status']) {
   }
 }
 
-export function CheckInList({ isLoading = false, items, onMarkDone, onLogContact, onOpenDetail }: CheckInListProps) {
+export function CheckInList({
+  isLoading = false,
+  items,
+  onMarkDone,
+  onLogContact,
+  onOpenDetail,
+  isMarking = false,
+}: CheckInListProps) {
   if (isLoading) {
     return (
       <div className="space-y-3">
@@ -90,6 +99,12 @@ export function CheckInList({ isLoading = false, items, onMarkDone, onLogContact
               <p className="text-xs text-slate-500">
                 Contact attempts: {item.contactCount ?? 0} • Last contact: {formatDate(item.lastContactAt)}
               </p>
+              {item.attendance ? (
+                <p className="text-xs text-slate-500">
+                  Attendance: {item.attendance.status}
+                  {item.attendance.recordedAt ? ` • ${formatDate(item.attendance.recordedAt)}` : ''}
+                </p>
+              ) : null}
               {item.location?.lat && item.location?.lng ? (
                 <p className="text-xs text-slate-500">
                   Last known location: {item.location.lat.toFixed(3)}, {item.location.lng.toFixed(3)}
@@ -110,7 +125,11 @@ export function CheckInList({ isLoading = false, items, onMarkDone, onLogContact
                 </Button>
               ) : null}
               {onMarkDone ? (
-                <Button size="sm" onClick={() => onMarkDone(item.id)} disabled={item.status === 'done'}>
+                <Button
+                  size="sm"
+                  onClick={() => onMarkDone(item.id)}
+                  disabled={item.status === 'done' || isMarking}
+                >
                   Mark completed
                 </Button>
               ) : null}

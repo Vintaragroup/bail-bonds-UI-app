@@ -19,12 +19,19 @@ export interface CheckInDetailDrawerProps {
     lastPingAt?: string | null;
     pingStatus?: string | null;
     timeline: Array<{ label: string; timestamp: string; meta?: string }>;
+    attendance?: { status: string; recordedAt?: string; note?: string | null } | null;
   } | null;
   onTriggerPing?: (id: string) => void;
 }
 
 export function CheckInDetailDrawer({ open, onOpenChange, checkIn, onTriggerPing }: CheckInDetailDrawerProps) {
   const data = checkIn || null;
+  const formatDateTime = (value?: string | null) => {
+    if (!value) return null;
+    const dt = new Date(value);
+    if (Number.isNaN(dt.getTime())) return value;
+    return dt.toLocaleString();
+  };
   return (
     <Drawer open={open} onOpenChange={onOpenChange}>
       <DrawerContent>
@@ -51,6 +58,18 @@ export function CheckInDetailDrawer({ open, onOpenChange, checkIn, onTriggerPing
                 {data.pingStatus ? (
                   <div className="text-sm text-slate-600">
                     Ping status: <strong className="text-slate-900">{data.pingStatus}</strong>
+                  </div>
+                ) : null}
+                {data.attendance ? (
+                  <div className="rounded-md border border-slate-200 bg-slate-50 p-3 text-sm text-slate-600">
+                    <div>
+                      Attendance:{' '}
+                      <strong className="text-slate-900 capitalize">{data.attendance.status}</strong>
+                    </div>
+                    {formatDateTime(data.attendance.recordedAt) ? (
+                      <div>Recorded: {formatDateTime(data.attendance.recordedAt)}</div>
+                    ) : null}
+                    {data.attendance.note ? <div>Notes: {data.attendance.note}</div> : null}
                   </div>
                 ) : null}
                 {data.note ? <p className="text-sm text-slate-600">Notes: {data.note}</p> : null}

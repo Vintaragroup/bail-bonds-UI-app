@@ -34,6 +34,21 @@ export function useUpdateCheckinStatus(options = {}) {
   });
 }
 
+export function useCheckInOptions(options = {}) {
+  return useQuery({
+    queryKey: ['checkins', 'options'],
+    queryFn: async () => {
+      const data = await getJSON('/checkins/options');
+      const clients = Array.isArray(data?.clients) ? data.clients : [];
+      const officers = Array.isArray(data?.officers) ? data.officers : [];
+      const defaults = data?.defaults && typeof data.defaults === 'object' ? data.defaults : {};
+      return { clients, officers, defaults };
+    },
+    staleTime: 60_000,
+    ...options,
+  });
+}
+
 export function useLogCheckinContact(options = {}) {
   return useMutation({
     mutationFn: ({ id, increment = 1 }) =>
@@ -91,6 +106,19 @@ export function useTriggerCheckInPing(options = {}) {
       sendJSON(`/checkins/${encodeURIComponent(id)}/pings/manual`, {
         method: 'POST',
       }),
+    ...options,
+  });
+}
+
+export function useRecordCheckInAttendance(options = {}) {
+  return useMutation({
+    mutationFn: ({ id, ...payload }) => {
+      if (!id) throw new Error('id is required');
+      return sendJSON(`/checkins/${encodeURIComponent(id)}/attendance`, {
+        method: 'POST',
+        body: payload,
+      });
+    },
     ...options,
   });
 }

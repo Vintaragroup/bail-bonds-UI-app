@@ -13,7 +13,7 @@ export interface CheckInFormValues {
   scheduleAt: string;
   timezone: string;
   officerId: string;
-  method: 'sms' | 'phone' | 'in-person';
+  method: 'sms' | 'call' | 'in-person';
   location?: string;
   notes?: string;
   remindersEnabled: boolean;
@@ -138,7 +138,7 @@ export function CheckInFormModal({
                 </SelectTrigger>
                 <SelectContent>
                   <SelectItem value="sms">SMS</SelectItem>
-                  <SelectItem value="phone">Phone call</SelectItem>
+                  <SelectItem value="call">Phone call</SelectItem>
                   <SelectItem value="in-person">In-person</SelectItem>
                 </SelectContent>
               </Select>

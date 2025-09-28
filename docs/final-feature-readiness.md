@@ -9,7 +9,7 @@ Track the remaining feature work required before we containerize and promote the
 | Feature Area | Pages / Views | Current Status | Key Dependencies | Notes |
 | --- | --- | --- | --- | --- |
 | Payments | Billing Dashboard, Payment Form, Methods, Confirmation, History, Settings, Refunds, Disputes | ✅ Feature work complete – awaiting containerization/staging rollout tasks | Payment processor SDK, secure vault for keys, transaction schema | Monitoring/SOC2 evidence will be finalized during infrastructure deployment. |
-| Check-ins | Check-in scheduler, attendance log, compliance alerts | Needs UI wiring + API endpoints | Calendar utilities, notification service | Should follow payments to leverage shared scheduling primitives. |
+| Check-ins | Check-in scheduler, attendance log, compliance alerts | In progress – scheduling modal + attendance API live; reminders/GPS queue outstanding | Calendar utilities, notification service | Should follow payments to leverage shared scheduling primitives. |
 | Calendar | Global schedule, court dates, staff allocation | Design assets ready; no data plumbing yet | Time-zone handling, ICS export optional | Supports both check-ins and case management. |
 | Messages | Inbox, templates, automated reminders | Messaging provider decision outstanding | Notification gateway (Twilio, SendGrid, etc.) | Coordinate with compliance for logging/retention. |
 | Reports | KPI overview, export to CSV/PDF | Data queries partially covered by dashboard APIs | Reporting engine, role-based data filtering | Align with SOC2 evidence requirements. |
@@ -95,6 +95,7 @@ Track the remaining feature work required before we containerize and promote the
 - **2025-01-15:** Published payments QA checklist & operations SOP, outlined automated test suite plan to close out remaining checklist items.
 - **2025-01-15:** Landed automated payment tests (Vitest/RTL + Supertest) and documented webhook monitoring/SOC2 evidence expectations.
 - **2025-01-15:** Kicked off check-ins refresh—added dedicated UI components, refactored `/check-ins` page to new layout, expanded hooks, and delivered first API updates (schema, timeline, create/update, manual ping).
+- **2025-01-15:** Wired check-in creation to live case/officer options, stored case metadata, and added `/checkins/:id/attendance` flow (UI + OpenAPI). Next: reminder queue + missed-check-in handling.
 
 ---
 Primary owner: Application Engineering. Update this tracker as each milestone is completed.

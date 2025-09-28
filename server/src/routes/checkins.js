@@ -2,11 +2,22 @@ import { Router } from 'express';
 import mongoose from 'mongoose';
 import CheckIn from '../models/CheckIn.js';
 import CheckInPing from '../models/CheckInPing.js';
+import Case, { CaseJefferson } from '../models/Case.js';
+import User from '../models/User.js';
 import { filterByDepartment } from './utils/authz.js';
 import { assertPermission as ensurePermission } from './utils/authz.js';
 
 const r = Router();
 const MAX_DB_MS = 5000;
+const DEFAULT_OFFICER_ROLES = (process.env.CHECKIN_OFFICER_ROLES || 'SuperUser,Admin,DepartmentLead,Employee')
+  .split(',')
+  .map((role) => role.trim())
+  .filter(Boolean);
+const OFFICER_ROLE_SET = new Set(DEFAULT_OFFICER_ROLES);
+const CLIENT_OPTION_LIMIT = Math.min(
+  Math.max(parseInt(process.env.CHECKIN_CLIENT_OPTION_LIMIT || '40', 10), 5),
+  200
+);
 
 function withTimeout(promise, ms = MAX_DB_MS) {
   return Promise.race([
@@ -30,6 +41,8 @@ function normalize(doc) {
     clientId: doc.clientId?.toString?.() || null,
     caseId: doc.caseId?.toString?.() || doc.caseId || null,
     person: doc.person || 'Unknown',
+    clientName: doc.person || 'Unknown',
+    caseNumber: doc.meta?.caseNumber || doc.caseNumber || null,
     county: doc.county || 'unknown',
     dueAt: doc.dueAt,
     timezone: doc.timezone || 'UTC',
@@ -46,8 +59,110 @@ function normalize(doc) {
     lastPingAt: doc.lastPingAt || null,
     createdAt: doc.createdAt,
     updatedAt: doc.updatedAt,
+    attendance: doc.meta?.attendance || null,
   };
 }
+
+function mapCaseToClientOption(doc) {
+  if (!doc) return null;
+  const id = doc._id?.toString?.();
+  if (!id) return null;
+  return {
+    id,
+    name: doc.full_name || doc.person || 'Unknown',
+    county: doc.county || null,
+    caseNumber: doc.case_number || doc._upsert_key?.anchor || null,
+  };
+}
+
+function mapUserToOfficerOption(doc) {
+  if (!doc) return null;
+  const id = doc._id?.toString?.();
+  if (!id) return null;
+  const name = doc.displayName?.trim?.() || doc.email || 'Unassigned';
+  return {
+    id,
+    name,
+    email: doc.email || null,
+    roles: Array.isArray(doc.roles) ? doc.roles : [],
+  };
+}
+
+function sanitizeLocation(raw) {
+  if (!raw || typeof raw !== 'object') return null;
+  const lat = Number(raw.lat);
+  const lng = Number(raw.lng);
+  const accuracy = raw.accuracy != null ? Number(raw.accuracy) : undefined;
+  if (Number.isNaN(lat) || Number.isNaN(lng)) return null;
+  const location = { lat, lng };
+  if (!Number.isNaN(accuracy)) location.accuracy = accuracy;
+  return location;
+}
+
+r.get('/options', async (req, res) => {
+  try {
+    if (!ensureMongoConnected(res)) return;
+    ensurePermission(req, ['cases:read', 'cases:read:department']);
+
+    const scopedCaseFilter = filterByDepartment({}, req, ['county'], { includeUnassigned: true });
+
+    const caseModels = [Case, CaseJefferson].filter(Boolean);
+    const perModelLimit = Math.max(Math.ceil(CLIENT_OPTION_LIMIT / caseModels.length), 5);
+
+    const casePromises = caseModels.map((Model) => {
+      const query = Model.find(scopedCaseFilter)
+        .select({ _id: 1, full_name: 1, county: 1, case_number: 1, person: 1, '_upsert_key.anchor': 1 })
+        .sort({ updatedAt: -1, booking_date: -1 })
+        .limit(perModelLimit)
+        .lean();
+
+      return withTimeout((query.maxTimeMS ? query.maxTimeMS(MAX_DB_MS) : query), MAX_DB_MS).catch((err) => {
+        console.error('checkins options (cases) error', err?.message);
+        return [];
+      });
+    });
+
+    const officerQuery = User.find({
+      status: 'active',
+      roles: { $in: Array.from(OFFICER_ROLE_SET) },
+    })
+      .select({ _id: 1, displayName: 1, email: 1, roles: 1 })
+      .sort({ displayName: 1, email: 1 })
+      .limit(100)
+      .lean();
+
+    const [caseResults, officerDocs] = await Promise.all([
+      Promise.all(casePromises),
+      withTimeout((officerQuery.maxTimeMS ? officerQuery.maxTimeMS(MAX_DB_MS) : officerQuery), MAX_DB_MS).catch((err) => {
+        console.error('checkins options (officers) error', err?.message);
+        return [];
+      }),
+    ]);
+
+    const caseDocs = Array.isArray(caseResults) ? caseResults.flat() : [];
+
+    const clientOptions = caseDocs
+      .map(mapCaseToClientOption)
+      .filter(Boolean)
+      .slice(0, CLIENT_OPTION_LIMIT);
+
+    const officerOptions = officerDocs
+      .map(mapUserToOfficerOption)
+      .filter(Boolean);
+
+    res.json({
+      clients: clientOptions,
+      officers: officerOptions,
+      defaults: {
+        timezone: req.user?.timezone || 'America/Chicago',
+        pingsPerDay: 3,
+      },
+    });
+  } catch (err) {
+    console.error('GET /checkins/options error', err);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
 
 function dateRangeForScope(scope = 'today') {
   const now = new Date();
@@ -237,6 +352,75 @@ r.patch('/:id/contact', async (req, res) => {
   }
 });
 
+r.post('/:id/attendance', async (req, res) => {
+  try {
+    if (!ensureMongoConnected(res)) return;
+    ensurePermission(req, ['cases:write', 'cases:write:department']);
+
+    const status = String(req.body?.status || '').toLowerCase();
+    if (!['attended', 'missed'].includes(status)) {
+      return res.status(400).json({ error: 'Invalid status. Use attended or missed.' });
+    }
+
+    const recordedAt = req.body?.recordedAt ? new Date(req.body.recordedAt) : new Date();
+    if (Number.isNaN(recordedAt.getTime())) {
+      return res.status(400).json({ error: 'Invalid recordedAt timestamp' });
+    }
+
+    const location = sanitizeLocation(req.body?.location);
+    const note = req.body?.note ? String(req.body.note).trim() : '';
+
+    const doc = await withTimeout(CheckIn.findById(req.params.id), MAX_DB_MS).catch((err) => {
+      console.error('checkins attendance fetch error', err?.message);
+      return null;
+    });
+
+    if (!doc) return res.status(404).json({ error: 'Check-in not found' });
+
+    doc.lastContactAt = recordedAt;
+    doc.contactCount = (doc.contactCount || 0) + 1;
+    if (location) doc.location = location;
+    if (note) doc.note = note;
+
+    const attendanceRecord = {
+      status,
+      recordedAt,
+      recordedBy: req.user?.uid || req.user?.email || null,
+      note: note || undefined,
+      location: location || undefined,
+    };
+
+    doc.meta = {
+      ...(doc.meta || {}),
+      attendance: attendanceRecord,
+    };
+
+    if (status === 'attended') {
+      doc.status = 'done';
+      doc.completedAt = recordedAt;
+    } else if (status === 'missed') {
+      doc.status = 'overdue';
+    }
+
+    doc.updatedAt = new Date();
+
+    const saved = await withTimeout(doc.save(), MAX_DB_MS).catch((err) => {
+      console.error('checkins attendance save error', err?.message);
+      return null;
+    });
+
+    if (!saved) return res.status(500).json({ error: 'Unable to record attendance' });
+
+    res.json({ checkIn: normalize(saved.toObject()) });
+  } catch (err) {
+    console.error('POST /checkins/:id/attendance error', err);
+    if (err?.statusCode) {
+      return res.status(err.statusCode).json({ error: err.message || 'Forbidden' });
+    }
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
 r.post('/:id/pings/manual', async (req, res) => {
   try {
     if (!ensureMongoConnected(res)) return;
@@ -344,6 +528,14 @@ r.get('/:id/timeline', async (req, res) => {
     if (doc.lastContactAt) {
       timeline.push({ label: 'Last contact', timestamp: doc.lastContactAt, meta: `Attempts: ${doc.contactCount || 0}` });
     }
+    const attendance = doc.meta?.attendance;
+    if (attendance?.recordedAt) {
+      timeline.push({
+        label: attendance.status === 'attended' ? 'Attended' : 'Missed',
+        timestamp: attendance.recordedAt,
+        meta: attendance.note || attendance.recordedBy || undefined,
+      });
+    }
     if (doc.status === 'done') {
       timeline.push({ label: 'Completed', timestamp: doc.updatedAt || doc.dueAt, meta: doc.note || '' });
     }
@@ -375,6 +567,12 @@ r.post('/', async (req, res) => {
       return res.status(400).json({ error: 'dueAt is required' });
     }
 
+    const meta = {
+      ...(payload.locationText ? { locationText: payload.locationText } : {}),
+      ...(payload.caseNumber ? { caseNumber: payload.caseNumber } : {}),
+      ...(payload.person || payload.personName ? { personName: payload.person || payload.personName } : {}),
+    };
+
     const document = new CheckIn({
       clientId: payload.clientId && mongoose.Types.ObjectId.isValid(payload.clientId)
         ? new mongoose.Types.ObjectId(payload.clientId)
@@ -394,9 +592,7 @@ r.post('/', async (req, res) => {
       remindersEnabled: payload.remindersEnabled !== undefined ? Boolean(payload.remindersEnabled) : true,
       gpsEnabled: Boolean(payload.gpsEnabled),
       pingsPerDay: Math.min(Math.max(Number(payload.pingsPerDay) || 3, 1), 12),
-      meta: {
-        ...(payload.locationText ? { locationText: payload.locationText } : {}),
-      },
+      meta,
     });
 
     const saved = await document.save();

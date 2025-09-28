@@ -214,8 +214,8 @@ VITE_STRIPE_PUBLISHABLE_KEY=pk_test_xxx
 - Server unit tests (Vitest + Supertest) for create/refund/dispute handlers with Stripe SDK mocked.
 - Webhook handler test ensuring signature validation + status transitions. *(todo)*
 
-### 7. Monitoring & SOC2 Evidence
-- **Webhook uptime:** Configure Stripe webhook alerting (dashboard > Developers > Webhooks > Failure alerts) and external monitor hitting `/api/health` every 1 min.
+### 7. Monitoring & SOC2 Evidence *(in progress — requires public API URL)*
+- **Webhook uptime:** Configure Stripe webhook alerting (dashboard > Developers > Webhooks > Failure alerts) and external monitor hitting `/api/health` every 1 min. *(Deferred until staging domain exists.)*
 - **Log aggregation:** Ship `stripeWebhookHandler` errors to central logging (Datadog/Splunk) with alert on `Webhook Error` or `StripeAuthenticationError` signatures.
 - **Daily reconciliation:** Schedule job comparing Stripe payouts vs. `Payment` collection; export signed CSV for finance review.
 - **Evidence artifacts:** Retain QA checklist runs, webhook alert configuration screenshots, payout reconciliation reports, and test logs for SOC2 control CM-6 / SI-4.

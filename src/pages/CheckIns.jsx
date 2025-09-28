@@ -3,12 +3,13 @@ import { Button } from '../components/ui/button';
 import { useToast } from '../components/ToastContext';
 import {
   useCheckins,
-  useUpdateCheckinStatus,
+  useCheckInOptions,
   useLogCheckinContact,
   useCheckInDetail,
   useCheckInTimeline,
   useTriggerCheckInPing,
   useCreateCheckIn,
+  useRecordCheckInAttendance,
 } from '../hooks/checkins';
 import CheckInSummary from '../components/checkins/CheckInSummary';
 import CheckInFilters from '../components/checkins/CheckInFilters';
@@ -16,12 +17,10 @@ import CheckInList from '../components/checkins/CheckInList';
 import CheckInDetailDrawer from '../components/checkins/CheckInDetailDrawer';
 import CheckInFormModal from '../components/checkins/CheckInFormModal';
 
-const OFFICER_OPTIONS = [];
-
 function mapToListItems(items = []) {
   return items.map((item) => ({
     id: item.id,
-    clientName: item.person || 'Unknown',
+    clientName: item.clientName || item.person || 'Unknown',
     caseNumber: item.caseNumber || null,
     county: item.county || null,
     dueAt: item.dueAt || null,
@@ -32,6 +31,7 @@ function mapToListItems(items = []) {
     note: item.note || null,
     location: item.location || null,
     gpsEnabled: Boolean(item.gpsEnabled),
+    attendance: item.attendance || null,
   }));
 }
 
@@ -42,6 +42,18 @@ export default function CheckIns() {
   const [isFormOpen, setFormOpen] = useState(false);
 
   const { pushToast } = useToast();
+
+  const optionsQuery = useCheckInOptions();
+  const clientOptions = optionsQuery.data?.clients ?? [];
+  const officerOptions = optionsQuery.data?.officers ?? [];
+
+  const clientLookup = useMemo(() => {
+    const map = new Map();
+    clientOptions.forEach((option) => {
+      if (option?.id) map.set(option.id, option);
+    });
+    return map;
+  }, [clientOptions]);
 
   const queryFilters = useMemo(() => {
     const params = { scope: filters.scope };
@@ -57,16 +69,6 @@ export default function CheckIns() {
     error,
     refetch,
   } = useCheckins(queryFilters);
-
-  const updateStatus = useUpdateCheckinStatus({
-    onSuccess: () => {
-      pushToast({ variant: 'success', title: 'Updated', message: 'Check-in status updated.' });
-      refetch();
-    },
-    onError: (err) => {
-      pushToast({ variant: 'error', title: 'Update failed', message: err?.message || 'Unable to update status.' });
-    },
-  });
 
   const logContact = useLogCheckinContact({
     onSuccess: () => {
@@ -84,6 +86,20 @@ export default function CheckIns() {
     },
     onError: (err) => {
       pushToast({ variant: 'error', title: 'Ping failed', message: err?.message || 'Unable to trigger ping.' });
+    },
+  });
+
+  const recordAttendance = useRecordCheckInAttendance({
+    onSuccess: (_data, variables) => {
+      pushToast({ variant: 'success', title: 'Attendance recorded', message: 'Marked as completed.' });
+      refetch();
+      if (variables?.id && variables.id === selectedCheckInId) {
+        detailQuery.refetch();
+        timelineQuery.refetch();
+      }
+    },
+    onError: (err) => {
+      pushToast({ variant: 'error', title: 'Attendance failed', message: err?.message || 'Unable to record attendance.' });
     },
   });
 
@@ -119,10 +135,13 @@ export default function CheckIns() {
   const activeCheckIn = detailQuery.data?.checkIn
     ? {
         ...detailQuery.data.checkIn,
+        clientName: detailQuery.data.checkIn.clientName || detailQuery.data.checkIn.person || 'Unknown',
+        caseNumber: detailQuery.data.checkIn.caseNumber || null,
         timeline: timelineQuery.data?.timeline || [],
         gpsEnabled: detailQuery.data.checkIn.gpsEnabled,
         lastPingAt: detailQuery.data.checkIn.lastPingAt,
         note: detailQuery.data.checkIn.note,
+        attendance: detailQuery.data.checkIn.attendance || null,
       }
     : null;
 
@@ -131,7 +150,7 @@ export default function CheckIns() {
   };
 
   const handleMarkDone = (id) => {
-    updateStatus.mutate({ id, status: 'done' });
+    recordAttendance.mutate({ id, status: 'attended' });
   };
 
   const handleLogContact = (id) => {
@@ -144,6 +163,14 @@ export default function CheckIns() {
   };
 
   const handleCreateCheckIn = async () => {
+    if (!clientOptions.length && !optionsQuery.isLoading) {
+      pushToast({
+        variant: 'warning',
+        title: 'No clients available',
+        message: 'Add a case or refresh options before scheduling a check-in.',
+      });
+      return;
+    }
     setFormOpen(true);
   };
 
@@ -169,7 +196,7 @@ export default function CheckIns() {
         onOfficerChange={(value) => setFilters((prev) => ({ ...prev, officer: value }))}
         search={filters.search}
         onSearchChange={(value) => setFilters((prev) => ({ ...prev, search: value }))}
-        officers={OFFICER_OPTIONS}
+        officers={officerOptions}
         onOpenReminderSettings={() => pushToast({ variant: 'info', title: 'Coming soon', message: 'Reminder settings will be available after provider setup.' })}
       />
 
@@ -184,6 +211,7 @@ export default function CheckIns() {
           onMarkDone={handleMarkDone}
           onLogContact={handleLogContact}
           onOpenDetail={handleOpenDetail}
+          isMarking={recordAttendance.isPending}
         />
       )}
 
@@ -197,10 +225,24 @@ export default function CheckIns() {
       <CheckInFormModal
         open={isFormOpen}
         onOpenChange={setFormOpen}
-        onSubmit={async (values) =>
-          createCheckIn.mutateAsync({
-            clientId: values.clientId,
-            officerId: values.officerId,
+        onSubmit={async (values) => {
+          const selectedClient = clientLookup.get(values.clientId);
+          if (!selectedClient) {
+            pushToast({
+              variant: 'error',
+              title: 'Client required',
+              message: 'Select a client before scheduling a check-in.',
+            });
+            return;
+          }
+          await createCheckIn.mutateAsync({
+            clientId: selectedClient.id,
+            caseId: selectedClient.id,
+            person: selectedClient.name,
+            personName: selectedClient.name,
+            caseNumber: selectedClient.caseNumber,
+            county: selectedClient.county,
+            officerId: values.officerId || undefined,
             dueAt: values.scheduleAt,
             timezone: values.timezone,
             method: values.method,
@@ -209,10 +251,10 @@ export default function CheckIns() {
             gpsEnabled: values.gpsEnabled,
             pingsPerDay: values.pingsPerDay,
             locationText: values.location,
-          })
-        }
-        clients={[]}
-        officers={OFFICER_OPTIONS}
+          });
+        }}
+        clients={clientOptions}
+        officers={officerOptions}
         isSubmitting={createCheckIn.isPending}
       />
     </div>

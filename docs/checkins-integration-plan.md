@@ -30,6 +30,17 @@ _Last updated: 2025-01-15_
 6. **Client consent messaging:** display GPS consent status with link to signed agreement.
 7. **Integration touches:** update navigation badges, notifications (toast) behaviour, link from `CaseDetail` to check-ins.
 
+#### 3.1.1 Attendance workflows (new)
+- **Status picker:** replace the single “Mark completed” action with a mini-dialog that supports `attended`, `missed`, and `no-show` states (the latter reserved for escalations).
+- **Evidence capture:** allow optional upload/attach of:
+  - GPS snapshot (auto-populated when ping present)
+  - Photo/selfie (file or mobile camera prompt)
+  - Officer notes (required when marking missed/no-show)
+- **Escalation toggles:** checkboxes for “notify lead” and “create follow-up task,” defaulting on after two consecutive misses.
+- **Timeline revisions:** display attendance cards with badges and evidence thumbnails, linking to full audit modal.
+- **Accessibility:** ensure keyboard-only flow (dialog focus trapping, descriptive labels) and screen-reader announcements for success/failure messages.
+- **Offline mode (stretch):** cache attendance action locally until connectivity returns; surface unsynced badge.
+
 ### 3.2 Backend/API Tasks
 1. **Schema updates:**
    - `CheckIn` model: add fields `timezone`, `remindersEnabled`, `gpsEnabled`, `scheduledPingsPerDay`, `lastPingAt`.
@@ -41,6 +52,7 @@ _Last updated: 2025-01-15_
    - `POST /api/checkins/:id/attendance` (mark attended/missed with optional location + notes).
    - `POST /api/checkins/:id/pings/manual` (trigger manual ping).
    - `GET /api/checkins/:id/audit` and `/pings` endpoints for detail view.
+   - Update OpenAPI documentation for new endpoints and schemas. ✅ *2025-01-15*
 3. **Permissions:** ensure `billing:*` or `officer:*` roles can manage; clients have limited read-only endpoints.
 
 ### 3.3 GPS Ping Service
@@ -48,6 +60,12 @@ _Last updated: 2025-01-15_
    - Use Bull/BullMQ or equivalent job queue (Redis-backed).
    - On check-in creation (gpsEnabled), enqueue daily jobs at configured times (default 08:00, 13:00, 19:00 client timezone).
    - Respect geofence windows (§3.7) by aligning ping times with expected safe-zone arrival.
+   - **Implementation outline:**
+     1. Provision Redis in dev (docker) + staging (managed service) with TLS enforced.
+     2. Create `jobs/checkins.queue.js` responsible for registering named queues (`checkin:reminder`, `checkin:gps`), plus health metrics.
+     3. Add service layer (`checkinsQueueService`) that exposes `scheduleReminder`, `schedulePing`, `cancelJobsForCheckIn` helpers.
+     4. Persist job metadata on the `CheckIn` document (`meta.jobIds`) for cancellation/audit.
+     5. Emit structured logs for enqueue/dequeue events so we can feed dashboards + SOC2 evidence.
 2. **Ping execution:**
    - Primary channel: push/SMS deep link to lightweight web page requesting GPS + optional selfie for verification.
    - Record log entry with `status` (`queued`, `sent`, `acknowledged`, `missed`, `failed`), `responseAt`, and location.
@@ -57,11 +75,26 @@ _Last updated: 2025-01-15_
    - Store explicit consent at bond acceptance; capture device identifier.
 4. **Hardware tracker integration:** API must accept pings from dedicated trackers (§3.8) and merge them with mobile pings.
 
+#### 3.3.1 Reminder cadence matrix
+- Default schedule: 24h, 4h, and 1h before the appointment; configurable per case.
+- Intelligent suppression: skip reminders sent within last 2h or when client already confirmed via portal.
+- Quiet hours: auto-shift SMS to the next allowed window (configurable per department).
+- SLA monitoring: send metrics to observability stack (missed reminder dispatches, queue delays).
+
 ### 3.4 Notifications & Reminders
 1. Hook into messaging provider (Twilio/SendGrid) once selected.
 2. Templates: reminder email/SMS, missed check-in alert, manual ping instructions.
 3. UI toggles per client / per check-in for reminder cadence.
 4. Logging: each notification -> audit trail (timestamp, channel, delivery status).
+
+### 3.9 Client confirmation experience
+1. **Landing page:** secure, tokenized link (short-lived JWT) that lets clients confirm arrival, request delay, or signal assistance. Include case details, officer info, and countdown to start time.
+2. **Device telemetry:** when the client taps “Confirm arrival,” capture GPS coordinates (with consent prompt), device model, and IP → feed into `CheckInPing` for traceability.
+3. **Identity verification:** optional selfie capture with liveness check (using WebRTC getUserMedia), stored in secure bucket with retention policy (e.g., 90 days).
+4. **Consent banner:** display legal language with checkbox that records `gpsConsentAt` + method; add link to privacy policy.
+5. **Messaging tie-in:** automatically push confirmation transcript into messaging inbox and fire webhook for third-party alerts.
+6. **Offline fallback:** provide SMS keyword instructions (“Reply YES + selfie link”) when the portal cannot load.
+7. **Security:** enforce rate limiting, signed URLs, and single-use protection; expire tokens after successful check-in.
 
 ### 3.5 Audit & Compliance
 1. Ensure all check-in changes go through audit middleware (user, timestamp, diff).
@@ -117,13 +150,29 @@ To make supervision more flexible while keeping a strong audit trail, support ad
 - Push vs SMS for GPS pings; need or availability of client mobile app.
 - Infrastructure for job queue (Redis) in production.
 - Legal review of GPS consent language and data retention.
+- Observability stack for queue + reminder metrics (Grafana/Datadog); confirm logging standards with DevOps.
+- Secrets management for queue credentials (Vault/SOPS) and rotation cadence.
 
 ## 5. Next Steps
-1. Review generated check-in components and map to routes (list attached to this doc once inventoried).
-2. Confirm messaging provider + queue infrastructure with ops.
-3. Begin backend schema/route work in parallel with frontend wiring.
+1. Extend attendance UX to capture missed/no-show reasons and attach evidence (photo/GPS), then bubble into alerts.
+2. Wire reminder + GPS ping scheduling to real job queue once provider/Redis decision is finalized (placeholder toggles now live).
+3. Build client-facing confirmation flow + consent storage (ties into messaging module) and add SOC2 evidence hooks.
 
 ## 6. Progress Log
+- **2025-09-28:** Swagger/OpenAPI hygiene and documentation improvements for Check-ins
+   - Moved misplaced `/checkins*` path definitions to the top-level `paths` section in `server/src/openapi.yaml` so the Checkins tag renders all operations in Swagger UI.
+   - Added missing spec paths to match implemented server routes:
+      - `PATCH /checkins/{id}/status` (update status with optional note)
+      - `PATCH /checkins/{id}/contact` (increment contact attempts and update timestamp)
+   - Added `operationId` and request/response `examples` for all Checkins operations (`list`, `create`, `detail`, `update`, `timeline`, `manual ping`, `attendance`, `status`, `contact`) to improve client generation and QA usability.
+   - Fixed an unrelated but blocking OpenAPI validation issue in `/dashboard/per-county` response schema to allow the spec to validate cleanly.
+   - Validated the OpenAPI spec and generated a bundle artifact at `server/src/openapi.bundle.json`.
+   - Note: No breaking API changes to Checkins handlers; this was documentation-only alignment for the Checkins endpoints already implemented in `server/src/routes/checkins.js`.
+
+   Process note: For ongoing work, we’ll update this Progress Log before and after each Checkins-related task to keep documentation current.
+- **2025-01-15:** Added `/checkins/options` endpoint + React Query hook so scheduling modal pulls real client/officer lists; persisted case number/county metadata on create.
+- **2025-01-15:** Implemented `/checkins/:id/attendance` API, updated timeline/detail views to show attendance records, and replaced “Mark complete” action with the new mutation. OpenAPI updated to cover options + attendance endpoints.
 - **2025-01-15:** Established baseline plan, created reusable UI primitives (`CheckInSummary`, `CheckInFilters`, `CheckInList`, `CheckInDetailDrawer`, `CheckInFormModal`) and updated `src/pages/CheckIns.jsx` to use new components with enhanced filtering skeletons; expanded hooks (`useCheckins`, detail/create/update/ping stubs) ahead of API work.
 - **2025-01-15:** Extended `CheckIn` schema (timezone, officer, reminders, GPS), added `CheckInPing` model, upgraded `/api/checkins` filters & stats, and introduced new detail/timeline/create/update/manual-ping endpoints.
+- **2025-01-15:** Documented new API routes/schemas in `openapi.yaml`.
 - **2025-01-15:** Added roadmap for geofenced auto check-ins, voice biometrics, QR/kiosk scans, smart SMS workflows, and hardware tracker integration.

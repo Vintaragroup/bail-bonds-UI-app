@@ -32,45 +32,56 @@ _Last updated: 2025-01-15_
    - Promote by retagging to `:staging` and `:prod` after validation.
 
 ## 4. Local Development (Docker Compose)
+The repository includes `docker-compose.dev.yml` wired for a rapid local loop:
+
 ```yaml
 version: '3.9'
 services:
-  api:
-    build:
-      context: ./server
-      dockerfile: Dockerfile
-    env_file:
-      - server/.env
-    volumes:
-      - ./server/src:/app/src
-      - ./server/openapi.yaml:/app/openapi.yaml
-    ports:
-      - "8080:8080"
-    depends_on:
-      - mongo
-    command: npm run dev
-  web:
-    build:
-      context: .
-      dockerfile: Dockerfile.web
-    env_file:
-      - .env
-    volumes:
-      - ./src:/app/src
-    ports:
-      - "5173:5173"
-    command: npm run dev -- --host
   mongo:
     image: mongo:7
     ports:
       - "27017:27017"
     volumes:
       - mongo-data:/data/db
+  api:
+    build:
+      context: ./server
+      dockerfile: Dockerfile
+    environment:
+      - PORT=8080
+      - NODE_ENV=development
+      - MONGO_URI=mongodb://mongo:27017
+      - MONGO_DB=warrantdb
+      - WEB_ORIGIN=http://localhost:5173
+    volumes:
+      - ./server/src:/app/src
+      - ./server/src/openapi.yaml:/app/openapi.yaml
+    ports:
+      - "8080:8080"
+    depends_on:
+      - mongo
+    command: node src/index.js
+  web:
+    build:
+      context: .
+    
+      dockerfile: Dockerfile.web
+    ports:
+      - "5173:80"
+    depends_on:
+      - api
 volumes:
   mongo-data:
 ```
-- In dev, Firebase Auth usually uses the emulator suite; document commands to start it when ready.
-- Compose targets rapid feedback. Production images should be immutable and not mount host volumes.
+
+Quick start:
+- Dev up (foreground): `npm run compose:dev:up`
+- Dev down (remove volumes): `npm run compose:dev:down`
+
+Notes:
+- The dev stack serves the built SPA via Nginx on http://localhost:5173 and the API on http://localhost:8080
+- If you prefer Vite hot reload, run `npm run dev` outside of Compose for the web app.
+- In dev, Firebase emulators can be added later; for now, use test credentials or mocked flows as documented.
 
 ## 5. Production Deployment Workflow
 1. **Build phase** (CI)
@@ -101,6 +112,13 @@ volumes:
   - Staging/Prod: use secret manager (AWS Parameter Store, GCP Secret Manager) or Kubernetes Secrets.
   - Rotate service-account keys periodically; prefer Workload Identity over static keys if policy allows.
   - Enforce least-privilege IAM bindings for Firebase admin, Mongo Atlas, and CI/CD service accounts; document approvals.
+
+Staging Compose specifics (`docker-compose.staging.yml`):
+- Expects environment variables: `MONGO_URI`, `MONGO_DB` (optional, defaults to `warrantdb`), `WEB_ORIGIN`.
+- Expects a Firebase admin JSON secret at `./.secrets/firebase-admin.json` (mounted into the API as a Docker secret at `/run/secrets/firebase`).
+- Start/stop:
+  - Up (detached): `npm run compose:staging:up`
+  - Down: `npm run compose:staging:down`
 
 ## 7. Testing & Quality Gates
 - **Unit/Integration Tests**
@@ -139,3 +157,12 @@ volumes:
 
 ---
 _Primary owners: DevOps + Application Engineering. Update this doc as infrastructure decisions solidify._
+
+## Appendix: Change Log (Containerization)
+
+- 2025-01-15
+  - Added Dockerfiles for API (`server/Dockerfile`) and SPA (`Dockerfile.web`).
+  - Added Nginx config for SPA routing (`nginx/default.conf`).
+  - Added Compose stacks for dev and staging (`docker-compose.dev.yml`, `docker-compose.staging.yml`).
+  - Added npm scripts to run compose flows from root package.json.
+  - Documented environment variables and secret mounting for staging.

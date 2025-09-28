@@ -2,6 +2,13 @@ openapi: 3.0.3
 info:
   title: WarrantDB API
   version: 1.0.0
+tags:
+  - name: Checkins
+    description: Manage scheduled check-ins, attendance, and GPS pings.
+  - name: Users
+    description: Administrative user management.
+  - name: Payments
+    description: Billing dashboards, transactions, methods, and refunds.
 servers:
   - url: http://localhost:8080/api
 paths:
@@ -115,8 +122,8 @@ paths:
                 properties:
                   items:
                     type: array
-            items:
-              $ref: '#/components/schemas/CountySnapshotItem'
+                    items:
+                      $ref: '#/components/schemas/CountySnapshotItem'
   /auth/session:
     post:
       summary: Exchange Firebase ID token for server session
@@ -656,6 +663,401 @@ paths:
           description: Not found
         '401':
           description: Not authenticated
+  /checkins:
+    get:
+      summary: List check-ins
+      tags: [Checkins]
+      operationId: listCheckIns
+      parameters:
+        - in: query
+          name: scope
+          schema:
+            type: string
+            enum: [today, upcoming, overdue, all]
+            default: today
+        - in: query
+          name: officer
+          schema:
+            type: string
+            description: Officer id or name fragment
+        - in: query
+          name: search
+          schema:
+            type: string
+            description: Client name search string
+        - in: query
+          name: limit
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 200
+            default: 50
+      responses:
+        '200':
+          description: Paginated check-in list with summary stats
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CheckInCollectionResponse'
+              examples:
+                sample:
+                  value:
+                    scope: today
+                    limit: 50
+                    items:
+                      - id: "65f1c2ab9e7f3a0012ab34cd"
+                        person: "John Doe"
+                        clientName: "John Doe"
+                        county: "harris"
+                        dueAt: "2025-09-28T09:00:00.000Z"
+                        timezone: "America/Chicago"
+                        method: "sms"
+                        status: "upcoming"
+                        contactCount: 1
+                        lastContactAt: null
+                        remindersEnabled: true
+                        gpsEnabled: false
+                        pingsPerDay: 0
+                        createdAt: "2025-09-27T18:00:00.000Z"
+                        updatedAt: "2025-09-27T18:00:00.000Z"
+                        attendance: null
+                    stats:
+                      totalToday: 8
+                      overdue: 2
+                      completed: 5
+                      gpsEnabled: 3
+    post:
+      summary: Create a check-in
+      tags: [Checkins]
+      operationId: createCheckIn
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CheckInCreateRequest'
+            examples:
+              sample:
+                value:
+                  person: "John Doe"
+                  county: "harris"
+                  dueAt: "2025-09-28T09:00:00.000Z"
+                  timezone: "America/Chicago"
+                  officerId: "65f1c2ab9e7f3a0012ab34aa"
+                  method: "sms"
+                  remindersEnabled: true
+                  gpsEnabled: false
+                  pingsPerDay: 3
+      responses:
+        '201':
+          description: Newly created check-in
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  checkIn:
+                    $ref: '#/components/schemas/CheckIn'
+              examples:
+                created:
+                  value:
+                    checkIn:
+                      id: "65f1c2ab9e7f3a0012ab34cd"
+                      person: "John Doe"
+                      county: "harris"
+                      dueAt: "2025-09-28T09:00:00.000Z"
+                      timezone: "America/Chicago"
+                      method: "sms"
+                      status: "pending"
+                      remindersEnabled: true
+                      gpsEnabled: false
+                      pingsPerDay: 3
+  /checkins/options:
+    get:
+      summary: Retrieve check-in form options
+      tags: [Checkins]
+      operationId: getCheckInOptions
+      responses:
+        '200':
+          description: Available clients, officers, and defaults
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CheckInOptionsResponse'
+              examples:
+                sample:
+                  value:
+                    clients:
+                      - id: "65f1c2ab9e7f3a0012ab34aa"
+                        name: "Jane Smith"
+                        county: "galveston"
+                        caseNumber: "G-12345"
+                    officers:
+                      - id: "ab12cd34ef56"
+                        name: "Officer Perez"
+                        email: "operez@example.com"
+                        roles: ["Employee"]
+                    defaults:
+                      timezone: "America/Chicago"
+                      pingsPerDay: 3
+  /checkins/{id}:
+    get:
+      summary: Retrieve check-in detail
+      tags: [Checkins]
+      operationId: getCheckIn
+      parameters:
+        - $ref: '#/components/parameters/CheckInId'
+      responses:
+        '200':
+          description: Check-in detail with recent ping logs
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CheckInDetailResponse'
+              examples:
+                sample:
+                  value:
+                    checkIn:
+                      id: "65f1c2ab9e7f3a0012ab34cd"
+                      person: "John Doe"
+                      county: "harris"
+                      dueAt: "2025-09-28T09:00:00.000Z"
+                      timezone: "America/Chicago"
+                      method: "sms"
+                      status: "upcoming"
+                      contactCount: 1
+                    pings:
+                      - id: "ping_01"
+                        scheduledFor: "2025-09-27T19:00:00.000Z"
+                        status: "queued"
+                        channel: "manual"
+        '404':
+          description: Not found
+    put:
+      summary: Update a check-in
+      tags: [Checkins]
+      operationId: updateCheckIn
+      parameters:
+        - $ref: '#/components/parameters/CheckInId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CheckInUpdateRequest'
+            examples:
+              sample:
+                value:
+                  dueAt: "2025-09-28T10:00:00.000Z"
+                  timezone: "America/Chicago"
+                  method: "call"
+                  notes: "Rescheduled by client"
+      responses:
+        '200':
+          description: Updated check-in
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  checkIn:
+                    $ref: '#/components/schemas/CheckIn'
+              examples:
+                updated:
+                  value:
+                    checkIn:
+                      id: "65f1c2ab9e7f3a0012ab34cd"
+                      person: "John Doe"
+                      method: "call"
+                      dueAt: "2025-09-28T10:00:00.000Z"
+        '404':
+          description: Not found
+  /checkins/{id}/timeline:
+    get:
+      summary: Retrieve check-in timeline
+      tags: [Checkins]
+      operationId: getCheckInTimeline
+      parameters:
+        - $ref: '#/components/parameters/CheckInId'
+      responses:
+        '200':
+          description: Timeline entries for the check-in
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CheckInTimelineResponse'
+              examples:
+                sample:
+                  value:
+                    timeline:
+                      - label: "Scheduled"
+                        timestamp: "2025-09-27T18:00:00.000Z"
+                      - label: "Due"
+                        timestamp: "2025-09-28T09:00:00.000Z"
+                      - label: "Ping queued"
+                        timestamp: "2025-09-28T08:30:00.000Z"
+        '404':
+          description: Not found
+  /checkins/{id}/pings/manual:
+    post:
+      summary: Trigger a manual GPS ping
+      tags: [Checkins]
+      operationId: createManualCheckInPing
+      parameters:
+        - $ref: '#/components/parameters/CheckInId'
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                reason:
+                  type: string
+            examples:
+              sample:
+                value:
+                  reason: "verification-before-appointment"
+      responses:
+        '202':
+          description: Ping queued
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CheckInManualPingResponse'
+              examples:
+                queued:
+                  value:
+                    ping:
+                      id: "ping_01"
+                      status: "queued"
+                      scheduledFor: "2025-09-28T08:30:00.000Z"
+        '404':
+          description: Not found
+  /checkins/{id}/attendance:
+    post:
+      summary: Record check-in attendance
+      tags: [Checkins]
+      operationId: recordCheckInAttendance
+      parameters:
+        - $ref: '#/components/parameters/CheckInId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CheckInAttendanceRequest'
+            examples:
+              attended:
+                value:
+                  status: "attended"
+                  recordedAt: "2025-09-28T09:05:00.000Z"
+                  note: "Arrived on time"
+                  location:
+                    lat: 29.7604
+                    lng: -95.3698
+      responses:
+        '200':
+          description: Updated check-in with attendance details
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  checkIn:
+                    $ref: '#/components/schemas/CheckIn'
+              examples:
+                updated:
+                  value:
+                    checkIn:
+                      id: "65f1c2ab9e7f3a0012ab34cd"
+                      status: "done"
+                      attendance:
+                        status: "attended"
+                        recordedAt: "2025-09-28T09:05:00.000Z"
+        '400':
+          description: Invalid payload
+        '404':
+          description: Not found
+  /checkins/{id}/status:
+    patch:
+      summary: Update check-in status
+      tags: [Checkins]
+      operationId: updateCheckInStatus
+      parameters:
+        - $ref: '#/components/parameters/CheckInId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [status]
+              properties:
+                status:
+                  type: string
+                  enum: [pending, overdue, done]
+                note:
+                  type: string
+                  nullable: true
+            examples:
+              sample:
+                value:
+                  status: "done"
+                  note: "Completed after officer call"
+      responses:
+        '200':
+          description: Updated check-in
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CheckIn'
+              examples:
+                updated:
+                  value:
+                    id: "65f1c2ab9e7f3a0012ab34cd"
+                    status: "done"
+        '400':
+          description: Invalid payload
+        '404':
+          description: Not found
+  /checkins/{id}/contact:
+    patch:
+      summary: Increment contact attempts and timestamp
+      tags: [Checkins]
+      operationId: updateCheckInContact
+      parameters:
+        - $ref: '#/components/parameters/CheckInId'
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                increment:
+                  type: integer
+                  minimum: 1
+                  default: 1
+            examples:
+              sample:
+                value:
+                  increment: 1
+      responses:
+        '200':
+          description: Updated check-in
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CheckIn'
+              examples:
+                updated:
+                  value:
+                    id: "65f1c2ab9e7f3a0012ab34cd"
+                    contactCount: 2
+                    lastContactAt: "2025-09-28T08:00:00.000Z"
+        '404':
+          description: Not found
 components:
   schemas:
     Money:
@@ -1144,3 +1546,311 @@ components:
         count: { type: integer }
         bond_sum: { $ref: '#/components/schemas/Money' }
         latest_booking_date: { $ref: '#/components/schemas/DateYMD' }
+    CheckIn:
+      type: object
+      properties:
+        id:
+          type: string
+        clientId:
+          type: string
+          nullable: true
+        caseId:
+          type: string
+          nullable: true
+        clientName:
+          type: string
+        person:
+          type: string
+        caseNumber:
+          type: string
+          nullable: true
+        county:
+          type: string
+          nullable: true
+        dueAt:
+          type: string
+          format: date-time
+        timezone:
+          type: string
+        officerId:
+          type: string
+          nullable: true
+        method:
+          type: string
+          enum: [sms, phone, call, in-person, app]
+        status:
+          type: string
+          enum: [pending, upcoming, overdue, done]
+        note:
+          type: string
+          nullable: true
+        contactCount:
+          type: integer
+        lastContactAt:
+          type: string
+          format: date-time
+          nullable: true
+        location:
+          $ref: '#/components/schemas/CheckInLocation'
+        remindersEnabled:
+          type: boolean
+        gpsEnabled:
+          type: boolean
+        pingsPerDay:
+          type: integer
+        lastPingAt:
+          type: string
+          format: date-time
+          nullable: true
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+        attendance:
+          $ref: '#/components/schemas/CheckInAttendance'
+    CheckInLocation:
+      type: object
+      nullable: true
+      properties:
+        lat:
+          type: number
+        lng:
+          type: number
+        accuracy:
+          type: number
+    CheckInAttendance:
+      type: object
+      nullable: true
+      properties:
+        status:
+          type: string
+          enum: [attended, missed]
+        recordedAt:
+          type: string
+          format: date-time
+          nullable: true
+        recordedBy:
+          type: string
+          nullable: true
+        note:
+          type: string
+          nullable: true
+        location:
+          $ref: '#/components/schemas/CheckInLocation'
+    CheckInStats:
+      type: object
+      properties:
+        totalToday:
+          type: integer
+        overdue:
+          type: integer
+        completed:
+          type: integer
+        gpsEnabled:
+          type: integer
+    CheckInCollectionResponse:
+      type: object
+      properties:
+        scope:
+          type: string
+        limit:
+          type: integer
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/CheckIn'
+        stats:
+          $ref: '#/components/schemas/CheckInStats'
+    CheckInPing:
+      type: object
+      properties:
+        id:
+          type: string
+        scheduledFor:
+          type: string
+          format: date-time
+        status:
+          type: string
+          enum: [queued, sent, acknowledged, missed, failed]
+        channel:
+          type: string
+        responseAt:
+          type: string
+          format: date-time
+          nullable: true
+        location:
+          $ref: '#/components/schemas/CheckInLocation'
+    CheckInDetailResponse:
+      type: object
+      properties:
+        checkIn:
+          $ref: '#/components/schemas/CheckIn'
+        pings:
+          type: array
+          items:
+            $ref: '#/components/schemas/CheckInPing'
+    CheckInTimelineEntry:
+      type: object
+      properties:
+        label:
+          type: string
+        timestamp:
+          type: string
+          format: date-time
+        meta:
+          type: string
+          nullable: true
+    CheckInTimelineResponse:
+      type: object
+      properties:
+        timeline:
+          type: array
+          items:
+            $ref: '#/components/schemas/CheckInTimelineEntry'
+    CheckInClientOption:
+      type: object
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+        county:
+          type: string
+          nullable: true
+        caseNumber:
+          type: string
+          nullable: true
+    CheckInOfficerOption:
+      type: object
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+        email:
+          type: string
+          nullable: true
+        roles:
+          type: array
+          items:
+            type: string
+    CheckInOptionsResponse:
+      type: object
+      properties:
+        clients:
+          type: array
+          items:
+            $ref: '#/components/schemas/CheckInClientOption'
+        officers:
+          type: array
+          items:
+            $ref: '#/components/schemas/CheckInOfficerOption'
+        defaults:
+          type: object
+          properties:
+            timezone:
+              type: string
+            pingsPerDay:
+              type: integer
+    CheckInCreateRequest:
+      type: object
+      required: [dueAt, person]
+      properties:
+        clientId:
+          type: string
+        caseId:
+          type: string
+        person:
+          type: string
+        county:
+          type: string
+        dueAt:
+          type: string
+          format: date-time
+        timezone:
+          type: string
+        officerId:
+          type: string
+        method:
+          type: string
+          enum: [sms, phone, call, in-person, app]
+        notes:
+          type: string
+        remindersEnabled:
+          type: boolean
+        gpsEnabled:
+          type: boolean
+        pingsPerDay:
+          type: integer
+          minimum: 1
+          maximum: 12
+        locationText:
+          type: string
+        caseNumber:
+          type: string
+          description: Optional reference case number for downstream reporting
+        personName:
+          type: string
+          description: Alias for person when supplied by the client selector
+    CheckInUpdateRequest:
+      type: object
+      properties:
+        dueAt:
+          type: string
+          format: date-time
+        timezone:
+          type: string
+        officerId:
+          type: string
+        method:
+          type: string
+        notes:
+          type: string
+        remindersEnabled:
+          type: boolean
+        gpsEnabled:
+          type: boolean
+        pingsPerDay:
+          type: integer
+          minimum: 1
+          maximum: 12
+        caseNumber:
+          type: string
+        locationText:
+          type: string
+    CheckInAttendanceRequest:
+      type: object
+      required: [status]
+      properties:
+        status:
+          type: string
+          enum: [attended, missed]
+        note:
+          type: string
+        recordedAt:
+          type: string
+          format: date-time
+        location:
+          $ref: '#/components/schemas/CheckInLocation'
+    CheckInManualPingResponse:
+      type: object
+      properties:
+        ping:
+          type: object
+          properties:
+            id:
+              type: string
+            status:
+              type: string
+            scheduledFor:
+              type: string
+              format: date-time
+  parameters:
+    CheckInId:
+      name: id
+      in: path
+      required: true
+      schema:
+        type: string

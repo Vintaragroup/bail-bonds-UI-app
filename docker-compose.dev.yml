@@ -1,0 +1,36 @@
+version: '3.9'
+services:
+  mongo:
+    image: mongo:7
+    ports:
+      - "27017:27017"
+    volumes:
+      - mongo-data:/data/db
+  api:
+    build:
+      context: ./server
+      dockerfile: Dockerfile
+    environment:
+      - PORT=8080
+      - NODE_ENV=development
+      - MONGO_URI=mongodb://mongo:27017
+      - MONGO_DB=warrantdb
+      - WEB_ORIGIN=http://localhost:5173
+    volumes:
+      - ./server/src:/app/src
+      - ./server/src/openapi.yaml:/app/openapi.yaml
+    ports:
+      - "8080:8080"
+    depends_on:
+      - mongo
+    command: node src/index.js
+  web:
+    build:
+      context: .
+      dockerfile: Dockerfile.web
+    ports:
+      - "5173:80"
+    depends_on:
+      - api
+volumes:
+  mongo-data:

@@ -15,7 +15,12 @@
     "smoke:dashboard": "npm --prefix server run smoke:dashboard",
     "smoke:trends": "npm --prefix server run smoke:trends",
     "test": "vitest --run",
-    "test:watch": "vitest"
+    "test:watch": "vitest",
+
+    "compose:dev:up": "docker compose -f docker-compose.dev.yml up --build",
+    "compose:dev:down": "docker compose -f docker-compose.dev.yml down -v",
+    "compose:staging:up": "docker compose -f docker-compose.staging.yml up --build -d",
+    "compose:staging:down": "docker compose -f docker-compose.staging.yml down"
   },
   "dependencies": {
     "@radix-ui/react-accordion": "^1.2.3",

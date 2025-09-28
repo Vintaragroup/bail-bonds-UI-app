@@ -37,6 +37,7 @@ try {
   const specText = fs.readFileSync(new URL('./openapi.yaml', import.meta.url), 'utf8');
   openapiDoc = YAML.parse(specText);
   app.use('/api/docs', swaggerUi.serve, swaggerUi.setup(openapiDoc, { explorer: true }));
+  app.get('/api/docs.json', (_req, res) => res.json(openapiDoc));
   console.log('📚 Swagger UI available at /api/docs');
 } catch (e) {
   console.warn('⚠️  OpenAPI spec not found or invalid; /api/docs disabled:', e.message);
