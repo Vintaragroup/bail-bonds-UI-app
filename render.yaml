@@ -1,0 +1,43 @@
+services:
+  - name: warrantdb-api
+    type: web
+    runtime: docker
+    plan: starter
+    # Docker build from monorepo
+    dockerfilePath: server/Dockerfile
+    dockerContext: ./server
+    # Optional: set a health check path if available
+    # healthCheckPath: /api/health
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: MONGO_URI
+        sync: false # set in Render Dashboard or via env group
+      - key: MONGO_DB
+        value: warrantdb
+      - key: WEB_ORIGIN
+        sync: false
+      # If your server supports GOOGLE_APPLICATION_CREDENTIALS path pointing to a secret file,
+      # create a Secret File named firebase.json in the Render Dashboard and set this path accordingly.
+      - key: GOOGLE_APPLICATION_CREDENTIALS
+        value: /opt/render/project/secrets/firebase.json
+      - key: FIREBASE_PROJECT_ID
+        sync: false
+
+  - name: warrantdb-web
+    type: web
+    runtime: static
+    plan: starter
+    buildCommand: npm ci && npm run build
+    staticPublishPath: ./dist
+    envVars:
+      - key: VITE_API_URL
+        sync: false # set to your API base URL (e.g., https://warrantdb-api.onrender.com)
+    routes:
+      # SPA rewrite: send all non-asset routes to index.html
+      - type: rewrite
+        source: /*
+        destination: /index.html
+
+previews:
+  generation: manual

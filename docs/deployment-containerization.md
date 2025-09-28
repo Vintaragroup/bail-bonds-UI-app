@@ -102,6 +102,27 @@ Notes:
    - Retag images to `:prod` and deploy to production cluster.
    - Run post-deploy validation + rollback plan (previous tag).
 
+### 5.4 Optional: Render.com Deployment (Blueprint)
+We include a `render.yaml` Blueprint to provision a Render web service for the API (Docker) and a static site for the SPA.
+
+Steps:
+1. Ensure `render.yaml` is in the repo root (it is).
+2. Commit & push to the branch you intend to link for the Blueprint.
+3. In the Render dashboard: New → Blueprint → Connect your repo → Choose the branch → Apply.
+4. Set required environment variables and a Secret File for Firebase in the dashboard:
+  - API env vars: `MONGO_URI` (required), `MONGO_DB` (optional), `WEB_ORIGIN` (required), `FIREBASE_PROJECT_ID` (required)
+  - Secret File: create `firebase.json` with your Firebase admin JSON and it will mount to `/opt/render/project/secrets/firebase.json`. Ensure `GOOGLE_APPLICATION_CREDENTIALS` points to this path.
+  - SPA env var: `VITE_API_URL` → set to your API public URL (e.g., `https://warrantdb-api.onrender.com`)
+5. Verify routes:
+  - SPA includes a rewrite rule in the Blueprint to route all paths to `/index.html` (client-side routing).
+6. Optional: Add custom domain(s) in Render and configure DNS; set correct `WEB_ORIGIN`.
+
+Notes:
+- The API uses the Dockerfile at `server/Dockerfile` and builds from `server/` context.
+- The SPA builds with `npm ci && npm run build` and publishes `dist/`.
+- For Atlas, allowlist Render’s outbound IPs or use a public connection string with proper auth.
+- You can switch the SPA to an image-based web service by changing runtime to `docker` and using `Dockerfile.web` if you prefer Nginx.
+
 ### 5.1 Branching & Release Management
 - Branch naming:
   - Feature work: `feature/<short-scope>`
