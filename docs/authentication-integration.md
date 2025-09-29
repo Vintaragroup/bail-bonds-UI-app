@@ -208,13 +208,79 @@
 - [ ] Document support runbooks for password reset, MFA reset, and account suspension.
 
 ## 14. Open Decisions
-- Confirm whether hosted Firebase UI or custom branded UI is preferred.
-- Decide on session strategy (pure bearer tokens vs. backend-managed cookies).
-- Determine compliance requirements that might necessitate dedicated region or log retention customizations.
-- Validate Apple ID integration timeline (requires paid Apple Developer account).
 
 ## 15. Next Steps (Post-Approval)
-- Implement proof-of-concept branch configuring Firebase Emulator and minimal login flow.
-- Schedule stakeholder review for UX flows and role matrix mapping.
-- Prepare training material for Admin/Super User roles.
+ ````
+
+## 2025-09-29 Production bring-up (Render)
+
+We deployed a public-facing production using Render’s onrender.com URLs without a custom domain yet. We are temporarily using separate origins (Static SPA + Docker API). See `docs/production-deployment.md` for the runbook.
+
+Highlights
+- SPA (Static Site) sets `VITE_API_URL` to the API’s onrender.com URL. Requests include credentials and cookies are sent cross-origin.
+- API CORS `origin` allowlist includes the SPA origin via `WEB_ORIGIN`; cookies are `Secure` + `SameSite=None` in production.
+- Firebase Authorized domains now include the SPA onrender.com domain.
+- MongoDB Atlas connectivity verified via `/api/health`.
+
+Next
+- When a custom domain is ready, migrate to single-origin (Nginx proxy /api), remove `VITE_API_URL`, and keep same-origin cookies.
+
+ ## 2025-09-28 Integration Fix Log — Firebase + Mongo data visible in Frontend
+
+ This section documents the concrete changes made to resolve the blank screen/auth errors and 404s, and to ensure the SPA connects to the API (MongoDB Atlas) reliably in development, staging, and production.
+
+ Summary
+ - Root cause: The SPA sometimes baked a dev URL (http://localhost:8080) into production bundles and attempted cross-origin requests, leading to cookies not being sent and CORS/404 issues. Separately, Firebase client config was read too early and sometimes missing at runtime, causing `[auth/invalid-api-key]` and a blank screen.
+ - Fixes: Introduced a runtime env loader (`public/env.js`) and deferred app boot until it loads. Centralized API base resolution to default to same-origin `/api` in production, with runtime override first and dev-only build-time fallback. Ensured credentials mode is `include` in fetch helpers so HTTP-only session cookies flow.
+
+ Frontend runtime environment
+ - File: `public/env.js` with example at `public/env.example.js`.
+ - The app bootstraps by loading `/env.js` if present and only then rendering `App` (see `src/main.jsx`).
+ - Keys supported (window.__ENV__):
+   - `VITE_API_URL` — Preferred API base at runtime. In production we omit absolute hosts and use `/api` for same-origin proxying.
+   - `VITE_FIREBASE_*` — Optional overrides for Firebase web config if you must change without rebuild.
+
+ API base resolution (production-safe)
+ - Central logic (see `src/lib/api.js` and consumer hooks under `src/hooks/`):
+   1) If `window.__ENV__.VITE_API_URL` exists, use it.
+   2) Else if build-time `import.meta.env.VITE_API_URL` exists AND we are in development, use it.
+   3) Otherwise default to `'/api'`.
+ - Trailing slash is normalized off, and all requests use `credentials: 'include'`.
+ - Production bundles no longer contain `http://localhost:8080`. We verified by building and scanning `dist/` for that string (none found).
+
+ Nginx and dev proxy alignment
+ - Nginx configuration proxies `location /api` to the API container, so the SPA can use same-origin calls without embedding hostnames.
+ - Vite dev proxy maps `/api` → `http://localhost:8080` for local dev, keeping frontend code unchanged between environments.
+
+ Firebase client init stability
+ - The SPA now defers `App` import/render until after optional `/env.js` loads (see `src/main.jsx`). This prevents reading undefined Firebase keys during cold loads.
+ - Firebase initialization guards use runtime env first, then build-time. If keys are missing, a console error is shown with explicit guidance.
+
+ Cookie/CORS posture
+ - All fetch helpers specify `credentials: 'include'` by default; the API sets the session cookie on the same origin. This avoids cross-origin cookie restrictions and preflight complexity.
+ - `WEB_ORIGIN` must match the public origin of the web app; ensure it is set in the API environment (Compose/Render). In local staging we set `WEB_ORIGIN=http://localhost:5173`.
+
+ MongoDB Atlas connectivity
+ - The API container reads `MONGO_URI` and `MONGO_DB` (default `warrantdb`). In CI and staging compose, we inject these via environment.
+ - Health endpoints `/api/health` and `/api/health/light` reflect Atlas connectivity and basic counts; they are used by smoke tests.
+
+ Verification steps performed
+ 1) Searched app source and production `dist/` for `localhost:8080` → none present in the final build.
+ 2) Launched staging compose; hit `/api/health` successfully.
+ 3) Ran smoke scripts:
+    - `node server/scripts/smoke-health.mjs --base http://localhost:8080`
+    - `node server/scripts/smoke-dashboard.mjs --base http://localhost:8080/api/dashboard`
+ 4) Opened SPA; ensured requests go to `/api/*` and set cookies. Firebase auth no longer errors; login proceeds.
+
+ Operational notes
+ - In Render: set SPA `VITE_API_URL` to your API public URL only if you choose not to reverse-proxy; otherwise leave default and rely on same-origin `/api`.
+ - Prefer runtime `/env.js` overrides sparingly; for stable environments, keep config in CI/CD and container args.
+
+ Acceptance criteria (met)
+ - No hard-coded dev hostnames in production JS bundle.
+ - SPA successfully obtains Firebase config and renders without `[auth/invalid-api-key]`.
+ - Authenticated requests include cookies and hit `/api/*` via same-origin proxy.
+ - Health and dashboard endpoints return data backed by MongoDB Atlas.
+
+ ```
 

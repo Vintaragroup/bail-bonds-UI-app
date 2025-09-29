@@ -2,6 +2,8 @@
 
 _Last updated: 2025-09-28_
 
+See also: the “2025-09-28 Integration Fix Log — Firebase + Mongo data visible in Frontend” section in `authentication-integration.md` for the finalized runtime env.js loader, API base resolution, cookie posture, and verification steps.
+
 ## 1. Objectives
 - Provide a repeatable way to run the full stack (Node API, React front-end, supporting services) in development, staging, and production.
 - Support rapid iteration in a dev sandbox without risking production stability.
@@ -109,6 +111,38 @@ Endpoints:
 
 Validate with the PR and Staging Verification checklists below.
 
+Firebase (SPA) build-time env
+- The SPA reads Firebase config from Vite env vars at build time. Set these in your shell before building the `web` image, or define them in an `.env` file that Compose will read:
+
+Required
+- `VITE_FIREBASE_API_KEY`
+- `VITE_FIREBASE_AUTH_DOMAIN`
+- `VITE_FIREBASE_PROJECT_ID`
+- `VITE_FIREBASE_APP_ID`
+
+Optional
+- `VITE_FIREBASE_MEASUREMENT_ID`
+- `VITE_API_URL` (defaults to http://localhost:8080 in dev Compose)
+
+Compose passes these as build args to `Dockerfile.web`. If they are missing, the SPA will log a clear error and Firebase auth will fail with `[auth/invalid-api-key]`.
+
+Runtime env.js (optional)
+- To avoid rebuilding the web image just to tweak environment values, you can supply a runtime file served at `/env.js`.
+- Copy `public/env.example.js` to `public/env.js` and fill in values. The app will prefer `window.__ENV__.*` when present.
+- This is useful for local testing but avoid committing real secrets.
+
+Compose override to mount env.js (optional)
+Create `docker-compose.override.yml` with:
+
+```yaml
+services:
+  web:
+    volumes:
+      - ./public/env.js:/usr/share/nginx/html/env.js:ro
+```
+
+Then run your usual compose command. If `public/env.js` exists, the SPA will load it before initialization and use `window.__ENV__` values.
+
 ## 5. Production Deployment Workflow
 1. **Build phase** (CI)
    - Install dependencies (`npm ci` front-end & server).
@@ -148,6 +182,39 @@ Notes:
 - The SPA builds with `npm ci && npm run build` and publishes `dist/`.
 - For Atlas, allowlist Render’s outbound IPs or use a public connection string with proper auth.
 - You can switch the SPA to an image-based web service by changing runtime to `docker` and using `Dockerfile.web` if you prefer Nginx.
+
+### 5.5 Render Staging Checklist (copy/paste)
+
+1) Repository and Blueprint
+- [ ] Repo connected in Render
+- [ ] Branch selected: infra/containerization-YYYY-MM-DD (or main)
+- [ ] `render.yaml` applied without errors
+
+2) API Web Service (Docker runtime)
+- [ ] Context: `server/`, Dockerfile: `server/Dockerfile`
+- [ ] Env vars set: `MONGO_URI`, `WEB_ORIGIN`, `FIREBASE_PROJECT_ID`, optional `MONGO_DB`
+- [ ] Secret File created: Name `firebase.json` with Firebase admin JSON
+- [ ] `GOOGLE_APPLICATION_CREDENTIALS` set to `/opt/render/project/secrets/firebase.json`
+- [ ] Deployment succeeded, health check green
+
+3) SPA Static Site
+- [ ] Build command `npm ci && npm run build`
+- [ ] Publish path `./dist`
+- [ ] Env var `VITE_API_URL` set to API public URL
+- [ ] Rewrite rule /* → /index.html present
+
+4) Atlas/Networking
+- [ ] Atlas IP allowlist updated for Render outbound IPs (or use public connection string with auth)
+- [ ] Verify API can connect to MongoDB Atlas
+
+5) Validation
+- [ ] Open Swagger: <API_URL>/api/docs
+- [ ] GET <API_URL>/api/health returns 200 and ok: true
+- [ ] Open SPA: <SPA_URL>/ and a non-existent route → both 200 (fallback)
+
+6) Post-setup
+- [ ] Save URLs and environment details to this doc
+- [ ] Create tag `baseline/staging-verified-YYYY-MM-DD` after validation
 
 ### 5.1 Branching & Release Management
 - Branch naming:
@@ -254,6 +321,29 @@ Staging Compose specifics (`docker-compose.staging.yml`):
 - Payments (if applicable): Test card flow on test keys succeeds.
 - Logs: No error spam; expected metrics/headers present in responses.
 
+### 7.2 Local Docker validation log — 2025-09-28
+
+Environment
+- Stack: `docker-compose.dev.yml` (API http://localhost:8080, Web http://localhost:5173)
+
+API
+- GET `/api/health` → 200 OK; payload includes `{ ok: true, db.status: "ok" }`
+- GET `/api/docs.json` → 200 OK; Checkins tag present with list/create/update endpoints
+
+Web
+- GET `/` → 200 OK (SPA served by Nginx)
+- GET `/does/not/exist` → 200 OK (SPA fallback to index.html confirmed)
+
+Notes
+- Dev Mongo mapped to host 27018 to avoid a local 27017 port conflict
+- SPA build uses `npm ci --legacy-peer-deps` due to `@stripe/react-stripe-js` peer range with React 19
+- API provided `GOOGLE_APPLICATION_CREDENTIALS` via Compose secret for Firebase initialization
+
+Quick: View in browser (Docker)
+- Dev compose: Web → http://localhost:5173, API → http://localhost:8080 (Swagger at /api/docs)
+- Staging compose: Same URLs by default unless you change port mappings
+- No local servers needed—containers serve both the SPA and API
+
 ## 8. Onboarding Checklist
 1. Install prerequisites (Docker, Node, npm, Firebase CLI).
 2. Clone repo, run `npm install` at root and `npm install` in `server/`.
@@ -277,6 +367,43 @@ Staging Compose specifics (`docker-compose.staging.yml`):
 - CDN strategy for front-end assets (CloudFront, Cloudflare) vs. Express static serving.
 - Blue/green vs. rolling update strategy for API.
 
+## 11. CI/CD Roadmap (Initial)
+
+Targets
+- Build and test on every PR and push to main
+- Build Docker images for API and Web, scan, and optionally push when secrets are configured
+
+Proposed workflow (GitHub Actions)
+1) Triggers
+   - On pull_request to main; on push to main and tags
+2) Jobs
+   - Setup Node (use .nvmrc or Node 20)
+   - Cache npm with lockfiles
+   - Lint & test
+     - Root `npm run lint` (if configured) and `npm test` / `npm run test -w server`
+   - Build
+     - Web: `npm ci && npm run build` (root)
+     - API: `npm ci` in `server/` and run minimal build/validate (OpenAPI validation)
+   - Docker
+     - Build API image from `server/Dockerfile`
+     - Build Web image from `Dockerfile.web`
+     - Scan with Trivy/Grype (fail on CRITICAL)
+   - Publish (conditional)
+     - If `secrets.REGISTRY_USER` and `secrets.REGISTRY_TOKEN` present, login and push tags:
+       - `asap-bail-books-api:${{ github.sha }}` and optional `:staging` on protected branches
+       - `asap-bail-books-web:${{ github.sha }}` and optional `:staging`
+
+Registry config (example: GHCR)
+- Create GitHub Actions secret `REGISTRY` = ghcr.io
+- `REGISTRY_USER` = `${{ github.actor }}`
+- `REGISTRY_TOKEN` = Personal Access Token (write:packages) or `GITHUB_TOKEN` with proper permissions
+- Image names: `ghcr.io/<org>/asap-bail-books-api` and `ghcr.io/<org>/asap-bail-books-web`
+
+Next steps
+- Add `.github/workflows/ci.yml` implementing the above with conditional publish
+- Add Trivy (aquasecurity/trivy-action) or Grype (anchore/scan-action)
+- Optionally add Cypress smoke job that hits deployed staging URLs after publish
+
 ---
 _Primary owners: DevOps + Application Engineering. Update this doc as infrastructure decisions solidify._
 
@@ -290,4 +417,8 @@ _Primary owners: DevOps + Application Engineering. Update this doc as infrastruc
   - Documented environment variables and secret mounting for staging.
 
 - 2025-09-28
+  - Added unauthenticated health smoke (`server/scripts/smoke-health.mjs`) and npm script `server/smoke:health`.
+  - Enhanced authenticated dashboard smoke (`server/scripts/smoke-dashboard.mjs`) to accept bearer/cookie and optional Firebase sign-in.
+  - Documented smoke usage and options in `server/README.md`.
+  - Validated dev Docker stack locally: `/api/health` OK, `/api/docs` OK, SPA served at http://localhost:5173.
   - Added branching, tagging, rollback procedures, PR and staging verification checklists.
