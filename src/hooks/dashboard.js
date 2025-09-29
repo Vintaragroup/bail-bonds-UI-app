@@ -3,12 +3,16 @@ import { useQuery } from '@tanstack/react-query';
 // NOTE: For aggregated polling across multiple endpoints prefer useSerializedPolling in polling.js
 import { useOptionalDashboardAggregated } from '../components/DashboardAggregatedProvider.jsx';
 
-// Base URL – works with your root .env: VITE_API_URL=http://localhost:8080/api
-export const API_BASE =
-  (typeof import.meta !== 'undefined' && import.meta.env?.VITE_API_URL
-    ? import.meta.env.VITE_API_URL
-    : 'http://localhost:8080/api'
-  ).replace(/\/$/, '');
+// Base URL resolution:
+// 1) Runtime window.__ENV__.VITE_API_URL if present (injected by /public/env.js)
+// 2) In dev only, allow build-time import.meta.env.VITE_API_URL
+// 3) Otherwise default to '/api' (same-origin reverse proxy)
+const RUNTIME_ENV = (typeof window !== 'undefined' && window.__ENV__) || {};
+export const API_BASE = (
+  RUNTIME_ENV.VITE_API_URL
+  || (typeof import.meta !== 'undefined' && import.meta.env?.DEV ? import.meta.env.VITE_API_URL : undefined)
+  || '/api'
+).replace(/\/$/, '');
 
 // In-flight request de-duplication to prevent bursts of identical GETs
 const inflight = new Map(); // key -> Promise

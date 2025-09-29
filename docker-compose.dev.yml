@@ -3,7 +3,7 @@ services:
   mongo:
     image: mongo:7
     ports:
-      - "27017:27017"
+      - "27018:27017" # use 27018 on host to avoid conflicts with a local mongod
     volumes:
       - mongo-data:/data/db
   api:
@@ -13,9 +13,10 @@ services:
     environment:
       - PORT=8080
       - NODE_ENV=development
-      - MONGO_URI=mongodb://mongo:27017
-      - MONGO_DB=warrantdb
-      - WEB_ORIGIN=http://localhost:5173
+      - MONGO_URI=${MONGO_URI:-mongodb://mongo:27017}
+      - MONGO_DB=${MONGO_DB:-warrantdb}
+      - WEB_ORIGIN=${WEB_ORIGIN:-http://localhost:5173}
+      - GOOGLE_APPLICATION_CREDENTIALS=/run/secrets/firebase
     volumes:
       - ./server/src:/app/src
       - ./server/src/openapi.yaml:/app/openapi.yaml
@@ -23,14 +24,28 @@ services:
       - "8080:8080"
     depends_on:
       - mongo
+    secrets:
+      - firebase
     command: node src/index.js
   web:
     build:
       context: .
       dockerfile: Dockerfile.web
+      args:
+        VITE_API_URL: ${VITE_API_URL:-/api}
+        VITE_FIREBASE_API_KEY: ${VITE_FIREBASE_API_KEY}
+        VITE_FIREBASE_AUTH_DOMAIN: ${VITE_FIREBASE_AUTH_DOMAIN}
+        VITE_FIREBASE_PROJECT_ID: ${VITE_FIREBASE_PROJECT_ID}
+        VITE_FIREBASE_APP_ID: ${VITE_FIREBASE_APP_ID}
+        VITE_FIREBASE_MEASUREMENT_ID: ${VITE_FIREBASE_MEASUREMENT_ID}
     ports:
       - "5173:80"
+    volumes:
+      - ./public/env.js:/usr/share/nginx/html/env.js:ro
     depends_on:
       - api
 volumes:
   mongo-data:
+secrets:
+  firebase:
+    file: ./.secrets/asap-bail-books-firebase-adminsdk-fbsvc-71506047b4.json

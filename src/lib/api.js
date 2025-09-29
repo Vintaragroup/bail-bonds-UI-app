@@ -1,10 +1,17 @@
 // Lightweight API client for the dashboard (uses browser fetch)
-// Base URL comes from Vite env: VITE_API_URL (e.g., http://localhost:8080/api)
+// Base URL can be provided at runtime via window.__ENV__.VITE_API_URL, or at build time via import.meta.env.VITE_API_URL.
+// Default to same-origin proxy path '/api' to work with Nginx/Vite proxy.
 
-const RAW_API_BASE = (import.meta && import.meta.env && import.meta.env.VITE_API_URL)
-  ? import.meta.env.VITE_API_URL
-  : 'http://localhost:8080/api';
-const API_BASE = RAW_API_BASE.replace(/\/$/, ''); // normalize: no trailing slash
+const RUNTIME_ENV = (typeof window !== 'undefined' && window.__ENV__) || {};
+// Resolution order:
+// 1) Runtime env from window.__ENV__.VITE_API_URL (injected by public/env.js)
+// 2) If dev build, allow build-time import.meta.env.VITE_API_URL
+// 3) Otherwise default to same-origin '/api' to work with reverse proxy
+const RAW_API_BASE =
+  (RUNTIME_ENV && RUNTIME_ENV.VITE_API_URL)
+  || (import.meta?.env?.DEV ? import.meta.env.VITE_API_URL : undefined)
+  || '/api';
+const API_BASE = String(RAW_API_BASE).replace(/\/$/, ''); // normalize: no trailing slash
 
 async function httpGet(path) {
   const fullPath = path.startsWith('/') ? path : `/${path}`;

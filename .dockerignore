@@ -3,7 +3,6 @@ node_modules
 .gitignore
 .vscode
 Dockerfile.web
-nginx/default.conf
 server/uploads
 secrets
 **/.DS_Store

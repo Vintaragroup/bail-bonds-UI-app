@@ -599,8 +599,6 @@ export default function DashboardScreen() {
         shapeSnapshotRow(item, 'recent', {
           key: item.id || `recent-${index}`,
           windowLabel: '48–72h',
-  new: new24List.map((item, index) => shapeSnapshotRow(item, 'new', { key: item.id || `new-${index}` })),
-  recent: recentList.map((item, index) => shapeSnapshotRow(item, 'recent', { key: item.id || `recent-${index}` })),
         })
       ),
       attention: attentionList.map((item, index) =>
@@ -851,7 +849,17 @@ export default function DashboardScreen() {
       {/* Header */}
       <header className="sticky top-0 z-10 bg-white border-b">
         <div className="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8 h-14 flex items-center justify-between">
-          <span className="font-semibold tracking-tight">Bail Bonds Dashboard</span>
+          <span className="font-semibold tracking-tight flex items-center gap-2">
+            Bail Bonds Dashboard
+            {apiMode === 'v2_buckets' ? (
+              <span
+                className="inline-flex items-center rounded-full bg-indigo-50 px-2 py-0.5 text-[10px] font-medium text-indigo-700 border border-indigo-200"
+                title="Using time_bucket_v2 canonical windows"
+              >
+                v2
+              </span>
+            ) : null}
+          </span>
           <div className="flex items-center gap-2">
             <span className="text-xs text-slate-500 hidden sm:block">v0.1</span>
             <button
@@ -1078,6 +1086,8 @@ export default function DashboardScreen() {
                             {row.windowLabel ? (
                               <span className="inline-flex items-center rounded-md bg-blue-50 px-1.5 py-0.5 text-blue-600">
                                 {row.windowLabel}
+                              </span>
+                            ) : null}
                             {row.mappedWindow ? (
                               <span
                                 className={`inline-flex items-center rounded-md border px-1.5 py-0.5 text-[10px] ${bucketClasses(row.timeBucketV2)}`}
@@ -1089,9 +1099,6 @@ export default function DashboardScreen() {
                             {row.timeBucketV2 && !row.mappedWindow ? (
                               <span className="inline-flex items-center rounded-md bg-slate-100 px-1.5 py-0.5 text-[10px]">
                                 {row.timeBucketV2}
-                              </span>
-                            ) : null}
-          <span className="font-semibold tracking-tight flex items-center gap-2">Bail Bonds Dashboard {apiMode === 'v2_buckets' ? <span className="inline-flex items-center rounded-full bg-indigo-50 px-2 py-0.5 text-[10px] font-medium text-indigo-700 border border-indigo-200" title="Using time_bucket_v2 canonical windows">v2</span> : null}</span>
                               </span>
                             ) : null}
                             {row.category ? (

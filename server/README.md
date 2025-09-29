@@ -94,6 +94,25 @@ kill -9 <pid>
 - npm run lint:api — Validate OpenAPI file
 - npm run lint:api:bundle — Validate and output a bundled spec
 
+## Smoke tests
+Quick checks to verify the API is up and protected endpoints respond when authenticated.
+
+- Health (no auth required):
+	- `npm run smoke:health`
+	- Options: `--base http://localhost:8080`
+
+- Dashboard (auth required):
+	- Bearer token:
+		- `AUTH_BEARER=<idToken> npm run smoke:dashboard`
+		- Or: `npm run smoke:dashboard -- --base http://localhost:8080/api/dashboard --bearer <idToken>`
+	- Cookie session:
+		- `AUTH_COOKIE="__asap_session=<cookieValue>" npm run smoke:dashboard`
+	- Built-in email/password sign-in (uses Firebase Web REST API):
+		- `npm run smoke:dashboard -- --signin --email you@example.com --password '...' --apiKey $VITE_FIREBASE_API_KEY`
+	- Environment variables also supported: `AUTH_EMAIL`, `AUTH_PASSWORD`, `FIREBASE_WEB_API_KEY` or `VITE_FIREBASE_API_KEY`.
+
+Tip: You can create a test Firebase user with `npm run firebase:create-user` (requires server Firebase admin credentials configured).
+
 ## Security
 - Do not commit real credentials to .env files.
 - Keep MONGO_URI in server/.env during development. In production, use your platform’s secret manager or environment variables.
