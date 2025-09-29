@@ -32,3 +32,5 @@ tmp/*HAR_v*.har
 # Secrets & Firebase keys
 .secrets/
 .env
+public/env.js
+docker-compose.override.yml
