@@ -1,9 +1,9 @@
 name: Staging CI/CD
 
 on:
-  # Run on the staging branch and optionally on deploy/production for manual smoke checks
+  # Run automatically only on the staging branch; use workflow_dispatch to run on other branches manually
   push:
-    branches: ["staging", "deploy/production"]
+    branches: ["staging"]
   workflow_dispatch:
     inputs:
       renderDeploy:
