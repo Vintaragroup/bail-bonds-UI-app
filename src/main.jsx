@@ -9,7 +9,13 @@ import './index.css'
 
 // Optionally load runtime environment from /env.js if present, and block until it loads
 async function loadRuntimeEnvIfPresent() {
-  if (typeof window === 'undefined' || import.meta.env.DEV || window.__ENV__) return;
+  // Skip if server-side, dev mode, runtime already set, or build-time VITE_API_URL exists
+  if (
+    typeof window === 'undefined'
+    || import.meta.env.DEV
+    || window.__ENV__
+    || (typeof import.meta !== 'undefined' && import.meta.env?.VITE_API_URL)
+  ) return;
   await new Promise((resolve) => {
     const script = document.createElement('script');
     script.src = '/env.js';
