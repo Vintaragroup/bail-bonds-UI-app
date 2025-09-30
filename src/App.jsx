@@ -13,6 +13,7 @@ import AuthPreview from "./pages/AuthPreview";
 import AuthRoutes from "./pages/AuthRoutes";
 import { UserProvider } from "./components/UserContext";
 import RequireAuth from "./components/RequireAuth";
+import { ToastProvider } from "./components/ToastContext";
 
 const AUTH_PREVIEW_ENABLED = import.meta.env.VITE_ENABLE_AUTH_PREVIEW === "true" || import.meta.env.DEV;
 
@@ -21,9 +22,11 @@ export default function App() {
     <UserProvider>
       <Routes>
         <Route path="/login" element={<Navigate to="/auth/login" replace />} />
-        <Route path="/auth" element={<AuthRoutes />} />
-        <Route path="/auth/:screen" element={<AuthRoutes />} />
-        {AUTH_PREVIEW_ENABLED && <Route path="/auth/preview" element={<AuthPreview />} />}
+        <Route path="/auth" element={<ToastProvider><AuthRoutes /></ToastProvider>} />
+        <Route path="/auth/:screen" element={<ToastProvider><AuthRoutes /></ToastProvider>} />
+        {AUTH_PREVIEW_ENABLED && (
+          <Route path="/auth/preview" element={<ToastProvider><AuthPreview /></ToastProvider>} />
+        )}
         <Route element={<RequireAuth><AppLayout /></RequireAuth>}>
           <Route path="/" element={<Dashboard />} />
           <Route path="/cases" element={<Cases />} />

@@ -30,8 +30,14 @@ export function ToastProvider({ children }) {
 
 export function useToast() {
   const ctx = useContext(ToastContext);
-  if (!ctx) throw new Error('useToast must be used within a ToastProvider');
-  return ctx;
+  if (ctx) return ctx;
+  // In production, fail soft to avoid blank screens if the provider isn't mounted
+  if (import.meta.env && import.meta.env.PROD) {
+    const noop = () => {};
+    return { pushToast: noop, dismissToast: noop };
+  }
+  // In dev, surface the error loudly for quick diagnosis
+  throw new Error('useToast must be used within a ToastProvider');
 }
 
 export function ToastViewport({ toasts, onDismiss }) {
