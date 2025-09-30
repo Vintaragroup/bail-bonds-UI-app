@@ -34,3 +34,9 @@ tmp/*HAR_v*.har
 .env
 public/env.js
 docker-compose.override.yml
+docs/requested_creds.md
+public/env.js
+docker-compose.override.yml
+
+# Local secrets inside server (do not commit)
+server/.secrets/

@@ -20,6 +20,7 @@ import {
 } from 'firebase/auth';
 import { firebaseAuthClient } from '../lib/firebaseClient';
 import type { UserProfile } from './ui/user-avatar';
+import { API_BASE } from '../lib/api';
 
 type AuthenticatedUser = UserProfile & {
   uid: string;
@@ -45,7 +46,7 @@ interface UserContextType {
 const UserContext = createContext<UserContextType | undefined>(undefined);
 
 async function exchangeSession(idToken: string) {
-  const response = await fetch('/api/auth/session', {
+  const response = await fetch(`${API_BASE}/auth/session`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     credentials: 'include',
@@ -59,7 +60,7 @@ async function exchangeSession(idToken: string) {
 }
 
 async function fetchProfile(): Promise<AuthenticatedUser | null> {
-  const response = await fetch('/api/auth/me', {
+  const response = await fetch(`${API_BASE}/auth/me`, {
     method: 'GET',
     credentials: 'include',
   });
@@ -212,7 +213,7 @@ export function UserProvider({ children }: { children: React.ReactNode }) {
   const signOut = useCallback(async () => {
     setLoading(true);
     try {
-      await fetch('/api/auth/logout', { method: 'POST', credentials: 'include' });
+      await fetch(`${API_BASE}/auth/logout`, { method: 'POST', credentials: 'include' });
       await firebaseSignOut(firebaseAuthClient);
       setCurrentUser(null);
       setError(null);

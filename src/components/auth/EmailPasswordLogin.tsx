@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { Eye, EyeOff, AlertCircle, ArrowLeft, Chrome, Apple, Send, CheckCircle } from 'lucide-react';
 import { PillButton } from '../ui/pill-button';
+import { API_BASE } from '../../lib/api';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '../ui/card';
 import { Input } from '../ui/input';
 import { Label } from '../ui/label';
@@ -76,7 +77,7 @@ export function EmailPasswordLogin({ onNavigate }: EmailPasswordLoginProps) {
     }
 
     try {
-      const response = await fetch('/api/auth/access-request', {
+      const response = await fetch(`${API_BASE}/auth/access-request`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({

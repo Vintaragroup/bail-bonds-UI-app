@@ -18,6 +18,8 @@ Recognized variables:
 - PORT — HTTP port (default: 8080)
 - WEB_ORIGIN — CORS allowlist origin (default: /^http:\/\/localhost:\\d+$/)
 - DASHBOARD_TZ — Timezone used for booking-day windows (default: America/Chicago)
+ - FIREBASE_PROJECT_ID — Firebase Admin project id (production)
+ - GOOGLE_APPLICATION_CREDENTIALS — Path to Firebase Admin credentials file (e.g., /opt/render/project/secrets/firebase.json on Render)
 
 Notes:
 - The server also reads environment from the repo root .env (for convenience), but server/.env takes precedence during development.
@@ -87,6 +89,7 @@ kill -9 <pid>
 - DB 503 errors: ensure MONGO_URI is set, Mongo Atlas IP/Access Rules allow your machine, and credentials are correct.
 - CORS issues: set WEB_ORIGIN to your frontend origin (e.g., http://localhost:5173).
 - Multiple server processes: ensure only one Node process is running on port 8080.
+- Render health check: the service exposes GET /api/health for container readiness.
 
 ## Scripts
 - npm run dev — Start with nodemon (watches src)

@@ -51,6 +51,11 @@ Render → New → Static Site → From repository
 - Publish directory: ./dist
 - Env vars:
   - VITE_API_URL=https://<your-api>.onrender.com
+  - VITE_FIREBASE_API_KEY=<from Firebase web config>
+  - VITE_FIREBASE_AUTH_DOMAIN=<from Firebase web config>
+  - VITE_FIREBASE_PROJECT_ID=<from Firebase web config>
+  - VITE_FIREBASE_APP_ID=<from Firebase web config>
+  - VITE_FIREBASE_MEASUREMENT_ID=<from Firebase web config>
 - Route rewrite:
   - Add rewrite /* → /index.html (Render’s Static Site UI supports this)
 - Save & deploy
@@ -80,6 +85,10 @@ Expected: 2xx responses; JSON with ok:true and non-zero counts when data exists
 - Rollback:
   - Redeploy the previous successful build in Render, or
   - Retag and push the previous image (if CI/CD is wired to the registry)
+
+Branching and Auto-deploys
+- This repo includes render.yaml with branch set to deploy/production for both services.
+- Auto-deploys are disabled by default in the blueprint; trigger deploys manually from Render or via a PR merge into deploy/production if you later enable it.
 
 ## Step 7 — Migrate to Single-Origin (later)
 - Convert SPA to Nginx Docker using Dockerfile.web

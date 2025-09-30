@@ -12,6 +12,7 @@ import {
 import { legacyWindowForBucket, bucketClasses } from '../lib/buckets';
 import { useCaseStats, useCases } from '../hooks/cases';
 import DashboardDebugPanel from './DashboardDebugPanel.jsx';
+import { API_BASE } from '../lib/api';
 
 // Always render these 5
 const ALL_COUNTIES = ['brazoria', 'fortbend', 'galveston', 'harris', 'jefferson'];
@@ -1597,7 +1598,7 @@ function ProbeSection({ county, countyKey, selectedDayLabel }) {
     </div>
   );
 
-  const base = '/api/dashboard';
+  const base = `${API_BASE}/dashboard`;
   const harrisOnly = (items = []) => items.find((x) => normCountyKey(x.county) === countyKey) || {};
 
   return (

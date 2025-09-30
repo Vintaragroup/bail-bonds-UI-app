@@ -5,13 +5,31 @@
 const RUNTIME_ENV = (typeof window !== 'undefined' && window.__ENV__) || {};
 // Resolution order:
 // 1) Runtime env from window.__ENV__.VITE_API_URL (injected by public/env.js)
-// 2) If dev build, allow build-time import.meta.env.VITE_API_URL
+// 2) Build-time import.meta.env.VITE_API_URL (works in prod builds too)
 // 3) Otherwise default to same-origin '/api' to work with reverse proxy
+const RUNTIME_API = RUNTIME_ENV && RUNTIME_ENV.VITE_API_URL;
+const hasRuntimeOverride = !!(RUNTIME_API && String(RUNTIME_API).trim() && String(RUNTIME_API).trim() !== '/api');
 const RAW_API_BASE =
-  (RUNTIME_ENV && RUNTIME_ENV.VITE_API_URL)
-  || (import.meta?.env?.DEV ? import.meta.env.VITE_API_URL : undefined)
+  (hasRuntimeOverride ? RUNTIME_API : undefined)
+  || (typeof import.meta !== 'undefined' ? import.meta.env?.VITE_API_URL : undefined)
   || '/api';
-const API_BASE = String(RAW_API_BASE).replace(/\/$/, ''); // normalize: no trailing slash
+export const API_BASE = String(RAW_API_BASE).replace(/\/$/, ''); // normalize: no trailing slash
+
+async function parseJsonResponse(res) {
+  const clone = res.clone();
+  try {
+    return await res.json();
+  } catch (e) {
+    // Provide a clearer message when the server returns HTML or plain text
+    let snippet = '';
+    try {
+      const text = await clone.text();
+      snippet = (text || '').slice(0, 160).replace(/\s+/g, ' ').trim();
+    } catch {}
+    const extra = snippet ? ` Snippet: ${snippet}` : '';
+    throw new Error(`Invalid JSON response.${extra}`);
+  }
+}
 
 async function httpGet(path) {
   const fullPath = path.startsWith('/') ? path : `/${path}`;
@@ -22,7 +40,7 @@ async function httpGet(path) {
     const text = await res.text().catch(() => '');
     throw new Error(`HTTP ${res.status} ${res.statusText}: ${text}`);
   }
-  return res.json();
+  return parseJsonResponse(res);
 }
 
 // ---- KPIs (booking-day based) ----
