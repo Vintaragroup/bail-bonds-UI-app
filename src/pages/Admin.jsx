@@ -1,4 +1,5 @@
 import { useMemo } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { PageHeader, SectionCard, SummaryStat, DataTable } from '../components/PageToolkit';
 import { useCases } from '../hooks/cases';
 
@@ -22,6 +23,7 @@ const USERS = [
 ];
 
 export default function Admin() {
+  const navigate = useNavigate();
   const jobStats = useMemo(() => {
     const successes = JOBS.filter((job) => job.status === 'success').length;
     const running = JOBS.filter((job) => job.status === 'running').length;
@@ -77,6 +79,7 @@ export default function Admin() {
             </button>
             <button
               type="button"
+              onClick={() => navigate('/auth/admin-users')}
               className="rounded-lg border border-slate-300 px-3 py-1.5 text-sm font-medium text-slate-600 hover:border-slate-400"
             >
               Invite user
