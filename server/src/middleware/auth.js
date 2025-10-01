@@ -49,14 +49,21 @@ function serializeUser(userDoc, decoded) {
 
 async function upsertUserProfile(decoded) {
   if (!decoded?.uid) return null;
+  const existing = await User.findOne({ uid: decoded.uid }).lean();
   const updates = {
     email: decoded.email?.toLowerCase() || undefined,
     emailVerified: decoded.email_verified || false,
     lastLoginAt: new Date(),
     displayName: decoded.name || undefined,
   };
+  // Promote invited users to active on successful login; new profiles default to active.
+  if (!existing) {
+    updates.status = 'active';
+  } else if (existing.status === 'invited') {
+    updates.status = 'active';
+  }
   const options = { new: true, upsert: true, setDefaultsOnInsert: true };
-  return User.findOneAndUpdate({ uid: decoded.uid }, updates, options).lean();
+  return User.findOneAndUpdate({ uid: decoded.uid }, { $set: updates }, options).lean();
 }
 
 export async function requireAuth(req, res, next) {

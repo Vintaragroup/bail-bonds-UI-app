@@ -788,6 +788,51 @@ export function AdminUserManagement({ onNavigate }: AdminUserManagementProps) {
                               </DropdownMenuItem>
                               <DropdownMenuSeparator />
                               <DropdownMenuItem
+                                disabled={manageDisabled || user.status === 'suspended' || user.status === 'deleted'}
+                                onClick={async () => {
+                                  if (!confirm(`Suspend ${user.email}? They won't be able to sign in until reactivated.`)) return;
+                                  try {
+                                    await updateUser.mutateAsync({ uid: user.uid, payload: { status: 'suspended' } });
+                                    pushToast({ variant: 'success', title: 'User suspended', message: `${user.email} cannot sign in.` });
+                                  } catch (e) {
+                                    pushToast({ variant: 'error', title: 'Suspend failed', message: 'Unable to suspend user.' });
+                                  }
+                                }}
+                              >
+                                <Shield className="mr-2 h-4 w-4" />
+                                Suspend user
+                              </DropdownMenuItem>
+                              <DropdownMenuItem
+                                disabled={manageDisabled || user.status !== 'suspended'}
+                                onClick={async () => {
+                                  try {
+                                    await updateUser.mutateAsync({ uid: user.uid, payload: { status: 'active' } });
+                                    pushToast({ variant: 'success', title: 'User reactivated', message: `${user.email} can sign in.` });
+                                  } catch (e) {
+                                    pushToast({ variant: 'error', title: 'Activate failed', message: 'Unable to activate user.' });
+                                  }
+                                }}
+                              >
+                                <UserCheck className="mr-2 h-4 w-4" />
+                                Activate user
+                              </DropdownMenuItem>
+                              <DropdownMenuItem
+                                disabled={manageDisabled || user.status === 'deleted'}
+                                onClick={async () => {
+                                  if (!confirm(`Archive ${user.email}? They'll be marked deleted but data retained.`)) return;
+                                  try {
+                                    await updateUser.mutateAsync({ uid: user.uid, payload: { status: 'deleted' } });
+                                    pushToast({ variant: 'success', title: 'User archived', message: `${user.email} marked deleted.` });
+                                  } catch (e) {
+                                    pushToast({ variant: 'error', title: 'Archive failed', message: 'Unable to archive user.' });
+                                  }
+                                }}
+                              >
+                                <UserX className="mr-2 h-4 w-4" />
+                                Archive user
+                              </DropdownMenuItem>
+                              <DropdownMenuSeparator />
+                              <DropdownMenuItem
                                 onClick={() => {
                                   navigator.clipboard.writeText(user.email || '');
                                 }}

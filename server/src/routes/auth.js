@@ -66,14 +66,19 @@ router.post('/session', async (req, res) => {
 
   try {
     const decoded = await firebaseAuth.verifyIdToken(idToken, true);
+    const existing = await User.findOne({ uid: decoded.uid }).lean();
     const updates = {
       email: decoded.email?.toLowerCase() || undefined,
       emailVerified: decoded.email_verified || false,
       displayName: decoded.name || undefined,
       lastLoginAt: new Date(),
     };
+    // If this is a first-time login or the user was invited, mark as active now.
+    if (!existing || existing.status === 'invited') {
+      updates.status = 'active';
+    }
     const options = { new: true, upsert: true, setDefaultsOnInsert: true };
-    const userDoc = await User.findOneAndUpdate({ uid: decoded.uid }, updates, options);
+    const userDoc = await User.findOneAndUpdate({ uid: decoded.uid }, { $set: updates }, options);
 
     await setSessionCookie(res, idToken);
     await recordAuthEvent('session_created', {
