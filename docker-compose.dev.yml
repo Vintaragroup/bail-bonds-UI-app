@@ -1,5 +1,11 @@
-version: '3.9'
 services:
+  mailhog:
+    # Local SMTP server for development/testing invites
+    image: mailhog/mailhog:latest
+    profiles: ["hotreload"]
+    ports:
+      - "1025:1025"   # SMTP
+      - "8025:8025"   # Web UI http://localhost:8025
   mongo:
     image: mongo:7
     ports:
@@ -7,6 +13,7 @@ services:
     volumes:
       - mongo-data:/data/db
   api:
+    profiles: ["static"]
     build:
       context: ./server
       dockerfile: Dockerfile
@@ -16,6 +23,14 @@ services:
       - MONGO_URI=${MONGO_URI:-mongodb://mongo:27017}
       - MONGO_DB=${MONGO_DB:-warrantdb}
       - WEB_ORIGIN=${WEB_ORIGIN:-http://localhost:5173}
+      # SMTP (optional; when set, server will email invite links)
+      - SMTP_HOST=${SMTP_HOST}
+      - SMTP_PORT=${SMTP_PORT:-587}
+      - SMTP_SECURE=${SMTP_SECURE:-false}
+      - SMTP_USER=${SMTP_USER}
+      - SMTP_PASS=${SMTP_PASS}
+      - EMAIL_FROM=${EMAIL_FROM}
+      - APP_NAME=${APP_NAME:-Bail Bonds Dashboard}
       - GOOGLE_APPLICATION_CREDENTIALS=/run/secrets/firebase
     volumes:
       - ./server/src:/app/src
@@ -27,7 +42,38 @@ services:
     secrets:
       - firebase
     command: node src/index.js
+  api-dev:
+    profiles: ["hotreload"]
+    image: node:20-alpine
+    working_dir: /app
+    environment:
+      - PORT=8080
+      - NODE_ENV=development
+      - MONGO_URI=${MONGO_URI:-mongodb://mongo:27017}
+      - MONGO_DB=${MONGO_DB:-warrantdb}
+      - WEB_ORIGIN=${WEB_ORIGIN:-http://localhost:5173}
+      # Default to local MailHog in the compose network
+      - SMTP_HOST=${SMTP_HOST:-mailhog}
+      - SMTP_PORT=${SMTP_PORT:-1025}
+      - SMTP_SECURE=${SMTP_SECURE:-false}
+      - SMTP_USER=${SMTP_USER}
+      - SMTP_PASS=${SMTP_PASS}
+      - EMAIL_FROM=${EMAIL_FROM:-no-reply@localhost}
+      - APP_NAME=${APP_NAME:-Bail Bonds Dashboard}
+      - GOOGLE_APPLICATION_CREDENTIALS=/run/secrets/firebase
+    command: ["sh", "-lc", "npm install --no-audit --no-fund && npm run dev"]
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./server:/app
+      - api_dev_node_modules:/app/node_modules
+    depends_on:
+      - mongo
+      - mailhog
+    secrets:
+      - firebase
   web:
+    profiles: ["static"]
     build:
       context: .
       dockerfile: Dockerfile.web
@@ -44,8 +90,30 @@ services:
       - ./public/env.js:/usr/share/nginx/html/env.js:ro
     depends_on:
       - api
+  web-dev:
+    profiles: ["hotreload"]
+    image: node:20-alpine
+    working_dir: /app
+    environment:
+      # Point the browser (Vite dev) to the API exposed on host:8080
+      - VITE_API_URL=${VITE_API_URL_DEV:-http://localhost:8080/api}
+      - VITE_FIREBASE_API_KEY=${VITE_FIREBASE_API_KEY}
+      - VITE_FIREBASE_AUTH_DOMAIN=${VITE_FIREBASE_AUTH_DOMAIN}
+      - VITE_FIREBASE_PROJECT_ID=${VITE_FIREBASE_PROJECT_ID}
+      - VITE_FIREBASE_APP_ID=${VITE_FIREBASE_APP_ID}
+      - VITE_FIREBASE_MEASUREMENT_ID=${VITE_FIREBASE_MEASUREMENT_ID}
+    command: sh -c "npm ci --legacy-peer-deps && npm run dev -- --host --port 5173"
+    ports:
+      - "5173:5173"
+    volumes:
+      - ./:/app
+      - web_dev_node_modules:/app/node_modules
+    depends_on:
+      - api-dev
 volumes:
   mongo-data:
+  web_dev_node_modules:
+  api_dev_node_modules:
 secrets:
   firebase:
     file: ./.secrets/asap-bail-books-firebase-adminsdk-fbsvc-71506047b4.json

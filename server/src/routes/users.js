@@ -2,6 +2,7 @@ import express from 'express';
 import { firebaseAuth } from '../lib/firebaseAdmin.js';
 import User from '../models/User.js';
 import { assertPermission, hasPermission } from './utils/authz.js';
+import { sendInviteEmail } from '../lib/mailer.js';
 
 const router = express.Router();
 
@@ -197,13 +198,22 @@ router.post('/', async (req, res) => {
   );
 
   let inviteLink = null;
+  let emailed = false;
   try {
     inviteLink = await firebaseAuth.generatePasswordResetLink(email);
   } catch (err) {
     console.warn('Failed to generate invite link', err?.message);
   }
 
-  res.status(created ? 201 : 200).json({ user: sanitizeUserDoc(doc), inviteLink });
+  if (inviteLink) {
+    try {
+      emailed = await sendInviteEmail({ to: email, inviteLink, displayName: updates.displayName });
+    } catch (err) {
+      console.warn('Failed to send invite email', err?.message);
+    }
+  }
+
+  res.status(created ? 201 : 200).json({ user: sanitizeUserDoc(doc), inviteLink, emailed, message: emailed ? 'Invitation email sent' : 'Invitation link generated' });
 });
 
 router.patch('/:uid', async (req, res) => {
