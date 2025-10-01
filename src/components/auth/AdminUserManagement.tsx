@@ -128,6 +128,8 @@ export function AdminUserManagement({ onNavigate }: AdminUserManagementProps) {
     counties: '',
   });
   const [inviteResult, setInviteResult] = useState<string | null>(null);
+  const [inviteStep, setInviteStep] = useState<'form' | 'confirm' | 'result'>('form');
+  const [inviteOutcome, setInviteOutcome] = useState<{ ok: boolean; email: string; link?: string; emailed?: boolean; error?: string } | null>(null);
   const [requestStatusFilter, setRequestStatusFilter] = useState<AccessRequestStatus | 'all'>('pending');
   const { pushToast } = useToast();
   const {
@@ -210,8 +212,7 @@ export function AdminUserManagement({ onNavigate }: AdminUserManagementProps) {
 
   const filteredUsers = users;
 
-  const handleInvite = async (event: React.FormEvent<HTMLFormElement>) => {
-    event.preventDefault();
+  const handleInvite = async () => {
     try {
       const requestedDepartments = parseList(inviteForm.departments);
       const requestedCounties = parseList(inviteForm.counties).map((value) => value.toLowerCase());
@@ -256,20 +257,21 @@ export function AdminUserManagement({ onNavigate }: AdminUserManagementProps) {
         counties: requestedCounties,
       };
       const result = await createUser.mutateAsync(payload);
-      if (result?.inviteLink) {
-        setInviteResult(result.inviteLink);
-      } else {
-        setInviteResult('Invite sent successfully.');
-      }
-      setInviteForm({ email: '', displayName: '', role: inviteForm.role, departments: '', counties: '' });
+      const link = result?.inviteLink as string | undefined;
+      const emailed = Boolean(result?.emailed);
+      setInviteOutcome({ ok: true, email: payload.email, link, emailed });
+      setInviteResult(link || 'Invite created');
       pushToast({
         variant: 'success',
         title: 'Invitation sent',
-        message: `An invite was sent to ${payload.email}.`,
+        message: emailed ? `An email was sent to ${payload.email}.` : `Invite link generated for ${payload.email}.`,
       });
+      setInviteStep('result');
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Failed to invite user';
       setInviteResult(message);
+      setInviteOutcome({ ok: false, email: inviteForm.email, error: message });
+      setInviteStep('result');
       pushToast({
         variant: 'error',
         title: 'Invite failed',
@@ -443,7 +445,17 @@ export function AdminUserManagement({ onNavigate }: AdminUserManagementProps) {
               View Audit Log
             </PillButton>
             {manageDisabled ? null : (
-              <Dialog open={inviteDialogOpen} onOpenChange={(open) => { setInviteDialogOpen(open); setInviteResult(null); }}>
+              <Dialog
+                open={inviteDialogOpen}
+                onOpenChange={(open) => {
+                  setInviteDialogOpen(open);
+                  if (open) {
+                    setInviteStep('form');
+                    setInviteOutcome(null);
+                    setInviteResult(null);
+                  }
+                }}
+              >
                 <DialogTrigger asChild>
                   <PillButton>
                     <Plus className="h-4 w-4 mr-2" />
@@ -451,115 +463,189 @@ export function AdminUserManagement({ onNavigate }: AdminUserManagementProps) {
                   </PillButton>
                 </DialogTrigger>
                 <DialogContent className="max-w-lg">
-                  <DialogHeader>
-                    <DialogTitle>Invite New User</DialogTitle>
-                    <DialogDescription>
-                      Send an invitation email and assign initial access.
-                    </DialogDescription>
-                  </DialogHeader>
-                  <form className="space-y-4" onSubmit={handleInvite}>
-                    <div className="space-y-2">
-                      <Label htmlFor="invite-email">Email address</Label>
-                      <Input
-                        id="invite-email"
-                        type="email"
-                        value={inviteForm.email}
-                        onChange={(event) => setInviteForm((prev) => ({ ...prev, email: event.target.value }))}
-                        placeholder="agent@example.com"
-                        required
-                      />
-                    </div>
-                    <div className="space-y-2">
-                      <Label htmlFor="invite-name">Display name</Label>
-                      <Input
-                        id="invite-name"
-                        value={inviteForm.displayName}
-                        onChange={(event) => setInviteForm((prev) => ({ ...prev, displayName: event.target.value }))}
-                        placeholder="Case Manager"
-                      />
-                    </div>
-                    <div className="space-y-2">
-                      <Label htmlFor="invite-role">Role</Label>
-                      <Select
-                        value={inviteForm.role}
-                        onValueChange={(value) => setInviteForm((prev) => ({ ...prev, role: value }))}
+                  {inviteStep === 'form' ? (
+                    <>
+                      <DialogHeader>
+                        <DialogTitle>Invite New User</DialogTitle>
+                        <DialogDescription>Send an invitation email and assign initial access.</DialogDescription>
+                      </DialogHeader>
+                      <form
+                        className="space-y-4"
+                        onSubmit={(e) => {
+                          e.preventDefault();
+                          setInviteStep('confirm');
+                        }}
                       >
-                        <SelectTrigger id="invite-role">
-                          <SelectValue placeholder="Select a role" />
-                        </SelectTrigger>
-                        <SelectContent>
-                          {roleOptions.map((role) => (
-                            <SelectItem key={role} value={role}>
-                              {role}
-                            </SelectItem>
-                          ))}
-                        </SelectContent>
-                      </Select>
-                    </div>
-                    <div className="space-y-2">
-                      <Label htmlFor="invite-departments">Departments (comma-separated)</Label>
-                      <Input
-                        id="invite-departments"
-                        value={inviteForm.departments}
-                        onChange={(event) => setInviteForm((prev) => ({ ...prev, departments: event.target.value }))}
-                        placeholder="Underwriting, Field Ops"
-                      />
-                      {metadataLoading ? (
-                        <p className="text-xs text-muted-foreground">Loading available departments…</p>
-                      ) : departmentOptions.length ? (
-                        <p className="text-xs text-muted-foreground">
-                          Available departments: {departmentOptions.join(', ')}
-                        </p>
-                      ) : null}
-                    </div>
-                    <div className="space-y-2">
-                      <Label htmlFor="invite-counties">Counties (comma-separated)</Label>
-                      <Input
-                        id="invite-counties"
-                        value={inviteForm.counties}
-                        onChange={(event) => setInviteForm((prev) => ({ ...prev, counties: event.target.value }))}
-                        placeholder="harris, brazoria"
-                      />
-                      <p className="text-xs text-muted-foreground">
-                        {metadataLoading
-                          ? 'Loading available counties…'
-                          : `Available counties: ${countyOptions.join(', ')}`}
-                      </p>
-                    </div>
-                    {inviteResult ? (
-                      <Card className="border-success/40 bg-success/5">
-                        <CardHeader className="pb-2">
-                          <CardTitle className="text-sm">Invitation</CardTitle>
-                          <CardDescription>
-                            {inviteResult.startsWith('http') ? (
-                              <a
-                                href={inviteResult}
-                                className="text-primary underline"
-                                target="_blank"
-                                rel="noreferrer"
-                              >
-                                {inviteResult}
-                              </a>
+                        <div className="space-y-2">
+                          <Label htmlFor="invite-email">Email address</Label>
+                          <Input
+                            id="invite-email"
+                            type="email"
+                            value={inviteForm.email}
+                            onChange={(event) => setInviteForm((prev) => ({ ...prev, email: event.target.value }))}
+                            placeholder="agent@example.com"
+                            required
+                          />
+                        </div>
+                        <div className="space-y-2">
+                          <Label htmlFor="invite-name">Display name</Label>
+                          <Input
+                            id="invite-name"
+                            value={inviteForm.displayName}
+                            onChange={(event) => setInviteForm((prev) => ({ ...prev, displayName: event.target.value }))}
+                            placeholder="Case Manager"
+                          />
+                        </div>
+                        <div className="space-y-2">
+                          <Label htmlFor="invite-role">Role</Label>
+                          <Select
+                            value={inviteForm.role}
+                            onValueChange={(value) => setInviteForm((prev) => ({ ...prev, role: value }))}
+                          >
+                            <SelectTrigger id="invite-role">
+                              <SelectValue placeholder="Select a role" />
+                            </SelectTrigger>
+                            <SelectContent>
+                              {roleOptions.map((role) => (
+                                <SelectItem key={role} value={role}>
+                                  {role}
+                                </SelectItem>
+                              ))}
+                            </SelectContent>
+                          </Select>
+                        </div>
+                        <div className="space-y-2">
+                          <Label htmlFor="invite-departments">Departments (comma-separated)</Label>
+                          <Input
+                            id="invite-departments"
+                            value={inviteForm.departments}
+                            onChange={(event) => setInviteForm((prev) => ({ ...prev, departments: event.target.value }))}
+                            placeholder="Underwriting, Field Ops"
+                          />
+                          {metadataLoading ? (
+                            <p className="text-xs text-muted-foreground">Loading available departments…</p>
+                          ) : departmentOptions.length ? (
+                            <p className="text-xs text-muted-foreground">Available departments: {departmentOptions.join(', ')}</p>
+                          ) : null}
+                        </div>
+                        <div className="space-y-2">
+                          <Label htmlFor="invite-counties">Counties (comma-separated)</Label>
+                          <Input
+                            id="invite-counties"
+                            value={inviteForm.counties}
+                            onChange={(event) => setInviteForm((prev) => ({ ...prev, counties: event.target.value }))}
+                            placeholder="harris, brazoria"
+                          />
+                          <p className="text-xs text-muted-foreground">
+                            {metadataLoading ? 'Loading available counties…' : `Available counties: ${countyOptions.join(', ')}`}
+                          </p>
+                        </div>
+                        <div className="flex justify-end gap-2 pt-2">
+                          <PillButton type="button" variant="outline" onClick={() => setInviteDialogOpen(false)}>
+                            Cancel
+                          </PillButton>
+                          <PillButton type="submit">Continue</PillButton>
+                        </div>
+                      </form>
+                    </>
+                  ) : inviteStep === 'confirm' ? (
+                    <>
+                      <DialogHeader>
+                        <DialogTitle>Confirm invitation</DialogTitle>
+                        <DialogDescription>Review the details before sending.</DialogDescription>
+                      </DialogHeader>
+                      <div className="space-y-3">
+                        <div className="space-y-1">
+                          <Label>Email</Label>
+                          <div className="rounded-md border bg-muted px-3 py-2 text-sm">{inviteForm.email}</div>
+                        </div>
+                        <div className="space-y-1">
+                          <Label>Display name</Label>
+                          <div className="rounded-md border bg-muted px-3 py-2 text-sm">{inviteForm.displayName || '—'}</div>
+                        </div>
+                        <div className="space-y-1">
+                          <Label>Role</Label>
+                          <div className="rounded-md border bg-muted px-3 py-2 text-sm">{inviteForm.role}</div>
+                        </div>
+                        <div className="space-y-1">
+                          <Label>Departments</Label>
+                          <div className="rounded-md border bg-muted px-3 py-2 text-sm">{inviteForm.departments || '—'}</div>
+                        </div>
+                        <div className="space-y-1">
+                          <Label>Counties</Label>
+                          <div className="rounded-md border bg-muted px-3 py-2 text-sm">{inviteForm.counties || '—'}</div>
+                        </div>
+                      </div>
+                      <div className="flex justify-between gap-2 pt-4">
+                        <PillButton type="button" variant="outline" onClick={() => setInviteStep('form')}>
+                          Back
+                        </PillButton>
+                        <PillButton type="button" onClick={handleInvite} disabled={createUser.isPending}>
+                          {createUser.isPending ? 'Sending…' : 'Send Invite'}
+                        </PillButton>
+                      </div>
+                    </>
+                  ) : (
+                    <>
+                      <DialogHeader>
+                        <DialogTitle>
+                          {inviteOutcome?.ok ? (
+                            <span className="inline-flex items-center gap-2 text-emerald-700">
+                              <CheckCircle2 className="h-5 w-5" /> Invitation sent
+                            </span>
+                          ) : (
+                            <span className="inline-flex items-center gap-2 text-rose-700">
+                              <XCircle className="h-5 w-5" /> Invite failed
+                            </span>
+                          )}
+                        </DialogTitle>
+                        <DialogDescription>
+                          {inviteOutcome?.ok ? (
+                            inviteOutcome?.emailed ? (
+                              <span>
+                                We emailed a sign-in link to <span className="font-medium">{inviteOutcome.email}</span>.
+                              </span>
                             ) : (
-                              inviteResult
-                            )}
-                          </CardDescription>
-                        </CardHeader>
-                      </Card>
-                    ) : null}
-                    <div className="flex justify-end gap-2 pt-2">
-                      <PillButton
-                        type="button"
-                        variant="outline"
-                        onClick={() => setInviteDialogOpen(false)}
-                      >
-                        Cancel
-                      </PillButton>
-                      <PillButton type="submit" disabled={createUser.isLoading}>
-                        {createUser.isLoading ? 'Sending…' : 'Send Invite'}
-                      </PillButton>
-                    </div>
-                  </form>
+                              <span>
+                                Share this one-time link with <span className="font-medium">{inviteOutcome.email}</span> to set a password.
+                              </span>
+                            )
+                          ) : (
+                            <span>{inviteOutcome?.error || 'Unable to send invitation.'}</span>
+                          )}
+                        </DialogDescription>
+                      </DialogHeader>
+                      {inviteOutcome?.ok && inviteOutcome?.link ? (
+                        <Card className="mt-3">
+                          <CardContent className="pt-4">
+                            <div className="flex items-center gap-2">
+                              <Input readOnly value={inviteOutcome.link} className="flex-1" />
+                              <PillButton type="button" variant="outline" onClick={() => inviteOutcome.link && navigator.clipboard.writeText(inviteOutcome.link)}>
+                                Copy link
+                              </PillButton>
+                            </div>
+                          </CardContent>
+                        </Card>
+                      ) : null}
+                      <div className="flex justify-end gap-2 pt-4">
+                        <PillButton
+                          type="button"
+                          variant="outline"
+                          onClick={() => {
+                            setInviteOutcome(null);
+                            setInviteResult(null);
+                            setInviteForm({ email: '', displayName: '', role: inviteForm.role, departments: '', counties: '' });
+                            setInviteStep('form');
+                          }}
+                        >
+                          Invite another user
+                        </PillButton>
+                        <PillButton type="button" onClick={() => setInviteDialogOpen(false)}>
+                          Done
+                        </PillButton>
+                      </div>
+                    </>
+                  )}
                 </DialogContent>
               </Dialog>
             )}
@@ -790,7 +876,7 @@ export function AdminUserManagement({ onNavigate }: AdminUserManagementProps) {
                             <PillButton
                               size="sm"
                               variant="outline"
-                              disabled={updateAccessRequest.isLoading}
+                              disabled={updateAccessRequest.isPending}
                               onClick={() => handleRequestUpdate(request, 'completed')}
                             >
                               <CheckCircle2 className="h-4 w-4 mr-2" />Approve
@@ -798,7 +884,7 @@ export function AdminUserManagement({ onNavigate }: AdminUserManagementProps) {
                             <PillButton
                               size="sm"
                               variant="outline"
-                              disabled={updateAccessRequest.isLoading}
+                              disabled={updateAccessRequest.isPending}
                               onClick={() => handleRequestUpdate(request, 'rejected')}
                             >
                               <XCircle className="h-4 w-4 mr-2" />Reject
@@ -904,8 +990,8 @@ export function AdminUserManagement({ onNavigate }: AdminUserManagementProps) {
                 <PillButton variant="outline" onClick={() => setEditUser(null)}>
                   Cancel
                 </PillButton>
-                <PillButton onClick={handleEditSave} disabled={updateUser.isLoading}>
-                  {updateUser.isLoading ? 'Saving…' : 'Save changes'}
+                <PillButton onClick={handleEditSave} disabled={updateUser.isPending}>
+                  {updateUser.isPending ? 'Saving…' : 'Save changes'}
                 </PillButton>
               </div>
             </div>

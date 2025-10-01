@@ -20,6 +20,21 @@ services:
         value: warrantdb
       - key: WEB_ORIGIN
         sync: false
+      # SMTP settings for invitation emails
+      - key: SMTP_HOST
+        sync: false
+      - key: SMTP_PORT
+        value: "587"
+      - key: SMTP_SECURE
+        value: "false"
+      - key: SMTP_USER
+        sync: false
+      - key: SMTP_PASS
+        sync: false
+      - key: EMAIL_FROM
+        sync: false
+      - key: APP_NAME
+        value: Bail Bonds Dashboard
       # If your server supports GOOGLE_APPLICATION_CREDENTIALS path pointing to a secret file,
       # create a Secret File named firebase.json in the Render Dashboard and set this path accordingly.
       - key: GOOGLE_APPLICATION_CREDENTIALS

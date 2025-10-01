@@ -20,6 +20,9 @@ Recognized variables:
 - DASHBOARD_TZ — Timezone used for booking-day windows (default: America/Chicago)
  - FIREBASE_PROJECT_ID — Firebase Admin project id (production)
  - GOOGLE_APPLICATION_CREDENTIALS — Path to Firebase Admin credentials file (e.g., /opt/render/project/secrets/firebase.json on Render)
+ - SMTP_HOST, SMTP_PORT, SMTP_SECURE, SMTP_USER, SMTP_PASS — SMTP settings to send invitation emails (optional)
+ - EMAIL_FROM — From-address used in invite emails (optional)
+ - APP_NAME — App name used in invite subject/body (optional)
 
 Notes:
 - The server also reads environment from the repo root .env (for convenience), but server/.env takes precedence during development.
@@ -65,6 +68,21 @@ curl -s http://localhost:8080/api/health | jq
 - Swagger UI:
 ```
 http://localhost:8080/api/docs
+
+## Invites email setup
+
+To send invite emails automatically, configure SMTP:
+
+- Locally (recommended): run MailHog and point the server to it
+	- If you use docker-compose with the "hotreload" profile, MailHog is included (SMTP at mailhog:1025, Web UI at http://localhost:8025)
+	- Otherwise, install MailHog and run it, then in `server/.env` set:
+		- `SMTP_HOST=localhost`, `SMTP_PORT=1025`, `SMTP_SECURE=false`, `EMAIL_FROM=no-reply@localhost`
+
+- Staging/Production: set real SMTP credentials via your platform secret manager
+	- `SMTP_HOST`, `SMTP_PORT`, `SMTP_SECURE`, `SMTP_USER`, `SMTP_PASS`, `EMAIL_FROM`
+	- Optional: `APP_NAME` for branding in subject/body
+
+If SMTP is not configured, the API will still generate an invite link and return it to the client; the UI shows a copyable link instead of email-sent.
 ```
 
 ## Behavior & reliability
