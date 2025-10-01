@@ -6,6 +6,13 @@ import { sendInviteEmail } from '../lib/mailer.js';
 
 const router = express.Router();
 
+// Helper to ensure async route errors are passed to Express error middleware (Express 4 doesn't catch promise rejections)
+function asyncHandler(fn) {
+  return function wrapped(req, res, next) {
+    Promise.resolve(fn(req, res, next)).catch(next);
+  };
+}
+
 const ALLOWED_STATUSES = ['active', 'suspended', 'invited', 'pending_mfa', 'deleted'];
 const DEPARTMENT_MANAGER_ASSIGNABLE_ROLES = ['DepartmentLead', 'Employee', 'Sales', 'BondClient'];
 
@@ -127,7 +134,7 @@ async function ensureFirebaseUser({ email, displayName }) {
   return { record, created: true };
 }
 
-router.get('/', async (req, res) => {
+router.get('/', asyncHandler(async (req, res) => {
   if (!hasPermission(req, 'users:manage') && !hasPermission(req, 'users:manage:department')) {
     assertPermission(req, 'users:manage');
   }
@@ -151,9 +158,9 @@ router.get('/', async (req, res) => {
   const query = conditions.length ? { $and: conditions } : {};
   const users = await User.find(query).sort({ createdAt: -1 }).lean();
   res.json({ users: users.map(sanitizeUserDoc) });
-});
+}));
 
-router.post('/', async (req, res) => {
+router.post('/', asyncHandler(async (req, res) => {
   const payload = req.body || {};
   const emailRaw = payload.email;
   if (!emailRaw || typeof emailRaw !== 'string') {
@@ -214,9 +221,9 @@ router.post('/', async (req, res) => {
   }
 
   res.status(created ? 201 : 200).json({ user: sanitizeUserDoc(doc), inviteLink, emailed, message: emailed ? 'Invitation email sent' : 'Invitation link generated' });
-});
+}));
 
-router.patch('/:uid', async (req, res) => {
+router.patch('/:uid', asyncHandler(async (req, res) => {
   const { uid } = req.params;
   if (!uid) {
     return res.status(400).json({ error: 'uid is required' });
@@ -305,9 +312,9 @@ router.patch('/:uid', async (req, res) => {
   }
 
   res.json({ user: sanitizeUserDoc(doc) });
-});
+}));
 
-router.post('/:uid/revoke', async (req, res) => {
+router.post('/:uid/revoke', asyncHandler(async (req, res) => {
   const { uid } = req.params;
   if (!uid) {
     return res.status(400).json({ error: 'uid is required' });
@@ -328,6 +335,6 @@ router.post('/:uid/revoke', async (req, res) => {
 
   await firebaseAuth.revokeRefreshTokens(uid);
   res.json({ ok: true });
-});
+}));
 
 export default router;

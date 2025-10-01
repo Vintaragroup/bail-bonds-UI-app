@@ -123,6 +123,12 @@ server.on('request', (req, res) => {
 });
 
 app.use((err, req, res, next) => {
-  console.error('Unhandled error:', err);
-  res.status(500).json({ ok: false, error: 'Internal server error' });
+  const status = Number(err?.statusCode || err?.status || 500);
+  const message =
+    status === 401 ? 'Unauthorized'
+    : status === 403 ? 'Forbidden'
+    : status === 400 ? (err?.message || 'Bad Request')
+    : 'Internal server error';
+  console.error('Unhandled error:', { status, message, err: err?.message });
+  res.status(status).json({ ok: false, error: message });
 });

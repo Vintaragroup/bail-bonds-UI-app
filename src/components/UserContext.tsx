@@ -21,6 +21,7 @@ import {
 import { firebaseAuthClient } from '../lib/firebaseClient';
 import type { UserProfile } from './ui/user-avatar';
 import { API_BASE } from '../lib/api';
+import { useQueryClient } from '@tanstack/react-query';
 
 type AuthenticatedUser = UserProfile & {
   uid: string;
@@ -134,6 +135,13 @@ export function UserProvider({ children }: { children: React.ReactNode }) {
   const [currentUser, setCurrentUser] = useState<AuthenticatedUser | null>(null);
   const [loading, setLoading] = useState<boolean>(true);
   const [error, setError] = useState<string | null>(null);
+  const queryClient = useQueryClient();
+
+  function invalidateAuthSensitiveQueries() {
+    try {
+      queryClient.invalidateQueries({ queryKey: ['users'] });
+    } catch {}
+  }
 
   const handleFirebaseUser = useCallback(async (fbUser: FirebaseUser | null) => {
     if (!fbUser) {
@@ -147,6 +155,7 @@ export function UserProvider({ children }: { children: React.ReactNode }) {
       await exchangeSession(idToken);
       const profile = await fetchProfile();
       setCurrentUser(profile);
+  invalidateAuthSensitiveQueries();
       setError(null);
     } catch (err) {
       console.error('Failed to sync Firebase session:', err);
@@ -174,6 +183,7 @@ export function UserProvider({ children }: { children: React.ReactNode }) {
       await exchangeSession(idToken);
       const profile = await fetchProfile();
       setCurrentUser(profile);
+  invalidateAuthSensitiveQueries();
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Failed to sign in';
       setError(message);
@@ -201,6 +211,7 @@ export function UserProvider({ children }: { children: React.ReactNode }) {
       await exchangeSession(idToken);
       const profile = await fetchProfile();
       setCurrentUser(profile);
+  invalidateAuthSensitiveQueries();
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Failed to sign in with provider';
       setError(message);
@@ -217,6 +228,7 @@ export function UserProvider({ children }: { children: React.ReactNode }) {
       await firebaseSignOut(firebaseAuthClient);
       setCurrentUser(null);
       setError(null);
+  invalidateAuthSensitiveQueries();
     } finally {
       setLoading(false);
     }
@@ -226,6 +238,7 @@ export function UserProvider({ children }: { children: React.ReactNode }) {
     try {
       const profile = await fetchProfile();
       setCurrentUser(profile);
+      invalidateAuthSensitiveQueries();
     } catch (err) {
       console.error('Failed to refresh profile:', err);
     }
@@ -260,6 +273,7 @@ export function UserProvider({ children }: { children: React.ReactNode }) {
             await exchangeSession(idToken);
             const profile = await fetchProfile();
             setCurrentUser(profile);
+            invalidateAuthSensitiveQueries();
             window.localStorage.removeItem('asapAuthEmail');
           })
           .catch((err) => {
