@@ -25,8 +25,12 @@ import { requireAuth } from './middleware/auth.js';
 
 const app = express();
 
+// Light request logger with sampling to reduce noise in production.
+const LOG_SAMPLE_RATE = Number(process.env.LOG_SAMPLE_RATE || (process.env.NODE_ENV === 'production' ? 0.1 : 1));
 app.use((req, _res, next) => {
-  console.log(`➡️  ${req.method} ${req.originalUrl}`);
+  if (Math.random() < LOG_SAMPLE_RATE || req.originalUrl?.startsWith('/api/health')) {
+    console.log(`➡️  ${req.method} ${req.originalUrl}`);
+  }
   next();
 });
 
