@@ -32,6 +32,7 @@ These windows are non-overlapping: 24h, 48h, and 72h are disjoint and contiguous
 
 - GET /api/dashboard/kpis
   - Counts: 24h, 48h, 72h, 7d, 30d using booking_dt.
+  - Also exposes threeToSeven (3–7d) when v2 buckets are available; falls back to legacy counting if coverage is low.
   - contacted24h: computed against 24h set.
   - perCountyBond: bond sums per county using preferred window list [24h, 48h, 72h, 7d] (first non-zero).
 
@@ -44,8 +45,8 @@ These windows are non-overlapping: 24h, 48h, and 72h are disjoint and contiguous
   - List of recent bookings by booking_dt in 24h window.
   - Sorted by booking_dt desc.
 
-- GET /api/dashboard/recent?limit=N
-  - List of bookings in 48–72h window (booking_dt ∈ [now−72h, now−48h)).
+- GET /api/dashboard/recent?limit=N[&window=(48h|72h|3d_7d)]
+  - List of bookings for the requested window; default behavior returns the combined 48–72h slice when `window` is omitted.
   - Sorted by booking_dt desc.
 
 - GET /api/dashboard/top?window=(24h|48h|72h|7d|30d)

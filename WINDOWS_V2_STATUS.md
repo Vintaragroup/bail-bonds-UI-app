@@ -1,6 +1,6 @@
 # Windows v2 Migration Status
 
-_Last updated: 2025-09-25_
+_Last updated: 2025-10-02_
 
 ## Executive Summary
 The dashboard has migrated from legacy calendar-day heuristic windows to a canonical bucket taxonomy (`time_bucket_v2`) guarded by the feature flag `USE_TIME_BUCKET_V2`. Validation now shows 1:1 correspondence between API KPIs, per-county stats, and direct MongoDB bucket aggregates. Coverage is 100% for the 7‑day diagnostic slice.
@@ -89,6 +89,7 @@ _No schema changes require reversal; the v2 fields are additive and safely ignor
 - 2025-09-24: Introduced feature flag + mapping utilities
 - 2025-09-25 (AM): Added diagnostics coverage facet & validation script
 - 2025-09-25 (PM): Switched on v2, validation green, documenting status (this file)
+ - 2025-10-02: Added KPI threeToSeven (3–7d), recent `?window=3d_7d` support, and UI KPI toggle (48–72h ↔ 3–7d); /health/buckets documented.
 
 ---
 _Questions or discrepancies: run the validator first; if green, attach example doc(s) with unexpected UI behavior._

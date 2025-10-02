@@ -42,6 +42,12 @@ npm run smoke:trends        # trends spans smoke (7,14,30)
 - `/api/dashboard/metrics` exposes in-memory route timing & variant counts.
 - Variant headers: `X-Top-Variant`, `X-New-Variant`, `X-Recent-Variant`, `X-PerCounty-Variant`, and `X-Path-Variant` (KPIs) allow fast-path validation.
 
+## New: KPI 3–7d and Recent window
+- API: `/api/dashboard/kpis` now includes `newCountsBooked.threeToSeven` (maps to `time_bucket_v2 = 3d_7d` or falls back to legacy when coverage is low).
+- API: `/api/dashboard/recent` supports `?window=3d_7d` in addition to the default combined mode.
+- UI: The third KPI card has a small toggle to switch between “48–72h” and “3–7d”.
+- Health: `/api/health/buckets` summarizes `time_bucket_v2` distribution across simple_* for quick scraper alignment checks.
+
 ## Future Enhancements (Optional)
 - Persist metrics snapshots.
 - Expand aggregated provider to additional windows on demand.
