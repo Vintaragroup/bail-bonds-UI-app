@@ -8,6 +8,7 @@ import {
   useCountyTrends,
   useNewToday,
   useRecent48to72,
+  useRecent,
 } from '../hooks/dashboard';
 import { legacyWindowForBucket, bucketClasses } from '../lib/buckets';
 import { useCaseStats, useCases } from '../hooks/cases';
@@ -250,7 +251,7 @@ function Sparkline({ values = [] }) {
   );
 }
 
-function KpiCard({ label, value, sublabel, tone = 'default', to }) {
+function KpiCard({ label, value, sublabel, tone = 'default', to, right }) {
   const base = 'rounded-2xl border shadow-sm p-4 bg-white';
   const tones = {
     default: '',
@@ -258,16 +259,21 @@ function KpiCard({ label, value, sublabel, tone = 'default', to }) {
     warn: 'ring-1 ring-amber-100',
     danger: 'ring-1 ring-red-100',
   };
-  const content = (
-    <div className={`${base} ${tones[tone]}`}>
-      <div className="text-xs font-semibold text-slate-500">{label}</div>
-      <div className="mt-1 flex items-baseline gap-2">
-        <div className="text-xl font-bold text-slate-800 sm:text-2xl">{value}</div>
-        {sublabel ? <div className="text-xs text-slate-500">{sublabel}</div> : null}
-      </div>
+  const ValueBlock = (
+    <div className="mt-1 flex items-baseline gap-2">
+      <div className="text-xl font-bold text-slate-800 sm:text-2xl">{value}</div>
+      {sublabel ? <div className="text-xs text-slate-500">{sublabel}</div> : null}
     </div>
   );
-  return to ? <Link to={to}>{content}</Link> : content;
+  return (
+    <div className={`${base} ${tones[tone]}`}>
+      <div className="flex items-center justify-between gap-2">
+        <div className="text-xs font-semibold text-slate-500">{label}</div>
+        {right ? <div className="shrink-0">{right}</div> : null}
+      </div>
+      {to ? <Link to={to} className="block">{ValueBlock}</Link> : ValueBlock}
+    </div>
+  );
 }
 
 // Root component (search for existing default export further below). We'll inject DebugPanel near top-level container.
@@ -370,7 +376,14 @@ export default function DashboardScreen() {
   const { data: perCounty, isLoading: perCountyLoading } = usePerCounty(valueWindow);
   const { data: countyTrends, isLoading: trendsLoading } = useCountyTrends(7);
   const { data: new24h, isLoading: new24Loading } = useNewToday('all');
-  const { data: recent48to72, isLoading: recentLoading } = useRecent48to72(10);
+  // Recent window toggle (default 48–72h); options: '48-72h' | '3-7d'
+  const [recentWindow, setRecentWindow] = useState('48-72h');
+  // KPI card toggle for the "New (48–72h)" card
+  const [kpiRecentWindow, setKpiRecentWindow] = useState('48-72h');
+  const { data: recent48to72, isLoading: recentLoadingLegacy } = useRecent48to72(10);
+  const { data: recentSelectable, isLoading: recentLoadingNew } = useRecent(recentWindow, 10);
+  const recentData = recentSelectable || recent48to72;
+  const recentLoading = (recentLoadingLegacy && !recentSelectable) || recentLoadingNew;
   const { data: caseStats } = useCaseStats({ staleTime: 120_000 });
   const [snapshotTab, setSnapshotTab] = useState('top');
   const [snapshotFilters, setSnapshotFilters] = useState({
@@ -488,10 +501,11 @@ export default function DashboardScreen() {
   }, [new24h]);
 
   const recentRaw = useMemo(() => {
-    if (Array.isArray(recent48to72?.items)) return recent48to72.items;
-    if (Array.isArray(recent48to72)) return recent48to72;
+    const src = recentData;
+    if (Array.isArray(src?.items)) return src.items;
+    if (Array.isArray(src)) return src;
     return [];
-  }, [recent48to72]);
+  }, [recentData]);
 
   const {
     data: attentionData,
@@ -542,12 +556,12 @@ export default function DashboardScreen() {
   );
   const recentSummary = useMemo(
     () =>
-      recent48to72?.summary || {
+      recentData?.summary || {
         totalCount: recentRaw.length,
         contacted: 0,
         uncontacted: recentRaw.length,
       },
-    [recent48to72, recentRaw.length]
+    [recentData, recentRaw.length]
   );
 
   const new24List = useMemo(
@@ -778,9 +792,10 @@ export default function DashboardScreen() {
         new24: kpiData.newCountsBooked?.today ?? 0,
         new48: kpiData.newCountsBooked?.yesterday ?? 0,
         new72: kpiData.newCountsBooked?.twoDaysAgo ?? 0,
+        new3to7: kpiData.newCountsBooked?.threeToSeven ?? 0,
         contacted24: kpiData.contacted24h ?? { contacted: 0, total: 0, rate: 0 },
       }
-    : { new24: 0, new48: 0, new72: 0, contacted24: { contacted: 0, total: 0, rate: 0 } };
+    : { new24: 0, new48: 0, new72: 0, new3to7: 0, contacted24: { contacted: 0, total: 0, rate: 0 } };
 
   // Remove global loading gate: render panels with their own lightweight loading states
 
@@ -891,7 +906,32 @@ export default function DashboardScreen() {
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
           <KpiCard label="New (24h)" value={kpis.new24} to="/cases?window=24h" />
           <KpiCard label="New (24–48h)" value={kpis.new48} to="/cases?window=48h" />
-          <KpiCard label="New (48–72h)" value={kpis.new72} to="/cases?window=72h" />
+          {/* Toggleable KPI: 48–72h ↔ 3–7d (controls inline in card header) */}
+          <KpiCard
+            label={kpiRecentWindow === '3-7d' ? 'New (3–7d)' : 'New (48–72h)'}
+            value={kpiRecentWindow === '3-7d' ? kpis.new3to7 : kpis.new72}
+            to={`/cases?window=${kpiRecentWindow === '3-7d' ? '3-7d' : '72h'}`}
+            right={
+              <div className="inline-flex gap-1">
+                <button
+                  type="button"
+                  className="px-2 py-1 text-[11px] rounded-md border bg-white hover:bg-gray-50 data-[active=true]:bg-blue-50 data-[active=true]:border-blue-300 data-[active=true]:text-blue-700"
+                  data-active={kpiRecentWindow === '48-72h'}
+                  onClick={(e) => { e.preventDefault(); setKpiRecentWindow('48-72h'); }}
+                >
+                  48–72h
+                </button>
+                <button
+                  type="button"
+                  className="px-2 py-1 text-[11px] rounded-md border bg-white hover:bg-gray-50 data-[active=true]:bg-blue-50 data-[active=true]:border-blue-300 data-[active=true]:text-blue-700"
+                  data-active={kpiRecentWindow === '3-7d'}
+                  onClick={(e) => { e.preventDefault(); setKpiRecentWindow('3-7d'); }}
+                >
+                  3–7d
+                </button>
+              </div>
+            }
+          />
           <KpiCard
             label="Contacted (24h)"
             value={`${kpis.contacted24.contacted}/${kpis.contacted24.total}`}
@@ -1027,7 +1067,52 @@ export default function DashboardScreen() {
             ) : null}
 
             {snapshotTab === 'new' ? <CountyTicker map={new24ByCounty} windowLabel="24h" /> : null}
-            {snapshotTab === 'recent' ? <CountyTicker map={recentByCounty} windowLabel="48-72h" /> : null}
+            {snapshotTab === 'recent' ? (
+              <div className="flex items-center gap-2 w-full">
+                <CountyTicker map={recentByCounty} windowLabel={recentWindow === '3-7d' ? '3-7d' : '48-72h'} />
+                <div className="ml-auto inline-flex gap-1">
+                  <button
+                    type="button"
+                    className="px-2 py-1 text-xs rounded-md border bg-white hover:bg-gray-50 data-[active=true]:bg-blue-50 data-[active=true]:border-blue-300 data-[active=true]:text-blue-700"
+                    data-active={recentWindow === '48-72h'}
+                    onClick={() => setRecentWindow('48-72h')}
+                  >
+                    48–72h
+                  </button>
+                  <button
+                    type="button"
+                    className="px-2 py-1 text-xs rounded-md border bg-white hover:bg-gray-50 data-[active=true]:bg-blue-50 data-[active=true]:border-blue-300 data-[active=true]:text-blue-700"
+                    data-active={recentWindow === '3-7d'}
+                    onClick={() => setRecentWindow('3-7d')}
+                  >
+                    3–7d
+                  </button>
+                </div>
+              </div>
+            ) : null}
+            {snapshotTab === 'recent' ? (
+              <div className="flex items-center gap-2">
+                <CountyTicker map={recentByCounty} windowLabel={recentWindow === '3-7d' ? '3-7d' : '48-72h'} />
+                <div className="ml-auto inline-flex gap-1">
+                  <button
+                    type="button"
+                    className="px-2 py-1 text-xs rounded-md border bg-white hover:bg-gray-50 data-[active=true]:bg-blue-50 data-[active=true]:border-blue-300 data-[active=true]:text-blue-700"
+                    data-active={recentWindow === '48-72h'}
+                    onClick={() => setRecentWindow('48-72h')}
+                  >
+                    48–72h
+                  </button>
+                  <button
+                    type="button"
+                    className="px-2 py-1 text-xs rounded-md border bg-white hover:bg-gray-50 data-[active=true]:bg-blue-50 data-[active=true]:border-blue-300 data-[active=true]:text-blue-700"
+                    data-active={recentWindow === '3-7d'}
+                    onClick={() => setRecentWindow('3-7d')}
+                  >
+                    3–7d
+                  </button>
+                </div>
+              </div>
+            ) : null}
 
             <div className="mt-3 overflow-x-auto">
               <table className="min-w-full text-sm">

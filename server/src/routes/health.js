@@ -256,4 +256,29 @@ r.get('/trends', async (req, res) => {
   }
 });
 
+// GET /dashboard/buckets — distribution of time_bucket_v2 across all simple_* (public health diagnostic)
+r.get('/buckets', async (req, res) => {
+  try {
+    const conn = mongoose.connection;
+    if (!conn || !conn.db) {
+      return res.status(503).json({ ok: false, error: 'DB not configured', ts: new Date().toISOString() });
+    }
+    const pipeline = [
+      // Anchor on simple_harris and union others with only the bucket field
+      ...unionSimple({}, { time_bucket_v2: 1 }),
+      { $group: { _id: '$time_bucket_v2', n: { $sum: 1 } } },
+      { $project: { _id: 0, bucket: '$_id', n: 1 } },
+      { $sort: { bucket: 1 } },
+    ];
+    const anchor = conn.db.collection('simple_harris');
+    const agg = anchor.aggregate(pipeline);
+    const cursor = agg.maxTimeMS ? agg.maxTimeMS(MAX_DB_MS) : agg;
+    const rows = await withTimeout(cursor.toArray(), MAX_DB_MS).catch(() => []);
+    res.json({ ok: true, buckets: rows, ts: new Date().toISOString() });
+  } catch (err) {
+    console.error('GET /dashboard/buckets error:', err);
+    res.status(500).json({ ok: false, error: 'Failed to aggregate buckets' });
+  }
+});
+
 export default r;

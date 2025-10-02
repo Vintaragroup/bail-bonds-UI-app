@@ -196,6 +196,37 @@ export function useRecent48to72(limit = 10, options = {}) {
 }
 
 /** -----------------------------
+ *  Recent (selectable window)
+ *  -----------------------------
+ *  Backend: GET /recent?window=(48h|72h|3d_7d)
+ *  Notes: Omitting window returns the legacy combined (24_48h + 48_72h) behavior.
+ */
+export function useRecent(window = '48-72h', limit = 10, options = {}) {
+  const agg = useOptionalDashboardAggregated();
+  const aggKeyMatch = window === '48-72h' && limit === 10;
+  const initial = aggKeyMatch ? agg?.data?.recent : undefined;
+  const enabled = !(agg && aggKeyMatch);
+  // Map UI window to API param
+  const apiWindow = (() => {
+    const w = String(window || '').toLowerCase();
+    if (w === '3-7d' || w === '3d_7d') return '3d_7d';
+    if (w === '72h') return '72h';
+    if (w === '48h') return '48h';
+    return '';
+  })();
+  const qs = apiWindow ? `&window=${encodeURIComponent(apiWindow)}` : '';
+  return useQuery({
+    queryKey: ['recent', window, limit],
+    queryFn: async () => getJSON(`/dashboard/recent?limit=${encodeURIComponent(limit)}${qs}`),
+    enabled,
+    initialData: initial,
+    staleTime: 30_000,
+    placeholderData: (previous) => previous ?? initial,
+    ...options,
+  });
+}
+
+/** -----------------------------
  *  County Trends (last N days)
  *  -----------------------------
  *  Backend: GET /trends?days=7
