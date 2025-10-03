@@ -82,7 +82,7 @@ _Last updated: 2025-01-15_
 - SLA monitoring: send metrics to observability stack (missed reminder dispatches, queue delays).
 
 #### 3.3.2 GPS Ping Verification Checklist
-- [ ] Confirm Redis/Bull queue configuration in dev and staging with `checkin:gps` workers registered and processing heartbeats.
+- [ ] Confirm Redis/Bull queue configuration in dev and staging with `checkins_gps` workers registered and processing heartbeats.
 - [ ] Add automated health probes (e.g., `/api/health` extension) that validate queue connectivity and surface last successful ping timestamp.
 - [ ] Create a gpsEnabled check-in in dev, verify three daily ping jobs get enqueued with correct client timezone metadata, and snapshot job IDs in the document.
 - [ ] Run manual worker test to simulate provider callback (mock GPS payload) and ensure `CheckInPingLog` persists location, status transition, and audit trail.
@@ -93,8 +93,11 @@ _Last updated: 2025-01-15_
 #### 3.3.3 Immediate Actions
 - [x] Add Redis service to `docker-compose.dev.yml` + staging infra plan, documenting ports/credentials.
 - [x] Scaffold `jobs/checkins.queue.js` with placeholder workers and logging (no-op handler) to unblock queue health checks.
-- [ ] Define `/api/health` extension contract for queue metrics and coordinate with ops for alert thresholds.
+- [x] Define `/api/health` extension contract for queue metrics and coordinate with ops for alert thresholds.
 
+- [ ] Add `/api/health` extension reporting Redis connectivity and last GPS job heartbeat.
+- [ ] Implement scheduled GPS ping enqueue service (3x per day default) with config stored on `CheckIn`.
+- [ ] Capture screenshots/log snippets (queue metrics, sample ping log) for SOC2 evidence once scheduling runs.
 ### 3.4 Notifications & Reminders
 1. Hook into messaging provider (Twilio/SendGrid) once selected.
 2. Templates: reminder email/SMS, missed check-in alert, manual ping instructions.
@@ -191,3 +194,5 @@ To make supervision more flexible while keeping a strong audit trail, support ad
 - **2025-01-15:** Extended `CheckIn` schema (timezone, officer, reminders, GPS), added `CheckInPing` model, upgraded `/api/checkins` filters & stats, and introduced new detail/timeline/create/update/manual-ping endpoints.
 - **2025-01-15:** Documented new API routes/schemas in `openapi.yaml`.
 - **2025-01-15:** Added roadmap for geofenced auto check-ins, voice biometrics, QR/kiosk scans, smart SMS workflows, and hardware tracker integration.
+- _2025-10-03:_ Added `/api/health` queue metrics, auto-scheduling placeholder (3x per day) and case-level ping button scaffolding; next up: real cadence + evidence capture.
+

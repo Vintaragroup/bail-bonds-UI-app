@@ -20,6 +20,7 @@ Recognized variables:
 - DASHBOARD_TZ — Timezone used for booking-day windows (default: America/Chicago)
 - REDIS_URL — Redis connection string for BullMQ queues (default: redis://localhost:6379/0)
 - QUEUE_HEARTBEAT_MS, MESSAGING_QUEUE_CONCURRENCY — Optional queue tuning knobs
+- CHECKINS_GPS_INTERVAL_MINUTES — Minutes between auto-scheduled GPS pings in dev/test (default: 5)
 - FIREBASE_PROJECT_ID — Firebase Admin project id (production)
 - GOOGLE_APPLICATION_CREDENTIALS — Path to Firebase Admin credentials file (e.g., /opt/render/project/secrets/firebase.json on Render)
 - TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN, TWILIO_MESSAGING_SERVICE_SID — Twilio Programmable Messaging credentials

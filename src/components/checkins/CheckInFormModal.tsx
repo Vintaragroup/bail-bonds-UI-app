@@ -84,7 +84,7 @@ export function CheckInFormModal({
                 <SelectTrigger id="client">
                   <SelectValue placeholder="Select a client" />
                 </SelectTrigger>
-                <SelectContent>
+                <SelectContent className="max-h-60 overflow-y-auto">
                   {clients.map((client) => (
                     <SelectItem key={client.id} value={client.id}>
                       {client.name}
@@ -100,7 +100,7 @@ export function CheckInFormModal({
                 <SelectTrigger id="officer">
                   <SelectValue placeholder="Select officer" />
                 </SelectTrigger>
-                <SelectContent>
+                <SelectContent className="max-h-60 overflow-y-auto">
                   {officers.map((officer) => (
                     <SelectItem key={officer.id} value={officer.id}>
                       {officer.name}
@@ -175,6 +175,7 @@ export function CheckInFormModal({
                 <p className="text-xs text-slate-500">Send email/SMS reminders before the check-in.</p>
               </div>
               <Switch
+                className="border border-slate-300"
                 checked={form.remindersEnabled}
                 onCheckedChange={(checked) => handleChange('remindersEnabled', Boolean(checked))}
               />
@@ -185,7 +186,11 @@ export function CheckInFormModal({
                 <p className="text-sm font-medium text-slate-900">GPS tracking</p>
                 <p className="text-xs text-slate-500">Ping client device up to three times per day.</p>
               </div>
-              <Switch checked={form.gpsEnabled} onCheckedChange={(checked) => handleChange('gpsEnabled', Boolean(checked))} />
+              <Switch
+                className="border border-slate-300"
+                checked={form.gpsEnabled}
+                onCheckedChange={(checked) => handleChange('gpsEnabled', Boolean(checked))}
+              />
             </div>
 
             {form.gpsEnabled ? (

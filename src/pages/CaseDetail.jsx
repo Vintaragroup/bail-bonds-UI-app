@@ -20,6 +20,7 @@ import {
   useRunCaseEnrichment,
   useSelectCaseEnrichment,
 } from '../hooks/cases';
+import { useCheckins, useTriggerCheckInPing } from '../hooks/checkins';
 import { useToast } from '../components/ToastContext';
 import { stageLabel } from '../lib/stage';
 import { useUser } from '../components/UserContext';
@@ -121,6 +122,7 @@ export default function CaseDetail() {
   const { data: meta } = useCaseMeta();
   const { data: messagesData, isLoading: messagesLoading, isError: messagesError } = useCaseMessages(caseId);
   const { data: activityData, isLoading: activityLoading, isError: activityError } = useCaseActivity(caseId);
+  const { data: caseCheckinsData } = useCheckins({ scope: 'all', caseId }, { enabled: Boolean(caseId) });
   const { currentUser } = useUser();
 
   const updateCrm = useUpdateCaseCrm({
@@ -352,6 +354,47 @@ export default function CaseDetail() {
     if (!phone || typeof phone !== 'string') return '';
     return phone;
   }, [data?.crm_details?.phone, data?.phone, data?.primary_phone]);
+  const messagePhoneOptions = useMemo(() => {
+    const options = [];
+    const seen = new Set();
+    const push = (value, label) => {
+      if (!value || typeof value !== 'string') return;
+      const digits = value.replace(/[^0-9]/g, '');
+      if (digits.length < 10) return;
+      const withoutCountry = digits.startsWith('1') ? digits.slice(1) : digits;
+      const e164 = `+1${withoutCountry}`;
+      if (seen.has(e164)) return;
+      seen.add(e164);
+      options.push({ label, value: e164 });
+    };
+
+    push(data?.crm_details?.phone, data?.full_name ? `${data.full_name} (CRM)` : 'Client phone');
+    push(data?.phone, 'Case record phone');
+    push(data?.primary_phone, 'Primary phone');
+
+    if (Array.isArray(data?.crm_details?.contacts)) {
+      data.crm_details.contacts.forEach((contact, index) => {
+        push(contact?.phone, contact?.name ? contact.name : `Contact ${index + 1}`);
+      });
+    }
+    if (Array.isArray(data?.crm_details?.references)) {
+      data.crm_details.references.forEach((ref, index) => {
+        push(ref?.phone, ref?.name ? ref.name : `Reference ${index + 1}`);
+      });
+    }
+
+    return options;
+  }, [
+    data?.crm_details?.contacts,
+    data?.crm_details?.phone,
+    data?.crm_details?.references,
+    data?.full_name,
+    data?.phone,
+    data?.primary_phone,
+  ]);
+  const caseCheckins = Array.isArray(caseCheckinsData?.items) ? caseCheckinsData.items : [];
+  const gpsCheckins = caseCheckins.filter((checkin) => Boolean(checkin?.gpsEnabled));
+  const triggerPing = useTriggerCheckInPing();
   const { data: enrichmentProvidersData } = useEnrichmentProviders();
   const providerOptions = Array.isArray(enrichmentProvidersData?.providers)
     ? enrichmentProvidersData.providers
@@ -370,6 +413,54 @@ export default function CaseDetail() {
       setSelectedProviderId(defaultProviderId);
     }
   }, [providerOptions, selectedProviderId, defaultProviderId]);
+
+  const handleMessageCase = () => {
+    if (!data) return;
+    const identifier = data.case_number || caseId;
+    if (!identifier) {
+      pushToast({ variant: 'error', title: 'Missing case number', message: 'Unable to open composer without a case number.' });
+      return;
+    }
+    if (!messagePhoneOptions.length) {
+      pushToast({ variant: 'warning', title: 'No phone number on file', message: 'Add a mobile number in CRM or enrichment before sending an SMS.' });
+      return;
+    }
+
+    const params = new URLSearchParams({ caseId: identifier, to: messagePhoneOptions[0].value });
+    navigate(`/messages?${params.toString()}`);
+  };
+
+  const handlePingNow = () => {
+    if (!gpsCheckins.length) {
+      pushToast({ variant: 'warning', title: 'No GPS check-ins', message: 'Enable GPS on a check-in before triggering a ping.' });
+      return;
+    }
+
+    const targetEntry = gpsCheckins.reduce((best, current) => {
+      const ts = current?.dueAt ? new Date(current.dueAt).getTime() : Number.POSITIVE_INFINITY;
+      if (!Number.isFinite(ts)) return best;
+      if (!best) return { item: current, ts };
+      return ts < best.ts ? { item: current, ts } : best;
+    }, null);
+
+    const targetCheckIn = targetEntry?.item || gpsCheckins[0];
+    if (!targetCheckIn?.id) {
+      pushToast({ variant: 'error', title: 'Ping failed', message: 'Unable to determine which check-in to ping.' });
+      return;
+    }
+
+    triggerPing.mutate(targetCheckIn.id, {
+      onSuccess: () => {
+        pushToast({ variant: 'success', title: 'Ping queued', message: 'Manual GPS ping has been queued.' });
+        queryClient.invalidateQueries({ queryKey: ['checkins'] });
+        queryClient.invalidateQueries({ queryKey: ['checkins', 'detail', targetCheckIn.id] });
+        queryClient.invalidateQueries({ queryKey: ['checkins', 'timeline', targetCheckIn.id] });
+      },
+      onError: (err) => {
+        pushToast({ variant: 'error', title: 'Ping failed', message: err?.message || 'Unable to queue GPS ping.' });
+      },
+    });
+  };
 
   const defaultEnrichmentInput = useMemo(() => {
     const nameParts = splitCaseName(data?.full_name || '');
@@ -2043,6 +2134,21 @@ export default function CaseDetail() {
         subtitle={data.case_number ? `Case #${data.case_number}` : 'Full record overview'}
         actions={(
           <div className="flex gap-2">
+            <button
+              type="button"
+              onClick={handlePingNow}
+              disabled={triggerPing.isPending}
+              className="rounded-lg border border-emerald-600 bg-emerald-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-emerald-700 disabled:cursor-not-allowed disabled:opacity-60"
+            >
+              {triggerPing.isPending ? 'Pinging…' : 'Ping now'}
+            </button>
+            <button
+              type="button"
+              onClick={handleMessageCase}
+              className="rounded-lg border border-blue-600 bg-blue-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-blue-700"
+            >
+              Message client
+            </button>
             <button
               type="button"
               onClick={() => refetch()}

@@ -1,5 +1,7 @@
 import { Router } from 'express';
 import mongoose from 'mongoose';
+import { getRedisConnection } from '../lib/redis.js';
+import { getLastGpsJobHeartbeat } from '../jobs/checkins.js';
 
 const r = Router();
 
@@ -132,6 +134,26 @@ r.get('/', async (req, res) => {
       }
     }
 
+    let redisInfo = { status: 'unavailable' };
+    try {
+      const redis = getRedisConnection();
+      const pingStart = Date.now();
+      await withTimeout(redis.ping(), Math.min(1000, timeLeft() || 1000));
+      redisInfo = { status: 'ok', ping_ms: Date.now() - pingStart };
+    } catch (err) {
+      redisInfo = { status: 'error', error: err?.message || 'redis_ping_failed' };
+    }
+
+    const gpsHeartbeat = getLastGpsJobHeartbeat();
+    const lastJobDate = gpsHeartbeat.lastJobAt ? new Date(gpsHeartbeat.lastJobAt) : null;
+    const gpsInfo = {
+      last_job_at: gpsHeartbeat.lastJobAt || null,
+      age_seconds: lastJobDate && !Number.isNaN(lastJobDate.getTime())
+        ? Math.floor((Date.now() - lastJobDate.getTime()) / 1000)
+        : null,
+      meta: gpsHeartbeat.lastJobMeta || null,
+    };
+
     res.json({
       ok: true,
       uptime_ms: Date.now() - started,
@@ -140,6 +162,10 @@ r.get('/', async (req, res) => {
       warnings,
       verbose,
       budget_ms: HEALTH_OVERALL_BUDGET_MS,
+      queues: {
+        redis: redisInfo,
+        gps: gpsInfo,
+      },
       ts: new Date().toISOString(),
     });
   } catch (err) {

@@ -7,6 +7,7 @@ import User from '../models/User.js';
 import { filterByDepartment } from './utils/authz.js';
 import { assertPermission as ensurePermission } from './utils/authz.js';
 import { getGpsQueue } from '../jobs/index.js';
+import { refreshGpsSchedule } from '../services/checkinsQueueService.js';
 
 const r = Router();
 const MAX_DB_MS = 5000;
@@ -212,6 +213,15 @@ r.get('/', async (req, res) => {
 
     const { start, end, includeDone, overdueOnly } = dateRangeForScope(scope);
     const queryFilter = { ...officerFilter, ...searchFilter };
+
+    const caseIdParam = typeof req.query.caseId === 'string' ? req.query.caseId.trim() : '';
+    if (caseIdParam) {
+      if (mongoose.Types.ObjectId.isValid(caseIdParam)) {
+        queryFilter.caseId = new mongoose.Types.ObjectId(caseIdParam);
+      } else {
+        queryFilter['meta.caseNumber'] = caseIdParam;
+      }
+    }
 
     if (overdueOnly && start) {
       queryFilter.dueAt = { $lt: start };
@@ -610,7 +620,15 @@ r.post('/', async (req, res) => {
     });
 
     const saved = await document.save();
-    res.status(201).json({ checkIn: normalize(saved.toObject()) });
+
+    try {
+      await refreshGpsSchedule(saved._id);
+    } catch (err) {
+      console.error('checkins schedule refresh error', err?.message || err);
+    }
+
+    const refreshed = await CheckIn.findById(saved._id).lean().catch(() => null);
+    res.status(201).json({ checkIn: normalize(refreshed || saved.toObject()) });
   } catch (err) {
     console.error('POST /checkins error', err);
     if (err?.statusCode) {
@@ -641,7 +659,7 @@ r.put('/:id', async (req, res) => {
     }
 
     const doc = await withTimeout(
-      CheckIn.findByIdAndUpdate(req.params.id, { $set: update }, { new: true }).lean(),
+      CheckIn.findByIdAndUpdate(req.params.id, { $set: update }, { new: true }),
       MAX_DB_MS
     ).catch((err) => {
       console.error('checkins update error', err?.message);
@@ -650,7 +668,15 @@ r.put('/:id', async (req, res) => {
 
     if (!doc) return res.status(404).json({ error: 'Check-in not found' });
 
-    res.json({ checkIn: normalize(doc) });
+    try {
+      await refreshGpsSchedule(doc._id);
+    } catch (err) {
+      console.error('checkins schedule refresh error', err?.message || err);
+    }
+
+    const refreshed = await CheckIn.findById(doc._id).lean().catch(() => doc.toObject());
+
+    res.json({ checkIn: normalize(refreshed) });
   } catch (err) {
     console.error('PUT /checkins/:id error', err);
     res.status(500).json({ error: 'Internal server error' });

@@ -1,6 +1,7 @@
 import mongoose from 'mongoose';
 import Message from '../models/Message.js';
 import CaseAudit from '../models/CaseAudit.js';
+import Case from '../models/Case.js';
 import { getMessagingQueue } from '../jobs/messaging.js';
 import { getTwilioClient, getMessagingServiceSid, getStatusCallbackUrl } from '../lib/messaging/twilio.js';
 
@@ -15,8 +16,16 @@ function toObjectId(id) {
   return null;
 }
 
+async function resolveCaseObjectId(caseId) {
+  const direct = toObjectId(caseId);
+  if (direct) return direct;
+  if (!caseId) return null;
+  const doc = await Case.findOne({ case_number: caseId }).select({ _id: 1 }).lean();
+  return doc?._id || null;
+}
+
 export async function enqueueOutboundMessage({ caseId, to, body, actor, meta }) {
-  const objectId = toObjectId(caseId);
+  const objectId = await resolveCaseObjectId(caseId);
   if (!objectId) {
     throw new Error('Invalid case id provided');
   }
@@ -114,7 +123,7 @@ export async function processOutboundMessageJob(data) {
 export async function listMessages({ caseId, limit = 50 }) {
   const filter = {};
   if (caseId) {
-    const id = toObjectId(caseId);
+    const id = await resolveCaseObjectId(caseId);
     if (!id) {
       throw new Error('Invalid case id');
     }
@@ -128,7 +137,7 @@ export async function listMessages({ caseId, limit = 50 }) {
 }
 
 export async function resendMessage({ caseId, messageId, actor }) {
-  const caseObjectId = toObjectId(caseId);
+  const caseObjectId = await resolveCaseObjectId(caseId);
   if (!caseObjectId) {
     throw new Error('Invalid case id');
   }

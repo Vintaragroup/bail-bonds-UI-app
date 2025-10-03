@@ -1,4 +1,5 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
+import { useSearchParams } from 'react-router-dom';
 import { useMessages, useSendMessage } from '../hooks/messages.js';
 import { PageHeader, PageToolbar, SectionCard, DataTable, FilterPills } from '../components/PageToolkit';
 
@@ -29,6 +30,13 @@ const MOCK_TEMPLATES = [
   { id: 'TPL-03', name: 'Missed Check-in', channel: 'sms', body: 'Hi ${name}, we missed you at today\'s check-in. Reply or call us.' },
 ];
 
+function normalizeUsE164(value) {
+  const digits = String(value || '').replace(/[^0-9]/g, '');
+  if (!digits) return '+1';
+  const withoutCountry = digits.startsWith('1') ? digits.slice(1) : digits;
+  return `+1${withoutCountry}`;
+}
+
 function statusBadgeClass(status) {
   switch (status) {
     case 'failed':
@@ -46,20 +54,43 @@ function statusBadgeClass(status) {
 }
 
 export default function Messages() {
+  const [searchParams] = useSearchParams();
+  const initialCaseIdParam = searchParams.get('caseId') || '';
+  const initialToParam = searchParams.get('to') || '';
+  const initialBodyParam = searchParams.get('body') || '';
+
   const [direction, setDirection] = useState('all');
   const [channel, setChannel] = useState('all');
   const [status, setStatus] = useState('all');
-  const [caseIdFilter, setCaseIdFilter] = useState('');
-  const [showComposer, setShowComposer] = useState(false);
-  const [composeCaseId, setComposeCaseId] = useState('');
-  const [composeTo, setComposeTo] = useState('');
-  const [composeBody, setComposeBody] = useState('');
+  const [caseIdFilter, setCaseIdFilter] = useState(initialCaseIdParam);
+  const [showComposer, setShowComposer] = useState(Boolean(initialCaseIdParam || initialToParam || initialBodyParam));
+  const [composeCaseId, setComposeCaseId] = useState(initialCaseIdParam || '');
+  const [composeTo, setComposeTo] = useState(normalizeUsE164(initialToParam));
+  const [composeBody, setComposeBody] = useState(initialBodyParam || '');
 
   const { data: apiMessages = [], isLoading, isFetching } = useMessages({
     caseId: caseIdFilter || undefined,
     limit: 100,
   });
   const sendMessage = useSendMessage();
+
+  useEffect(() => {
+    if (initialCaseIdParam) {
+      setCaseIdFilter(initialCaseIdParam);
+      setComposeCaseId(initialCaseIdParam);
+    }
+    if (initialToParam) {
+      setComposeTo(normalizeUsE164(initialToParam));
+    }
+    if (initialBodyParam) {
+      setComposeBody(initialBodyParam);
+    }
+    if (initialCaseIdParam || initialToParam || initialBodyParam) {
+      setShowComposer(true);
+    }
+    // we only want to run this effect once on mount with the initial query snapshot
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const filteredMessages = useMemo(() => {
     return apiMessages.filter((msg) => {
@@ -86,7 +117,7 @@ export default function Messages() {
 
   const handleComposeSubmit = (event) => {
     event.preventDefault();
-    if (!composeCaseId || !composeTo || !composeBody) return;
+    if (!composeCaseId || !composeBody.trim() || composeTo === '+1') return;
     sendMessage.mutate(
       {
         caseId: composeCaseId,
@@ -199,7 +230,7 @@ export default function Messages() {
                 type="tel"
                 className="rounded-lg border border-slate-300 px-3 py-2 text-sm"
                 value={composeTo}
-                onChange={(e) => setComposeTo(e.target.value)}
+                onChange={(e) => setComposeTo(normalizeUsE164(e.target.value))}
                 placeholder="+15551234567"
                 required
               />
@@ -261,8 +292,9 @@ export default function Messages() {
               ),
             },
           ]}
-          rows={filteredMessages.map((msg) => ({
+          rows={filteredMessages.map((msg, index) => ({
             ...msg,
+            id: msg.id || msg._id || msg.providerMessageId || `${msg.caseId || 'row'}-${index}`,
             createdAt: msg.createdAt || msg.sentAt || msg.deliveredAt,
             caseId: msg.caseId || msg.meta?.caseId || '—',
           }))}

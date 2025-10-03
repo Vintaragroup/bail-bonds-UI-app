@@ -55,7 +55,7 @@ _Last updated: 2025-10-02_
 - Clarify retention requirements with compliance (court admissibility, redaction rules, subpoena process).
 
 ## 4. Verification Checklist
-- [ ] Outbound SMS from UI reaches provider sandbox number with correct template interpolation.
+- [ ] Outbound SMS from UI reaches provider sandbox number with correct template interpolation. *(Blocked by US A2P 10DLC registration – Twilio returning error 30034 as of 2025-10-03.)*
 - [ ] Inbound reply creates/updates thread, visible within 30 seconds in `Messages` page.
 - [ ] Delivery receipt transitions message status from `queued` → `sent` → `delivered` (or `failed`) and logs event payload.
 - [ ] Check-in reminder flow can enqueue and dispatch an SMS, recording ping association.
@@ -65,6 +65,7 @@ _Last updated: 2025-10-02_
 ## 5. Progress Log
 - _2025-10-02:_ Documented current gaps and end-to-end task list; awaiting provider selection to begin implementation.
 - _2025-10-02:_ Wired Twilio messaging queue + REST endpoints, added `/messages/send` composer, and updated docs; awaiting sandbox credentials and thread view implementation.
+- _2025-10-03:_ Prefilled messaging composer with query params, added case-level "Message client" shortcut, awaiting A2P approval for live delivery.
 ## 6. Immediate Next Steps
 - [x] Draft provider decision brief comparing Twilio vs. alternatives with compliance requirements and submit for approval.
 - [x] Design updated messaging API surface (new `/api/messages` + composer endpoint) mapping to existing `Message` schema and case audit trail.
