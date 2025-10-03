@@ -195,4 +195,5 @@ To make supervision more flexible while keeping a strong audit trail, support ad
 - **2025-01-15:** Documented new API routes/schemas in `openapi.yaml`.
 - **2025-01-15:** Added roadmap for geofenced auto check-ins, voice biometrics, QR/kiosk scans, smart SMS workflows, and hardware tracker integration.
 - _2025-10-03:_ Added `/api/health` queue metrics, auto-scheduling placeholder (3x per day) and case-level ping button scaffolding; next up: real cadence + evidence capture.
+- _2025-10-03:_ Added case-level Check-ins tab with manual ping controls and GPS queue heartbeat reporting; next: production cadence + SOC2 evidence.
 

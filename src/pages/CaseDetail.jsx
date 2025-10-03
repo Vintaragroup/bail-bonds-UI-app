@@ -103,6 +103,7 @@ const createEmptyCrmDetails = () => ({
 
 const TABS = [
   { id: 'overview', label: 'Overview' },
+  { id: 'checkins', label: 'Check-ins' },
   { id: 'checklist', label: 'Checklist' },
   { id: 'crm', label: 'CRM' },
   { id: 'enrichment', label: 'Enrichment' },
@@ -430,6 +431,24 @@ export default function CaseDetail() {
     navigate(`/messages?${params.toString()}`);
   };
 
+  const queuePingForCheckIn = (checkInId) => {
+    if (!checkInId) {
+      pushToast({ variant: 'error', title: 'Ping failed', message: 'Unable to determine which check-in to ping.' });
+      return;
+    }
+    triggerPing.mutate(checkInId, {
+      onSuccess: () => {
+        pushToast({ variant: 'success', title: 'Ping queued', message: 'Manual GPS ping has been queued.' });
+        queryClient.invalidateQueries({ queryKey: ['checkins'] });
+        queryClient.invalidateQueries({ queryKey: ['checkins', 'detail', checkInId] });
+        queryClient.invalidateQueries({ queryKey: ['checkins', 'timeline', checkInId] });
+      },
+      onError: (err) => {
+        pushToast({ variant: 'error', title: 'Ping failed', message: err?.message || 'Unable to queue GPS ping.' });
+      },
+    });
+  };
+
   const handlePingNow = () => {
     if (!gpsCheckins.length) {
       pushToast({ variant: 'warning', title: 'No GPS check-ins', message: 'Enable GPS on a check-in before triggering a ping.' });
@@ -449,17 +468,7 @@ export default function CaseDetail() {
       return;
     }
 
-    triggerPing.mutate(targetCheckIn.id, {
-      onSuccess: () => {
-        pushToast({ variant: 'success', title: 'Ping queued', message: 'Manual GPS ping has been queued.' });
-        queryClient.invalidateQueries({ queryKey: ['checkins'] });
-        queryClient.invalidateQueries({ queryKey: ['checkins', 'detail', targetCheckIn.id] });
-        queryClient.invalidateQueries({ queryKey: ['checkins', 'timeline', targetCheckIn.id] });
-      },
-      onError: (err) => {
-        pushToast({ variant: 'error', title: 'Ping failed', message: err?.message || 'Unable to queue GPS ping.' });
-      },
-    });
+    queuePingForCheckIn(targetCheckIn.id);
   };
 
   const defaultEnrichmentInput = useMemo(() => {
@@ -1922,6 +1931,90 @@ export default function CaseDetail() {
     </SectionCard>
   );
 
+  const checkinsContent = (
+    <SectionCard
+      title="Scheduled check-ins"
+      subtitle={`${caseCheckins.length} record${caseCheckins.length === 1 ? '' : 's'}`}
+    >
+      {caseCheckins.length === 0 ? (
+        <div className="rounded-xl border border-dashed border-slate-200 bg-slate-50 p-4 text-center text-sm text-slate-500">
+          No check-ins scheduled for this case yet.
+        </div>
+      ) : (
+        <div className="overflow-hidden rounded-xl border border-slate-200">
+          <table className="min-w-full divide-y divide-slate-200">
+            <thead className="bg-slate-50 text-left text-xs font-semibold uppercase tracking-wide text-slate-500">
+              <tr>
+                <th className="px-4 py-3">Due at</th>
+                <th className="px-4 py-3">Status</th>
+                <th className="px-4 py-3">Officer</th>
+                <th className="px-4 py-3">GPS</th>
+                <th className="px-4 py-3">Notes</th>
+                <th className="px-4 py-3" />
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-slate-100 bg-white text-sm text-slate-700">
+              {caseCheckins.map((checkIn) => (
+                <tr key={checkIn.id || checkIn._id}>
+                  <td className="px-4 py-3">
+                    {checkIn.dueAt ? new Date(checkIn.dueAt).toLocaleString() : '—'}
+                    {checkIn.timezone ? (
+                      <div className="text-xs text-slate-400">{checkIn.timezone}</div>
+                    ) : null}
+                  </td>
+                  <td className="px-4 py-3">
+                    <span
+                      className={`inline-flex rounded-full px-2 py-0.5 text-xs ${
+                        checkIn.status === 'done'
+                          ? 'bg-emerald-50 text-emerald-700'
+                          : checkIn.status === 'overdue'
+                            ? 'bg-amber-50 text-amber-700'
+                            : 'bg-slate-100 text-slate-600'
+                      }`}
+                    >
+                      {checkIn.status || 'pending'}
+                    </span>
+                  </td>
+                  <td className="px-4 py-3">{checkIn.meta?.officerName || '—'}</td>
+                  <td className="px-4 py-3">
+                    {checkIn.gpsEnabled ? (
+                      <div className="space-y-1">
+                        <span className="inline-flex rounded-full bg-emerald-50 px-2 py-0.5 text-xs text-emerald-700">
+                          Enabled
+                        </span>
+                        <div className="text-[11px] text-slate-400">{checkIn.pingsPerDay} ping(s)/day</div>
+                        {checkIn.lastPingAt ? (
+                          <div className="text-[11px] text-slate-400">
+                            Last ping {formatRelative(checkIn.lastPingAt)}
+                          </div>
+                        ) : null}
+                      </div>
+                    ) : (
+                      <span className="inline-flex rounded-full bg-slate-100 px-2 py-0.5 text-xs text-slate-500">Disabled</span>
+                    )}
+                  </td>
+                  <td className="px-4 py-3 text-sm text-slate-600">{checkIn.note || '—'}</td>
+                  <td className="px-4 py-3 text-right">
+                    {checkIn.gpsEnabled ? (
+                      <button
+                        type="button"
+                        onClick={() => queuePingForCheckIn(checkIn.id)}
+                        disabled={triggerPing.isPending}
+                        className="rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-1 text-xs font-medium text-emerald-700 hover:bg-emerald-100 disabled:cursor-not-allowed disabled:opacity-60"
+                      >
+                        {triggerPing.isPending ? 'Pinging…' : 'Ping now'}
+                      </button>
+                    ) : null}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </SectionCard>
+  );
+
   const communicationsContent = (
     <SectionCard
       title="Communications"
@@ -2120,7 +2213,8 @@ export default function CaseDetail() {
   );
 
   let activeContent = overviewContent;
-  if (activeTab === 'checklist') activeContent = checklistContent;
+  if (activeTab === 'checkins') activeContent = checkinsContent;
+  else if (activeTab === 'checklist') activeContent = checklistContent;
   else if (activeTab === 'crm') activeContent = crmContent;
   else if (activeTab === 'enrichment') activeContent = enrichmentContent;
   else if (activeTab === 'documents') activeContent = documentsContent;
