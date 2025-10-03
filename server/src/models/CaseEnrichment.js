@@ -62,7 +62,8 @@ const CaseEnrichmentSchema = new Schema(
       name: { type: String },
     },
     requestedAt: { type: Date, default: Date.now },
-    expiresAt: { type: Date, index: true },
+  // expiresAt TTL handled via schema.index below; avoid inline index to prevent duplicates
+  expiresAt: { type: Date },
     candidates: { type: [CandidateSchema], default: [] },
     error: {
       code: { type: String },

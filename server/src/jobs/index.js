@@ -8,6 +8,11 @@ export function initQueues() {
     return;
   }
 
+  if (!process.env.REDIS_URL) {
+    console.warn('⚠️  REDIS_URL not set — skipping queue workers initialization');
+    return;
+  }
+
   try {
     ensureMessagingWorker(processOutboundMessageJob);
   } catch (err) {
