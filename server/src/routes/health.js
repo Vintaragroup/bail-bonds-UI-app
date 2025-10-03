@@ -3,7 +3,8 @@ import mongoose from 'mongoose';
 
 const r = Router();
 
-const MAX_DB_MS = 2500; // tighter bounds to avoid infra health probe timeouts
+const MAX_DB_MS = 2000; // tighter bounds to avoid infra health probe timeouts
+const HEALTH_OVERALL_BUDGET_MS = 1500; // total time budget for /api/health handler
 
 // Small helper to add a timeout to any promise-returning DB operation so
 // health/trends endpoints don't hang indefinitely when Atlas is slow.
@@ -15,7 +16,7 @@ function withTimeout(promise, ms = 5000) {
 }
 
 // GET /health — pings MongoDB and summarizes simple_* collections
-r.get('/', async (_req, res) => {
+r.get('/', async (req, res) => {
   const started = Date.now();
   try {
     const conn = mongoose.connection;
@@ -24,12 +25,20 @@ r.get('/', async (_req, res) => {
       return res.status(200).json({ ok: false, error: 'DB not configured', ts: new Date().toISOString() });
     }
 
+    const verbose = String(req.query.verbose || '').toLowerCase() === '1' || String(req.query.v || '').toLowerCase() === '1';
+    const timeLeft = () => Math.max(0, HEALTH_OVERALL_BUDGET_MS - (Date.now() - started));
+
     // 1) Ping DB
   const pingStart = Date.now();
-  await withTimeout(conn.db.admin().command({ ping: 1 }), MAX_DB_MS);
+  await withTimeout(conn.db.admin().command({ ping: 1 }), Math.min(MAX_DB_MS, timeLeft() || 1));
   const pingMs = Date.now() - pingStart;
 
-    // 2) Inspect key collections
+    // If we're not in verbose mode and we're close to the budget, return immediately
+    if (!verbose && (Date.now() - started) >= HEALTH_OVERALL_BUDGET_MS) {
+      return res.json({ ok: true, uptime_ms: Date.now() - started, db: { ping_ms: pingMs, status: 'ok' }, ts: new Date().toISOString() });
+    }
+
+    // 2) Inspect key collections (skippable/heavy)
     const names = [
       'simple_harris',
       'simple_brazoria',
@@ -40,25 +49,28 @@ r.get('/', async (_req, res) => {
 
     const details = {};
     for (const name of names) {
+      // Respect overall time budget in non-verbose mode
+      if (!verbose && timeLeft() < 200) break;
       try {
         const col = conn.db.collection(name);
 
         // counts — guard each call with maxTimeMS and a global timeout
+        const budget = Math.max(200, timeLeft());
         const [count, latestNorm, latestBook] = await Promise.all([
-          withTimeout(col.estimatedDocumentCount(), MAX_DB_MS),
+          withTimeout(col.estimatedDocumentCount(), Math.min(MAX_DB_MS, budget)),
           withTimeout(col
             .find({ normalized_at: { $exists: true } }, { projection: { normalized_at: 1 } })
             .sort({ normalized_at: -1 })
             .limit(1)
-            .maxTimeMS(1500)
-            .toArray(), MAX_DB_MS),
+            .maxTimeMS(1000)
+            .toArray(), Math.min(MAX_DB_MS, budget)),
           withTimeout(col
             .find({ booking_date: { $exists: true } }, { projection: { booking_date: 1 } })
             .sort({ booking_date: -1 }) // YYYY-MM-DD strings sort correctly
             .limit(1)
-            .maxTimeMS(1500)
-            .toArray(), MAX_DB_MS),
-        ]);
+            .maxTimeMS(1000)
+            .toArray(), Math.min(MAX_DB_MS, budget)),
+        ]).catch(() => [0, [], []]);
 
         // light-weight field parity checks against our simple_* spec
         const required = [
@@ -67,23 +79,26 @@ r.get('/', async (_req, res) => {
         ];
         const missingCounts = {};
         // Cap missingCounts checks to a subset to keep this endpoint snappy under load
-        const subset = required.slice(0, 4);
+        const subset = required.slice(0, verbose ? 6 : 2);
         await Promise.all(
           subset.map(async (f) => {
+            if (!verbose && timeLeft() < 150) return; // skip if budget is nearly exhausted
             const q = col.countDocuments({ [f]: { $exists: false } });
-            const qq = q.maxTimeMS ? q.maxTimeMS(1000) : q;
-            missingCounts[f] = await withTimeout(qq, MAX_DB_MS).catch(() => -1);
+            const qq = q.maxTimeMS ? q.maxTimeMS(750) : q;
+            missingCounts[f] = await withTimeout(qq, Math.min(MAX_DB_MS, timeLeft() || 1)).catch(() => -1);
           }),
         );
 
         // anchor format audit (minimal, only for our standardized pairs)
         let anchorAudit = null;
-        if (name === 'simple_jefferson') {
-          // Jefferson anchors should be URLs
-          anchorAudit = await withTimeout(col.countDocuments({ "_upsert_key.anchor": { $not: /^http/ } }), 5000).catch(() => -1);
-        } else if (name === 'simple_harris') {
-          // Harris anchors should be all digits (case_number)
-          anchorAudit = await withTimeout(col.countDocuments({ "_upsert_key.anchor": { $not: /^\d+$/ } }), 5000).catch(() => -1);
+        if (verbose && timeLeft() >= 250) {
+          if (name === 'simple_jefferson') {
+            // Jefferson anchors should be URLs
+            anchorAudit = await withTimeout(col.countDocuments({ "_upsert_key.anchor": { $not: /^http/ } }), Math.min(1000, timeLeft())).catch(() => -1);
+          } else if (name === 'simple_harris') {
+            // Harris anchors should be all digits (case_number)
+            anchorAudit = await withTimeout(col.countDocuments({ "_upsert_key.anchor": { $not: /^\d+$/ } }), Math.min(1000, timeLeft())).catch(() => -1);
+          }
         }
 
         details[name] = {
@@ -98,8 +113,8 @@ r.get('/', async (_req, res) => {
       }
     }
 
-    // 3) Basic warnings
-    const warnings = [];
+  // 3) Basic warnings (may be partial if we exited early on some collections)
+  const warnings = [];
 
     for (const [k, v] of Object.entries(details)) {
       if ((v?.count ?? 0) === 0) warnings.push(`${k} has zero documents`);
@@ -123,6 +138,8 @@ r.get('/', async (_req, res) => {
       db: { ping_ms: pingMs, status: 'ok' },
       collections: details,
       warnings,
+      verbose,
+      budget_ms: HEALTH_OVERALL_BUDGET_MS,
       ts: new Date().toISOString(),
     });
   } catch (err) {
