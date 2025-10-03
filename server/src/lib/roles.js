@@ -4,6 +4,7 @@ export const ROLE_PERMISSIONS = {
     'dashboard:read',
     'cases:read',
     'cases:write',
+    'cases:enrich',
     'users:manage',
     'billing:read',
     'billing:manage',
@@ -12,6 +13,7 @@ export const ROLE_PERMISSIONS = {
     'dashboard:read',
     'cases:read',
     'cases:write:department',
+    'cases:enrich:department',
     'users:manage:department',
     'billing:read',
     'billing:manage:department',
@@ -19,6 +21,7 @@ export const ROLE_PERMISSIONS = {
   Employee: [
     'dashboard:read',
     'cases:read:department',
+    'cases:enrich:department',
     'billing:read',
   ],
   Sales: [

@@ -6,8 +6,8 @@ services:
     # Docker build from monorepo
     dockerfilePath: server/Dockerfile
     dockerContext: ./server
-  # Health check for container readiness (lightweight, no DB)
-  healthCheckPath: /api/health/light
+    # Health check for container readiness (lightweight, no DB)
+    healthCheckPath: /api/health/light
     # Restrict auto-deploys to a stable branch
     autoDeploy: false
     branch: deploy/production

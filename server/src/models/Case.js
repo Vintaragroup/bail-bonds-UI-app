@@ -47,6 +47,19 @@ const AttachmentSchema = new Schema(
   { _id: false }
 );
 
+const SourceAddressSchema = new Schema(
+  {
+    line1: { type: String, default: '' },
+    line2: { type: String, default: '' },
+    city: { type: String, default: '' },
+    state: { type: String, default: '' },
+    zip: { type: String, default: '' },
+    postalCode: { type: String, default: '' },
+    county: { type: String, default: '' },
+  },
+  { _id: false }
+);
+
 const CaseSchema = new Schema(
   {
     // Display / identity
@@ -76,6 +89,22 @@ const CaseSchema = new Schema(
       documents: { type: [ChecklistItemSchema], default: [] },
       followUpAt: { type: Date },
       assignedTo: { type: String, default: '' },
+      // Optional contact info captured from source or CRM
+      address: {
+        type: new Schema(
+          {
+            streetLine1: { type: String, default: '' },
+            streetLine2: { type: String, default: '' },
+            city: { type: String, default: '' },
+            stateCode: { type: String, default: '' },
+            postalCode: { type: String, default: '' },
+            countryCode: { type: String, default: '' },
+          },
+          { _id: false }
+        ),
+        default: undefined,
+      },
+      phone: { type: String, default: '' },
       attachments: {
         type: [AttachmentSchema],
         default: [],
@@ -92,6 +121,8 @@ const CaseSchema = new Schema(
         notes: { type: String, default: '' },
       },
     },
+    address: { type: SourceAddressSchema, default: undefined },
+    phone: { type: String, default: undefined },
     race:   { type: String, index: true },
     sex:    { type: String, index: true },
 

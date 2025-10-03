@@ -3,7 +3,11 @@ import mongoose from 'mongoose';
 import Case from '../models/Case.js';
 import Message from '../models/Message.js';
 import CaseAudit from '../models/CaseAudit.js';
-import { assertPermission as ensurePermission, filterByDepartment } from './utils/authz.js';
+import CaseEnrichment from '../models/CaseEnrichment.js';
+import { listMessages, resendMessage as queueResendMessage } from '../services/messaging.js';
+import { assertPermission as ensurePermission, filterByDepartment, hasPermission } from './utils/authz.js';
+import { listProviders as listEnrichmentProviders, getProvider as getEnrichmentProvider, getDefaultProviderId } from '../lib/enrichment/registry.js';
+import { splitName, nextExpiry } from '../lib/enrichment/utils.js';
 
 // Per-file DB timeout for potentially expensive queries (env overridable)
 // Bump a bit for wide attention scans to avoid near-miss timeouts
@@ -34,6 +38,8 @@ const cacheGet = (k) => {
   return e.data;
 };
 const cacheSet = (k, v) => _cache.set(k, { ts: Date.now(), data: v });
+const DEFAULT_ENRICHMENT_TTL_MINUTES = Number(process.env.ENRICHMENT_CACHE_TTL_MINUTES || 60);
+const DEFAULT_ENRICHMENT_ERROR_TTL_MINUTES = Number(process.env.ENRICHMENT_ERROR_CACHE_TTL_MINUTES || 15);
 async function withCache(key, compute) {
   const hit = cacheGet(key);
   if (hit !== null) return { fromCache: true, data: hit };
@@ -175,6 +181,82 @@ function normalizeAttachments(attachments = [], previous = []) {
       };
     })
     .filter(Boolean);
+}
+
+r.get('/enrichment/providers', (req, res) => {
+  try {
+    ensurePermission(req, ['cases:read', 'cases:read:department']);
+    const providers = listEnrichmentProviders().map((provider) => ({
+      id: provider.id,
+      label: provider.label,
+      description: provider.description || null,
+      supportsForce: Boolean(provider.supportsForce),
+      default: provider.id === getDefaultProviderId(),
+    }));
+    res.json({ providers });
+  } catch (err) {
+    if (err?.statusCode) {
+      return res.status(err.statusCode).json({ error: err.message || 'Forbidden' });
+    }
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+function buildEnrichmentParams(caseDoc = {}, overrides = {}) {
+  const sourceName = overrides.fullName || overrides.name || caseDoc?.full_name || '';
+  const nameParts = splitName(sourceName);
+
+  const firstName = overrides.firstName || overrides.givenName || nameParts.firstName;
+  const lastName = overrides.lastName || overrides.surname || nameParts.lastName;
+  const fullName = overrides.fullName || overrides.name || nameParts.fullName;
+
+  const crmAddr = caseDoc?.crm_details?.address || {};
+  const crmPhone = caseDoc?.crm_details?.phone || undefined;
+
+  const city = overrides.city || overrides.town || crmAddr.city || undefined;
+  const stateCode = overrides.state || overrides.stateCode || crmAddr.stateCode || undefined;
+  const postalCode = overrides.postalCode || overrides.postal_code || overrides.zip || crmAddr.postalCode || undefined;
+  const addressLine1 = overrides.addressLine1 || overrides.address || overrides.streetLine1 || crmAddr.streetLine1 || undefined;
+  const addressLine2 = overrides.addressLine2 || overrides.streetLine2 || crmAddr.streetLine2 || undefined;
+  const phone = overrides.phone || overrides.phoneNumber || crmPhone || undefined;
+
+  return {
+    fullName,
+    firstName,
+    lastName,
+    city,
+    stateCode,
+    postalCode,
+    addressLine1,
+    addressLine2,
+    phone,
+  };
+}
+
+function mapEnrichmentDocument(doc, provider) {
+  if (!doc) return null;
+  return {
+    id: doc.id || doc._id?.toString(),
+    provider: doc.provider,
+    providerLabel: provider?.label || null,
+    status: doc.status,
+    params: doc.params,
+    requestedAt: doc.requestedAt || doc.createdAt,
+    expiresAt: doc.expiresAt,
+    requestedBy: doc.requestedBy,
+    meta: doc.meta || null,
+    candidates: Array.isArray(doc.candidates) ? doc.candidates : [],
+    error: doc.error || null,
+    selectedRecords: Array.isArray(doc.selectedRecords) ? doc.selectedRecords : [],
+  };
+}
+
+function userIdentity(req) {
+  return {
+    uid: req.user?.uid || req.user?.id || null,
+    email: req.user?.email || null,
+    name: req.user?.name || req.user?.displayName || req.user?.email || null,
+  };
 }
 
 async function fetchContactMeta(caseIds = []) {
@@ -802,11 +884,52 @@ r.get('/', async (req, res) => {
     if (last) item.last_contact_at = last;
     if (!item.crm_stage) item.crm_stage = 'new';
     if (!item.crm_details) item.crm_details = {};
+    // Backfill canonical CRM contact fields from any available source keys
+    const sourceAddr = item.address || item.address_obj || null;
+    const normalizedCrmAddress = {
+      streetLine1:
+        item.address_line_1
+        || item.addressLine1
+        || sourceAddr?.streetLine1
+        || sourceAddr?.street_line_1
+        || sourceAddr?.line1
+        || sourceAddr?.line_1
+        || '',
+      streetLine2:
+        item.address_line_2
+        || item.addressLine2
+        || sourceAddr?.streetLine2
+        || sourceAddr?.street_line_2
+        || sourceAddr?.line2
+        || sourceAddr?.line_2
+        || '',
+      city: item.city || sourceAddr?.city || '',
+      stateCode:
+        item.state
+        || item.stateCode
+        || sourceAddr?.state
+        || sourceAddr?.stateCode
+        || sourceAddr?.state_code
+        || '',
+      postalCode:
+        item.postal_code
+        || item.postalCode
+        || item.zip
+        || sourceAddr?.postalCode
+        || sourceAddr?.postal_code
+        || sourceAddr?.zip
+        || '',
+      countryCode: sourceAddr?.countryCode || sourceAddr?.country_code || '',
+    };
+    const normalizedPhone = item.phone || item.primary_phone || '';
+
     item.crm_details = {
       qualificationNotes: item.crm_details.qualificationNotes || '',
       documents: normalizeChecklist(item.crm_details.documents),
       followUpAt: item.crm_details.followUpAt || null,
       assignedTo: item.crm_details.assignedTo || '',
+      address: item.crm_details.address || normalizedCrmAddress,
+      phone: item.crm_details.phone || normalizedPhone,
       attachments: Array.isArray(item.crm_details.attachments) ? item.crm_details.attachments : [],
       acceptance: {
         accepted: Boolean(item.crm_details.acceptance?.accepted),
@@ -930,11 +1053,52 @@ r.get('/:id', async (req, res) => {
 
     if (!Array.isArray(doc.manual_tags)) doc.manual_tags = [];
     if (!doc.crm_stage) doc.crm_stage = 'new';
+    // Build normalized CRM contact fields from any available source keys
+    const sourceAddr = doc.address || doc.address_obj || null;
+    const normalizedCrmAddress = {
+      streetLine1:
+        doc.address_line_1
+        || doc.addressLine1
+        || sourceAddr?.streetLine1
+        || sourceAddr?.street_line_1
+        || sourceAddr?.line1
+        || sourceAddr?.line_1
+        || '',
+      streetLine2:
+        doc.address_line_2
+        || doc.addressLine2
+        || sourceAddr?.streetLine2
+        || sourceAddr?.street_line_2
+        || sourceAddr?.line2
+        || sourceAddr?.line_2
+        || '',
+      city: doc.city || sourceAddr?.city || '',
+      stateCode:
+        doc.state
+        || doc.stateCode
+        || sourceAddr?.state
+        || sourceAddr?.stateCode
+        || sourceAddr?.state_code
+        || '',
+      postalCode:
+        doc.postal_code
+        || doc.postalCode
+        || doc.zip
+        || sourceAddr?.postalCode
+        || sourceAddr?.postal_code
+        || sourceAddr?.zip
+        || '',
+      countryCode: sourceAddr?.countryCode || sourceAddr?.country_code || '',
+    };
+    const normalizedPhone = doc.phone || doc.primary_phone || '';
+
     doc.crm_details = {
       qualificationNotes: doc.crm_details?.qualificationNotes || '',
       documents: normalizeChecklist(doc.crm_details?.documents),
       followUpAt: doc.crm_details?.followUpAt || null,
       assignedTo: doc.crm_details?.assignedTo || '',
+      address: doc.crm_details?.address || normalizedCrmAddress,
+      phone: doc.crm_details?.phone || normalizedPhone,
       attachments: Array.isArray(doc.crm_details?.attachments) ? doc.crm_details.attachments : [],
       acceptance: {
         accepted: Boolean(doc.crm_details?.acceptance?.accepted),
@@ -952,10 +1116,17 @@ r.get('/:id', async (req, res) => {
     const attachmentsRaw = Array.isArray(doc.crm_details.attachments) ? doc.crm_details.attachments : [];
     const normalizedAttachments = normalizeAttachments(attachmentsRaw, attachmentsRaw);
     doc.crm_details.attachments = normalizedAttachments;
-    if (attachmentsRaw.some((att) => att && !att.id)) {
+    const needBackfillAttachments = attachmentsRaw.some((att) => att && !att.id);
+    const needBackfillContact = (!doc.crm_details?.address || !doc.crm_details?.address?.streetLine1) && (normalizedCrmAddress.streetLine1 || normalizedCrmAddress.city || normalizedPhone);
+    if (needBackfillAttachments || needBackfillContact) {
       await Case.updateOne(
         { _id: doc._id },
-        { $set: { 'crm_details.attachments': normalizedAttachments } }
+        {
+          $set: {
+            'crm_details.attachments': normalizedAttachments,
+            ...(needBackfillContact ? { 'crm_details.address': normalizedCrmAddress, 'crm_details.phone': normalizedPhone } : {}),
+          }
+        }
       ).catch((err) => {
         console.warn('Failed to backfill attachment ids for case', doc._id?.toString?.() || doc._id, err?.message);
       });
@@ -993,23 +1164,7 @@ r.get('/:id/messages', async (req, res) => {
       return res.status(404).json({ error: 'Case not found' });
     }
 
-    const qMsg = Message.find({ caseId: objectId })
-      .sort({ createdAt: -1 })
-      .limit(100)
-      .select({
-        direction: 1,
-        channel: 1,
-        status: 1,
-        body: 1,
-        createdAt: 1,
-        sentAt: 1,
-        deliveredAt: 1,
-        errorCode: 1,
-        errorMessage: 1,
-      })
-      .lean();
-
-    const itemsRaw = await withTimeout((qMsg.maxTimeMS ? qMsg.maxTimeMS(MAX_DB_MS) : qMsg), MAX_DB_MS).catch(() => []);
+    const itemsRaw = await listMessages({ caseId: objectId, limit: 100 }).catch(() => []);
 
     let traceIds = [];
     const traceParam = req.query.trace;
@@ -1052,45 +1207,17 @@ r.post('/:caseId/messages/:messageId/resend', async (req, res) => {
       return res.status(404).json({ error: 'Case not found' });
     }
 
-    const original = await Message.findOne({ _id: messageObjectId, caseId: caseObjectId }).lean();
-    if (!original) {
-      return res.status(404).json({ error: 'Message not found' });
+    try {
+      const doc = await queueResendMessage({
+        caseId: caseObjectId,
+        messageId: messageObjectId,
+        actor: req.user?.email || req.user?.id || 'system',
+      });
+      res.status(201).json({ id: doc._id.toString(), status: doc.status, queuedAt: doc.createdAt });
+    } catch (err) {
+      const status = err?.message === 'Only outbound messages can be resent' ? 400 : 500;
+      return res.status(status).json({ error: err?.message || 'Unable to queue resend' });
     }
-
-    if (original.direction !== 'out') {
-      return res.status(400).json({ error: 'Only outbound messages can be resent' });
-    }
-
-    if (!original.to) {
-      return res.status(400).json({ error: 'Original message missing recipient' });
-    }
-    if (!original.body) {
-      return res.status(400).json({ error: 'Original message missing body content' });
-    }
-
-    const doc = await Message.create({
-      caseId: caseObjectId,
-      direction: 'out',
-      channel: original.channel,
-      to: original.to,
-      from: original.from,
-      body: original.body,
-      status: 'queued',
-      provider: original.provider,
-      meta: {
-        ...(original.meta || {}),
-        resendOf: original._id,
-      },
-    });
-
-    await CaseAudit.create({
-      caseId: caseObjectId,
-      type: 'message_resend',
-      actor: req.user?.email || req.user?.id || 'system',
-      details: { messageId: doc._id, originalId: original._id },
-    });
-
-    res.status(201).json({ id: doc._id.toString(), status: doc.status, queuedAt: doc.createdAt });
   } catch (err) {
     console.error('POST /cases/:caseId/messages/:messageId/resend error:', err);
     if (err?.statusCode) {
@@ -1195,6 +1322,29 @@ r.patch('/:id/crm', async (req, res) => {
     }
     if (payload.assignedTo !== undefined) {
       update['crm_details.assignedTo'] = String(payload.assignedTo || '');
+    }
+
+    // Optional contact info updates
+    if (payload.address || payload.crm_details?.address) {
+      const addr = payload.address || payload.crm_details.address;
+      if (addr && typeof addr === 'object') {
+        const nextAddr = {
+          streetLine1: String(addr.streetLine1 || addr.addressLine1 || addr.street_line_1 || ''),
+          streetLine2: String(addr.streetLine2 || addr.addressLine2 || addr.street_line_2 || ''),
+          city: String(addr.city || ''),
+          stateCode: String(addr.stateCode || addr.state || addr.state_code || ''),
+          postalCode: String(addr.postalCode || addr.postal_code || addr.zip || ''),
+          countryCode: String(addr.countryCode || addr.country_code || ''),
+        };
+        update['crm_details.address'] = nextAddr;
+      } else if (addr === null) {
+        update['crm_details.address'] = undefined;
+      }
+    }
+
+    if (payload.phone !== undefined || payload.crm_details?.phone !== undefined) {
+      const nextPhone = payload.phone ?? payload.crm_details?.phone ?? '';
+      update['crm_details.phone'] = String(nextPhone || '');
     }
 
     if (payload.acceptance) {
@@ -1435,6 +1585,275 @@ r.get('/:id/activity', async (req, res) => {
     res.json({ events });
   } catch (err) {
     console.error('GET /cases/:id/activity error:', err);
+    if (err?.statusCode) {
+      return res.status(err.statusCode).json({ error: err.message || 'Forbidden' });
+    }
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+r.get('/:caseId/enrichment/:providerId', async (req, res) => {
+  try {
+    if (!ensureMongoConnected(res)) return;
+    ensurePermission(req, ['cases:read', 'cases:read:department']);
+
+    const provider = getEnrichmentProvider(req.params.providerId);
+    if (!provider) {
+      return res.status(404).json({ error: 'Unknown enrichment provider' });
+    }
+
+    const selector = scopedCaseFilter(req, { _id: req.params.caseId });
+    const qCase = Case.findOne(selector).select({ _id: 1 }).lean();
+    const caseDoc = await withTimeout(
+      qCase.maxTimeMS ? qCase.maxTimeMS(MAX_DB_MS) : qCase,
+      MAX_DB_MS,
+      `${provider.id}:case`
+    );
+
+    if (!caseDoc) {
+      return res.status(404).json({ error: 'Case not found' });
+    }
+
+    const qEnrichment = CaseEnrichment.findOne({
+      caseId: caseDoc._id,
+      provider: provider.id,
+    })
+      .sort({ requestedAt: -1, createdAt: -1 })
+      .lean();
+
+    const enrichmentDoc = await withTimeout(
+      qEnrichment.exec ? qEnrichment.exec() : qEnrichment,
+      MAX_DB_MS,
+      `${provider.id}:enrichment`
+    );
+
+    if (!enrichmentDoc) {
+      return res.json({ enrichment: null, cached: false, nextRefreshAt: null });
+    }
+
+    const expiresAt = enrichmentDoc.expiresAt ? new Date(enrichmentDoc.expiresAt) : null;
+    const cached = Boolean(expiresAt && expiresAt > new Date());
+
+    res.json({
+      enrichment: mapEnrichmentDocument(enrichmentDoc, provider),
+      cached,
+      nextRefreshAt: expiresAt,
+    });
+  } catch (err) {
+    console.error(`GET /cases/:caseId/enrichment/${req.params?.providerId} error:`, err);
+    if (err?.statusCode) {
+      return res.status(err.statusCode).json({ error: err.message || 'Forbidden' });
+    }
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+r.post('/:caseId/enrichment/:providerId', async (req, res) => {
+  try {
+    if (!ensureMongoConnected(res)) return;
+    ensurePermission(req, ['cases:enrich', 'cases:enrich:department']);
+
+    const provider = getEnrichmentProvider(req.params.providerId);
+    if (!provider) {
+      return res.status(404).json({ error: 'Unknown enrichment provider' });
+    }
+
+    const selector = scopedCaseFilter(req, { _id: req.params.caseId });
+    const qCase = Case.findOne(selector).lean();
+    const caseDoc = await withTimeout(
+      qCase.maxTimeMS ? qCase.maxTimeMS(MAX_DB_MS) : qCase,
+      MAX_DB_MS,
+      `${provider.id}:case`
+    );
+
+    if (!caseDoc) {
+      return res.status(404).json({ error: 'Case not found' });
+    }
+
+    const qLatest = CaseEnrichment.findOne({
+      caseId: caseDoc._id,
+      provider: provider.id,
+    })
+      .sort({ requestedAt: -1, createdAt: -1 })
+      .lean();
+
+    const latest = await withTimeout(
+      qLatest.exec ? qLatest.exec() : qLatest,
+      MAX_DB_MS,
+      `${provider.id}:latest`
+    );
+
+    const ttlMinutesResolved = Number.isFinite(provider.ttlMinutes) && provider.ttlMinutes > 0
+      ? provider.ttlMinutes
+      : DEFAULT_ENRICHMENT_TTL_MINUTES;
+    const errorTtlMinutesResolved = Number.isFinite(provider.errorTtlMinutes) && provider.errorTtlMinutes > 0
+      ? provider.errorTtlMinutes
+      : Math.min(ttlMinutesResolved, DEFAULT_ENRICHMENT_ERROR_TTL_MINUTES);
+
+    const now = new Date();
+    const forceRequested = Boolean(req.body?.force);
+    const supportsForce = Boolean(provider.supportsForce);
+    const allowForce = forceRequested && supportsForce && hasPermission(req, 'cases:enrich');
+    if (!allowForce && latest?.expiresAt && new Date(latest.expiresAt) > now) {
+      return res.json({
+        enrichment: mapEnrichmentDocument(latest, provider),
+        cached: true,
+        nextRefreshAt: latest.expiresAt,
+      });
+    }
+
+    const { force, ...overrideParams } = req.body || {};
+    const params = buildEnrichmentParams(caseDoc, overrideParams);
+
+    if (!params.firstName && !params.lastName && !params.fullName) {
+      return res.status(400).json({ error: 'Provide at least a name to run enrichment.' });
+    }
+
+    let lookupResult = null;
+    let status = 'success';
+    let errorPayload = null;
+
+    try {
+      const preparedParams = provider.prepareParams
+        ? provider.prepareParams(params, { case: caseDoc, overrides: overrideParams })
+        : params;
+      lookupResult = await provider.search(preparedParams, { case: caseDoc, overrides: overrideParams });
+      status = lookupResult?.status || 'success';
+    } catch (serviceError) {
+      status = 'error';
+      errorPayload = {
+        code: serviceError.code || 'ENRICHMENT_ERROR',
+        message: serviceError.message || 'Enrichment request failed',
+      };
+      console.error(`${provider.id} lookup error:`, serviceError);
+    }
+
+    const ttlMinutes = status === 'error' ? errorTtlMinutesResolved : ttlMinutesResolved;
+    const expiresAt = nextExpiry(ttlMinutes);
+
+    const enrichmentDoc = await CaseEnrichment.create({
+      caseId: caseDoc._id,
+      provider: provider.id,
+      status,
+      params,
+      requestedBy: userIdentity(req),
+      requestedAt: now,
+      expiresAt,
+      candidates: status === 'error' ? [] : (lookupResult?.candidates || []),
+      error: errorPayload,
+      meta: lookupResult?.meta || null,
+    });
+
+    await CaseAudit.create({
+      caseId: caseDoc._id,
+      type: `enrichment_${provider.id}`,
+      actor: req.user?.email || req.user?.uid || 'system',
+      details: {
+        status,
+        candidateCount: enrichmentDoc.candidates?.length || 0,
+        error: errorPayload,
+        expiresAt,
+      },
+    });
+
+    const responsePayload = mapEnrichmentDocument(enrichmentDoc.toObject({ virtuals: true }), provider);
+
+    res.json({
+      enrichment: responsePayload,
+      cached: false,
+      nextRefreshAt: expiresAt,
+    });
+  } catch (err) {
+    console.error(`POST /cases/:caseId/enrichment/${req.params?.providerId} error:`, err);
+    if (err?.code === 'ENRICHMENT_MISCONFIGURED') {
+      return res.status(500).json({ error: 'Enrichment provider is not configured on the server.' });
+    }
+    if (err?.statusCode) {
+      return res.status(err.statusCode).json({ error: err.message || 'Forbidden' });
+    }
+    if (err?.status) {
+      return res.status(err.status).json({ error: err.message || 'Enrichment request failed' });
+    }
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+r.post('/:caseId/enrichment/:providerId/select', async (req, res) => {
+  try {
+    if (!ensureMongoConnected(res)) return;
+    ensurePermission(req, ['cases:enrich', 'cases:enrich:department']);
+
+    const provider = getEnrichmentProvider(req.params.providerId);
+    if (!provider) {
+      return res.status(404).json({ error: 'Unknown enrichment provider' });
+    }
+
+    const { recordId } = req.body || {};
+    if (!recordId || typeof recordId !== 'string') {
+      return res.status(400).json({ error: 'recordId is required' });
+    }
+
+    const selector = scopedCaseFilter(req, { _id: req.params.caseId });
+    const qCase = Case.findOne(selector).lean();
+    const caseDoc = await withTimeout(
+      qCase.maxTimeMS ? qCase.maxTimeMS(MAX_DB_MS) : qCase,
+      MAX_DB_MS,
+      `${provider.id}:case`
+    );
+
+    if (!caseDoc) {
+      return res.status(404).json({ error: 'Case not found' });
+    }
+
+    const enrichmentDoc = await CaseEnrichment.findOne({
+      caseId: caseDoc._id,
+      provider: provider.id,
+    })
+      .sort({ requestedAt: -1, createdAt: -1 });
+
+    if (!enrichmentDoc) {
+      return res.status(404).json({ error: 'No enrichment results available for selection' });
+    }
+
+    const candidates = Array.isArray(enrichmentDoc.candidates) ? enrichmentDoc.candidates : [];
+    const candidate = candidates.find((item) => item?.recordId === recordId);
+    if (!candidate) {
+      return res.status(404).json({ error: 'Candidate not found in the latest enrichment run' });
+    }
+
+    const selection = {
+      recordId,
+      selectedAt: new Date(),
+      selectedBy: userIdentity(req),
+      payload: candidate,
+    };
+
+    const existingIndex = enrichmentDoc.selectedRecords.findIndex((item) => item?.recordId === recordId);
+    if (existingIndex === -1) {
+      enrichmentDoc.selectedRecords.push(selection);
+    } else {
+      enrichmentDoc.selectedRecords[existingIndex] = selection;
+    }
+
+    await enrichmentDoc.save();
+
+    await CaseAudit.create({
+      caseId: caseDoc._id,
+      type: `enrichment_${provider.id}_select`,
+      actor: req.user?.email || req.user?.uid || 'system',
+      details: { recordId },
+    });
+
+    const responsePayload = mapEnrichmentDocument(enrichmentDoc.toObject({ virtuals: true }), provider);
+    const expiresAt = enrichmentDoc.expiresAt ? new Date(enrichmentDoc.expiresAt) : null;
+
+    res.json({
+      enrichment: responsePayload,
+      cached: Boolean(expiresAt && expiresAt > new Date()),
+      nextRefreshAt: expiresAt,
+    });
+  } catch (err) {
+    console.error(`POST /cases/:caseId/enrichment/${req.params?.providerId}/select error:`, err);
     if (err?.statusCode) {
       return res.status(err.statusCode).json({ error: err.message || 'Forbidden' });
     }

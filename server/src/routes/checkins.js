@@ -6,6 +6,7 @@ import Case, { CaseJefferson } from '../models/Case.js';
 import User from '../models/User.js';
 import { filterByDepartment } from './utils/authz.js';
 import { assertPermission as ensurePermission } from './utils/authz.js';
+import { getGpsQueue } from '../jobs/index.js';
 
 const r = Router();
 const MAX_DB_MS = 5000;
@@ -446,6 +447,19 @@ r.post('/:id/pings/manual', async (req, res) => {
 
     doc.lastPingAt = scheduledFor;
     await doc.save();
+
+    const gpsQueue = getGpsQueue();
+    if (gpsQueue) {
+      await gpsQueue.add('manual', {
+        pingId: ping._id.toString(),
+        checkInId: doc._id.toString(),
+        clientId: doc.clientId ? doc.clientId.toString() : null,
+        scheduledFor: scheduledFor.toISOString(),
+        reason: req.body?.reason || 'manual-trigger',
+      }, { removeOnComplete: 100 });
+    } else {
+      console.warn('GPS queue unavailable — manual ping job not enqueued');
+    }
 
     res.status(202).json({
       ping: {

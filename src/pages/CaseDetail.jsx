@@ -15,9 +15,14 @@ import {
   useDeleteCaseDocument,
   useCreateCaseActivity,
   useUpdateCaseStage,
+  useEnrichmentProviders,
+  useCaseEnrichment,
+  useRunCaseEnrichment,
+  useSelectCaseEnrichment,
 } from '../hooks/cases';
 import { useToast } from '../components/ToastContext';
 import { stageLabel } from '../lib/stage';
+import { useUser } from '../components/UserContext';
 
 const formatMoney = (value) => {
   const num = Number(value);
@@ -40,6 +45,35 @@ const formatFileSize = (bytes) => {
   return `${(size / (1024 * 1024)).toFixed(1)} MB`;
 };
 
+const splitCaseName = (value = '') => {
+  const source = String(value || '').trim();
+  if (!source) {
+    return { firstName: '', lastName: '', fullName: '' };
+  }
+  const parts = source.split(/\s+/);
+  if (parts.length === 1) {
+    return { firstName: parts[0], lastName: '', fullName: source };
+  }
+  return {
+    firstName: parts[0],
+    lastName: parts.slice(1).join(' '),
+    fullName: source,
+  };
+};
+
+const formatAddressDisplay = (address) => {
+  if (!address || typeof address !== 'object') return '';
+  const line1 = address.streetLine1 || address.line1 || '';
+  const line2 = address.streetLine2 || address.line2 || '';
+  const city = address.city || '';
+  const state = address.stateCode || address.state || '';
+  const postal = address.postalCode || address.zip || '';
+
+  const cityState = [city, state].filter(Boolean).join(', ');
+  const parts = [line1, line2, cityState, postal].filter((part) => part && part.trim().length > 0);
+  return parts.join('\n');
+};
+
 const FOLLOW_UP_PRESETS = [
   { id: 'today', label: 'Later today', offsetHours: 4 },
   { id: 'tomorrow', label: 'Tomorrow 9am', offsetDays: 1, setHour: 9 },
@@ -59,6 +93,8 @@ const createEmptyCrmDetails = () => ({
   documents: [],
   followUpAt: null,
   assignedTo: '',
+  address: { streetLine1: '', streetLine2: '', city: '', stateCode: '', postalCode: '' },
+  phone: '',
   acceptance: { accepted: false, acceptedAt: null, notes: '' },
   denial: { denied: false, deniedAt: null, reason: '', notes: '' },
   attachments: [],
@@ -68,6 +104,7 @@ const TABS = [
   { id: 'overview', label: 'Overview' },
   { id: 'checklist', label: 'Checklist' },
   { id: 'crm', label: 'CRM' },
+  { id: 'enrichment', label: 'Enrichment' },
   { id: 'documents', label: 'Documents' },
   { id: 'communications', label: 'Comms' },
   { id: 'activity', label: 'Activity' },
@@ -84,6 +121,7 @@ export default function CaseDetail() {
   const { data: meta } = useCaseMeta();
   const { data: messagesData, isLoading: messagesLoading, isError: messagesError } = useCaseMessages(caseId);
   const { data: activityData, isLoading: activityLoading, isError: activityError } = useCaseActivity(caseId);
+  const { currentUser } = useUser();
 
   const updateCrm = useUpdateCaseCrm({
     onSuccess: () => {
@@ -305,6 +343,90 @@ export default function CaseDetail() {
 
   const activityEvents = Array.isArray(activityData?.events) ? activityData.events : [];
   const activityCount = activityEvents.length;
+  const contactAddressDisplay = useMemo(
+    () => formatAddressDisplay(data?.crm_details?.address || data?.address || null),
+    [data?.crm_details?.address, data?.address]
+  );
+  const contactPhoneDisplay = useMemo(() => {
+    const phone = data?.crm_details?.phone || data?.phone || data?.primary_phone;
+    if (!phone || typeof phone !== 'string') return '';
+    return phone;
+  }, [data?.crm_details?.phone, data?.phone, data?.primary_phone]);
+  const { data: enrichmentProvidersData } = useEnrichmentProviders();
+  const providerOptions = Array.isArray(enrichmentProvidersData?.providers)
+    ? enrichmentProvidersData.providers
+    : [];
+  const providersLoaded = Boolean(enrichmentProvidersData);
+  const [selectedProviderId, setSelectedProviderId] = useState('');
+  const defaultProviderId = useMemo(() => {
+    const flagged = providerOptions.find((provider) => provider.default);
+    return flagged?.id || providerOptions[0]?.id || '';
+  }, [providerOptions]);
+
+  useEffect(() => {
+    if (!providerOptions.length) {
+      setSelectedProviderId('');
+    } else if (!selectedProviderId && defaultProviderId) {
+      setSelectedProviderId(defaultProviderId);
+    }
+  }, [providerOptions, selectedProviderId, defaultProviderId]);
+
+  const defaultEnrichmentInput = useMemo(() => {
+    const nameParts = splitCaseName(data?.full_name || '');
+    const crmAddress = data?.crm_details?.address || {};
+    const recordAddress = data?.address || {};
+    const recordPhone = data?.crm_details?.phone || data?.phone || data?.primary_phone || '';
+    return {
+      fullName: nameParts.fullName,
+      firstName: nameParts.firstName,
+      lastName: nameParts.lastName,
+      city: data?.city || crmAddress.city || recordAddress.city || '',
+      stateCode:
+        data?.state
+        || data?.stateCode
+        || crmAddress.stateCode
+        || recordAddress.state
+        || '',
+      postalCode:
+        data?.postal_code
+        || data?.postalCode
+        || data?.zip
+        || crmAddress.postalCode
+        || recordAddress.postalCode
+        || recordAddress.zip
+        || '',
+      addressLine1:
+        data?.address_line_1
+        || data?.addressLine1
+        || crmAddress.streetLine1
+        || recordAddress.line1
+        || '',
+      addressLine2:
+        data?.address_line_2
+        || data?.addressLine2
+        || crmAddress.streetLine2
+        || recordAddress.line2
+        || '',
+      phone: recordPhone,
+    };
+  }, [
+    data?.full_name,
+    data?.city,
+    data?.state,
+    data?.stateCode,
+    data?.postal_code,
+    data?.postalCode,
+    data?.zip,
+    data?.address_line_1,
+    data?.addressLine1,
+    data?.address_line_2,
+    data?.addressLine2,
+    data?.phone,
+    data?.primary_phone,
+    data?.crm_details?.address,
+    data?.crm_details?.phone,
+    data?.address,
+  ]);
 
   const initialTab = (() => {
     const queryTab = searchParams.get('tab');
@@ -328,11 +450,24 @@ export default function CaseDetail() {
   const [activityOutcome, setActivityOutcome] = useState('');
   const [activityFollowUp, setActivityFollowUp] = useState('');
   const [activityPreset, setActivityPreset] = useState('');
+  // CRM contact fields
+  const [contactStreet1, setContactStreet1] = useState('');
+  const [contactStreet2, setContactStreet2] = useState('');
+  const [contactCity, setContactCity] = useState('');
+  const [contactStateCode, setContactStateCode] = useState('');
+  const [contactPostalCode, setContactPostalCode] = useState('');
+  const [contactPhone, setContactPhone] = useState('');
   const [editingAttachmentId, setEditingAttachmentId] = useState('');
   const [attachmentLabel, setAttachmentLabel] = useState('');
   const [attachmentNote, setAttachmentNote] = useState('');
   const [attachmentChecklist, setAttachmentChecklist] = useState('');
   const [deletingAttachmentId, setDeletingAttachmentId] = useState('');
+  const [enrichmentInputs, setEnrichmentInputs] = useState({});
+  const currentEnrichmentInput = useMemo(() => {
+    if (!selectedProviderId) return defaultEnrichmentInput;
+    return enrichmentInputs[selectedProviderId] || defaultEnrichmentInput;
+  }, [enrichmentInputs, selectedProviderId, defaultEnrichmentInput]);
+  const [selectingRecordId, setSelectingRecordId] = useState('');
   const fileInputRef = useRef(null);
 
   useEffect(() => {
@@ -340,11 +475,27 @@ export default function CaseDetail() {
   }, [data?.crm_stage]);
 
   useEffect(() => {
+    if (!selectedProviderId) return;
+    setEnrichmentInputs((prev) => {
+      const existing = prev[selectedProviderId];
+      if (existing) return prev;
+      return { ...prev, [selectedProviderId]: defaultEnrichmentInput };
+    });
+  }, [selectedProviderId, defaultEnrichmentInput]);
+
+  useEffect(() => {
     setQualificationNotes(crmDetails.qualificationNotes || '');
     setAssignedTo(crmDetails.assignedTo || '');
     setAcceptanceNotes(crmDetails.acceptance?.notes || '');
     setDenialReason(crmDetails.denial?.reason || '');
     setDenialNotes(crmDetails.denial?.notes || '');
+    const addr = crmDetails.address || {};
+    setContactStreet1(addr.streetLine1 || '');
+    setContactStreet2(addr.streetLine2 || '');
+    setContactCity(addr.city || '');
+    setContactStateCode(addr.stateCode || '');
+    setContactPostalCode(addr.postalCode || '');
+    setContactPhone(crmDetails.phone || '');
 
     if (crmDetails.followUpAt) {
       const dt = new Date(crmDetails.followUpAt);
@@ -377,6 +528,145 @@ export default function CaseDetail() {
     }
   }, [attachments, editingAttachmentId]);
 
+  const {
+    data: enrichmentData,
+    isLoading: enrichmentLoading,
+    isFetching: enrichmentFetching,
+    refetch: refetchEnrichment,
+  } = useCaseEnrichment(caseId, selectedProviderId, {
+    enabled: Boolean(caseId) && Boolean(selectedProviderId) && activeTab === 'enrichment',
+  });
+
+  const permittedRoles = Array.isArray(currentUser?.roles) ? currentUser.roles : [];
+  const canRunEnrichment = useMemo(
+    () => permittedRoles.some((role) => ['SuperUser', 'Admin', 'DepartmentLead', 'Employee'].includes(role)),
+    [permittedRoles]
+  );
+  const canForceByRole = useMemo(
+    () => permittedRoles.some((role) => ['SuperUser', 'Admin'].includes(role)),
+    [permittedRoles]
+  );
+  const activeProvider = useMemo(
+    () => providerOptions.find((provider) => provider.id === selectedProviderId) || null,
+    [providerOptions, selectedProviderId]
+  );
+  const supportsForce = Boolean(activeProvider?.supportsForce);
+  const providerLabel = activeProvider?.label || (selectedProviderId ? selectedProviderId.toUpperCase() : 'Enrichment');
+
+  const runEnrichment = useRunCaseEnrichment({
+    onSuccess: (response) => {
+      const count = response?.enrichment?.candidates?.length ?? 0;
+      pushToast({
+        variant: 'success',
+        title: `${providerLabel} enrichment complete`,
+        message: count ? `${count} potential matches returned.` : 'No matches were returned for this search.',
+      });
+      refetchEnrichment();
+    },
+    onError: (err) => {
+      pushToast({
+        variant: 'error',
+        title: 'Enrichment failed',
+        message: err?.message || `Unable to run ${providerLabel} enrichment right now.`,
+      });
+    },
+  });
+
+  const selectEnrichment = useSelectCaseEnrichment({
+    onSuccess: () => {
+      pushToast({
+        variant: 'success',
+        title: 'Match attached',
+        message: 'The selected record has been linked to this case.',
+      });
+      refetchEnrichment();
+    },
+    onError: (err) => {
+      pushToast({
+        variant: 'error',
+        title: 'Unable to attach record',
+        message: err?.message || 'Failed to attach the selected enrichment record.',
+      });
+    },
+    onSettled: () => setSelectingRecordId(''),
+  });
+
+  const enrichmentDoc = enrichmentData?.enrichment || null;
+  const enrichmentCandidates = Array.isArray(enrichmentDoc?.candidates) ? enrichmentDoc.candidates : [];
+  const enrichmentSelected = Array.isArray(enrichmentDoc?.selectedRecords) ? enrichmentDoc.selectedRecords : [];
+  const enrichmentSelectedSet = useMemo(
+    () => new Set(enrichmentSelected.map((entry) => entry?.recordId).filter(Boolean)),
+    [enrichmentSelected]
+  );
+  const enrichmentNextRefresh = useMemo(() => {
+    if (enrichmentData?.nextRefreshAt) {
+      const dt = new Date(enrichmentData.nextRefreshAt);
+      if (!Number.isNaN(dt.getTime())) return dt;
+    }
+    if (enrichmentDoc?.expiresAt) {
+      const dt = new Date(enrichmentDoc.expiresAt);
+      if (!Number.isNaN(dt.getTime())) return dt;
+    }
+    return null;
+  }, [enrichmentData?.nextRefreshAt, enrichmentDoc?.expiresAt]);
+  const enrichmentRefreshing = activeTab === 'enrichment' && (enrichmentLoading || enrichmentFetching);
+
+  const handleEnrichmentFieldChange = (field, value) => {
+    if (!selectedProviderId) return;
+    setEnrichmentInputs((prev) => ({
+      ...prev,
+      [selectedProviderId]: { ...currentEnrichmentInput, [field]: value },
+    }));
+  };
+
+  const handleRunEnrichment = (force = false) => {
+    if (!caseId || !canRunEnrichment || !selectedProviderId) return;
+
+    const nameFromParts = `${(currentEnrichmentInput.firstName || '').trim()} ${(currentEnrichmentInput.lastName || '').trim()}`.trim();
+    const payload = {
+      ...currentEnrichmentInput,
+      fullName: nameFromParts || currentEnrichmentInput.fullName || undefined,
+    };
+
+    const cleanedPayload = Object.fromEntries(
+      Object.entries(payload).filter(([, value]) => {
+        if (typeof value === 'string') return value.trim().length > 0;
+        return value != null;
+      })
+    );
+
+    if (!cleanedPayload.fullName && !cleanedPayload.firstName && !cleanedPayload.lastName) {
+      pushToast({
+        variant: 'warn',
+        title: 'Name required',
+        message: 'Enter at least a first or last name before running enrichment.',
+      });
+      return;
+    }
+
+    if (force && supportsForce && canForceByRole) {
+      cleanedPayload.force = true;
+    }
+
+    runEnrichment.mutate({ caseId, providerId: selectedProviderId, payload: cleanedPayload });
+  };
+
+  const handleSelectEnrichmentRecord = (recordId) => {
+    if (!caseId || !recordId || !selectedProviderId) return;
+    setSelectingRecordId(recordId);
+    selectEnrichment.mutate({ caseId, providerId: selectedProviderId, recordId });
+  };
+
+  const handleEnrichmentSubmit = (event) => {
+    event.preventDefault();
+    handleRunEnrichment(false);
+  };
+
+  const handleForceEnrichment = () => {
+    if (!supportsForce || !canForceByRole) return;
+    handleRunEnrichment(true);
+  };
+
   const handleStageSave = () => {
     if (!caseId) return;
     if (!stageDraft) {
@@ -405,6 +695,14 @@ export default function CaseDetail() {
       qualificationNotes,
       followUpAt: followUpAt ? new Date(followUpAt).toISOString() : null,
       assignedTo,
+      address: {
+        streetLine1: contactStreet1,
+        streetLine2: contactStreet2,
+        city: contactCity,
+        stateCode: contactStateCode,
+        postalCode: contactPostalCode,
+      },
+      phone: contactPhone,
     };
 
     if (decision === 'accepted') {
@@ -699,6 +997,12 @@ export default function CaseDetail() {
                 ))}
               </div>
             </DetailItem>
+            <DetailItem label="Phone" value={contactPhoneDisplay || '—'} />
+            <DetailItem label="Address">
+              <div className="mt-1 whitespace-pre-line text-sm text-slate-800">
+                {contactAddressDisplay || '—'}
+              </div>
+            </DetailItem>
             <DetailItem label="Source" value={data.source || '—'} />
             <DetailItem label="Updated" value={formatRelative(data.updatedAt || data.normalized_at)} />
           </div>
@@ -787,8 +1091,96 @@ export default function CaseDetail() {
         </div>
       </SectionCard>
 
-      <SectionCard title="CRM details" subtitle="Keep ownership, notes, and decisions up to date">
+      <SectionCard title="CRM details" subtitle="Keep ownership, contact info, and decisions up to date">
         <form className="space-y-4" onSubmit={handleCrmSave}>
+          <div className="grid gap-4 md:grid-cols-2">
+            <div>
+              <label className="text-xs font-semibold uppercase tracking-wide text-slate-500" htmlFor="crm-phone">
+                Phone
+              </label>
+              <input
+                id="crm-phone"
+                type="text"
+                value={contactPhone}
+                onChange={(e) => setContactPhone(e.target.value)}
+                className="mt-1 w-full rounded-lg border border-slate-300 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none focus:ring-2 focus:ring-blue-200 disabled:cursor-not-allowed disabled:opacity-60"
+                placeholder="e.g., (555) 555-1212"
+                disabled={updateCrm.isPending}
+              />
+            </div>
+            <div>
+              <label className="text-xs font-semibold uppercase tracking-wide text-slate-500" htmlFor="crm-address1">
+                Address line 1
+              </label>
+              <input
+                id="crm-address1"
+                type="text"
+                value={contactStreet1}
+                onChange={(e) => setContactStreet1(e.target.value)}
+                className="mt-1 w-full rounded-lg border border-slate-300 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none focus:ring-2 focus:ring-blue-200 disabled:cursor-not-allowed disabled:opacity-60"
+                placeholder="Street address"
+                disabled={updateCrm.isPending}
+              />
+            </div>
+            <div>
+              <label className="text-xs font-semibold uppercase tracking-wide text-slate-500" htmlFor="crm-address2">
+                Address line 2
+              </label>
+              <input
+                id="crm-address2"
+                type="text"
+                value={contactStreet2}
+                onChange={(e) => setContactStreet2(e.target.value)}
+                className="mt-1 w-full rounded-lg border border-slate-300 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none focus:ring-2 focus:ring-blue-200 disabled:cursor-not-allowed disabled:opacity-60"
+                placeholder="Apt, unit, suite (optional)"
+                disabled={updateCrm.isPending}
+              />
+            </div>
+            <div className="grid grid-cols-3 gap-4">
+              <div>
+                <label className="text-xs font-semibold uppercase tracking-wide text-slate-500" htmlFor="crm-city">
+                  City
+                </label>
+                <input
+                  id="crm-city"
+                  type="text"
+                  value={contactCity}
+                  onChange={(e) => setContactCity(e.target.value)}
+                  className="mt-1 w-full rounded-lg border border-slate-300 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none focus:ring-2 focus:ring-blue-200 disabled:cursor-not-allowed disabled:opacity-60"
+                  placeholder="City"
+                  disabled={updateCrm.isPending}
+                />
+              </div>
+              <div>
+                <label className="text-xs font-semibold uppercase tracking-wide text-slate-500" htmlFor="crm-state">
+                  State
+                </label>
+                <input
+                  id="crm-state"
+                  type="text"
+                  value={contactStateCode}
+                  onChange={(e) => setContactStateCode(e.target.value)}
+                  className="mt-1 w-full rounded-lg border border-slate-300 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none focus:ring-2 focus:ring-blue-200 disabled:cursor-not-allowed disabled:opacity-60"
+                  placeholder="e.g., TX"
+                  disabled={updateCrm.isPending}
+                />
+              </div>
+              <div>
+                <label className="text-xs font-semibold uppercase tracking-wide text-slate-500" htmlFor="crm-postal">
+                  Postal code
+                </label>
+                <input
+                  id="crm-postal"
+                  type="text"
+                  value={contactPostalCode}
+                  onChange={(e) => setContactPostalCode(e.target.value)}
+                  className="mt-1 w-full rounded-lg border border-slate-300 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none focus:ring-2 focus:ring-blue-200 disabled:cursor-not-allowed disabled:opacity-60"
+                  placeholder="ZIP"
+                  disabled={updateCrm.isPending}
+                />
+              </div>
+            </div>
+          </div>
           <div className="grid gap-4 md:grid-cols-2">
             <div className="space-y-2">
               <label className="text-xs font-semibold uppercase tracking-wide text-slate-500" htmlFor="crm-assigned">
@@ -945,6 +1337,312 @@ export default function CaseDetail() {
             </li>
           ) : null}
         </ul>
+      </SectionCard>
+    </div>
+  );
+
+  const enrichmentContent = !providersLoaded ? (
+    <SectionCard title="Enrichment" subtitle="Loading provider configuration…">
+      <div className="rounded-lg border border-slate-200 bg-slate-50 p-4 text-sm text-slate-600">Checking available enrichment providers…</div>
+    </SectionCard>
+  ) : providerOptions.length === 0 ? (
+    <SectionCard
+      title="Enrichment"
+      subtitle="Configure at least one enrichment provider to enable lookups."
+    >
+      <div className="rounded-lg border border-slate-200 bg-slate-50 p-4 text-sm text-slate-600">
+        Set the `ENRICHMENT_PROVIDERS` environment variable (for example `pipl,whitepages`),
+        provide API keys, and restart the API server to begin enrichment.
+      </div>
+    </SectionCard>
+  ) : (
+    <div className="space-y-6">
+      <SectionCard
+        title={`${providerLabel} enrichment`}
+        subtitle="Run a manual lookup to pull possible next-of-kin and contact details."
+      >
+        <div className="space-y-4">
+          <div className="rounded-lg border border-slate-200 bg-slate-50 p-4 text-sm text-slate-600">
+            <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+              <div className="flex items-center gap-2">
+                <label className="text-xs font-semibold uppercase tracking-wide text-slate-500" htmlFor="enrichment-provider">
+                  Provider
+                </label>
+                <select
+                  id="enrichment-provider"
+                  value={selectedProviderId}
+                  onChange={(event) => setSelectedProviderId(event.target.value)}
+                  className="rounded-lg border border-slate-300 px-3 py-1 text-xs focus:border-blue-500 focus:outline-none focus:ring-2 focus:ring-blue-200"
+                >
+                  {providerOptions.map((provider) => (
+                    <option key={provider.id} value={provider.id}>
+                      {provider.label}
+                    </option>
+                  ))}
+                </select>
+              </div>
+              <div className="flex flex-col items-start gap-1 text-xs text-slate-500 md:items-end">
+                <span>
+                  Last run: {enrichmentDoc?.requestedAt ? formatRelative(enrichmentDoc.requestedAt) : 'Never'}
+                </span>
+                <span>
+                  Requested by: {enrichmentDoc?.requestedBy?.email || enrichmentDoc?.requestedBy?.name || '—'}
+                </span>
+              </div>
+            </div>
+            {enrichmentData?.cached ? (
+              <div className="mt-2 text-xs text-slate-500">
+                Current results cached until {enrichmentNextRefresh ? formatRelative(enrichmentNextRefresh) : 'later'}.
+                {supportsForce && canForceByRole ? ' Use force refresh to bypass the cache.' : ''}
+              </div>
+            ) : null}
+            {enrichmentDoc?.error?.message ? (
+              <div className="mt-2 rounded-md border border-rose-200 bg-rose-50 px-3 py-2 text-xs text-rose-700">
+                {enrichmentDoc.error.message}
+              </div>
+            ) : null}
+          </div>
+
+          <form className="space-y-4" onSubmit={handleEnrichmentSubmit}>
+            <div className="grid gap-4 md:grid-cols-2">
+              <div>
+                <label className="text-xs font-semibold uppercase tracking-wide text-slate-500" htmlFor="wp-first">
+                  First name
+                </label>
+                <input
+                  id="wp-first"
+                  type="text"
+                  value={currentEnrichmentInput.firstName || ''}
+                  onChange={(event) => handleEnrichmentFieldChange('firstName', event.target.value)}
+                  className="mt-1 w-full rounded-lg border border-slate-300 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none focus:ring-2 focus:ring-blue-200 disabled:cursor-not-allowed disabled:opacity-60"
+                  placeholder="e.g., John"
+                  disabled={runEnrichment.isPending}
+                />
+              </div>
+              <div>
+                <label className="text-xs font-semibold uppercase tracking-wide text-slate-500" htmlFor="wp-last">
+                  Last name
+                </label>
+                <input
+                  id="wp-last"
+                  type="text"
+                  value={currentEnrichmentInput.lastName || ''}
+                  onChange={(event) => handleEnrichmentFieldChange('lastName', event.target.value)}
+                  className="mt-1 w-full rounded-lg border border-slate-300 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none focus:ring-2 focus:ring-blue-200 disabled:cursor-not-allowed disabled:opacity-60"
+                  placeholder="e.g., Doe"
+                  disabled={runEnrichment.isPending}
+                />
+              </div>
+              <div>
+                <label className="text-xs font-semibold uppercase tracking-wide text-slate-500" htmlFor="wp-city">
+                  City (optional)
+                </label>
+                <input
+                  id="wp-city"
+                  type="text"
+                  value={currentEnrichmentInput.city || ''}
+                  onChange={(event) => handleEnrichmentFieldChange('city', event.target.value)}
+                  className="mt-1 w-full rounded-lg border border-slate-300 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none focus:ring-2 focus:ring-blue-200 disabled:cursor-not-allowed disabled:opacity-60"
+                  placeholder="e.g., Houston"
+                  disabled={runEnrichment.isPending}
+                />
+              </div>
+              <div>
+                <label className="text-xs font-semibold uppercase tracking-wide text-slate-500" htmlFor="wp-state">
+                  State (optional)
+                </label>
+                <input
+                  id="wp-state"
+                  type="text"
+                  value={currentEnrichmentInput.stateCode || ''}
+                  onChange={(event) => handleEnrichmentFieldChange('stateCode', event.target.value)}
+                  className="mt-1 w-full rounded-lg border border-slate-300 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none focus:ring-2 focus:ring-blue-200 disabled:cursor-not-allowed disabled:opacity-60"
+                  placeholder="e.g., TX"
+                  disabled={runEnrichment.isPending}
+                />
+              </div>
+              <div>
+                <label className="text-xs font-semibold uppercase tracking-wide text-slate-500" htmlFor="wp-postal">
+                  Postal code (optional)
+                </label>
+                <input
+                  id="wp-postal"
+                  type="text"
+                  value={currentEnrichmentInput.postalCode || ''}
+                  onChange={(event) => handleEnrichmentFieldChange('postalCode', event.target.value)}
+                  className="mt-1 w-full rounded-lg border border-slate-300 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none focus:ring-2 focus:ring-blue-200 disabled:cursor-not-allowed disabled:opacity-60"
+                  placeholder="e.g., 77002"
+                  disabled={runEnrichment.isPending}
+                />
+              </div>
+              <div>
+                <label className="text-xs font-semibold uppercase tracking-wide text-slate-500" htmlFor="wp-phone">
+                  Phone (optional)
+                </label>
+                <input
+                  id="wp-phone"
+                  type="text"
+                  value={currentEnrichmentInput.phone || ''}
+                  onChange={(event) => handleEnrichmentFieldChange('phone', event.target.value)}
+                  className="mt-1 w-full rounded-lg border border-slate-300 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none focus:ring-2 focus:ring-blue-200 disabled:cursor-not-allowed disabled:opacity-60"
+                  placeholder="e.g., (555) 555-1212"
+                  disabled={runEnrichment.isPending}
+                />
+              </div>
+            </div>
+
+            <div className="flex flex-wrap items-center gap-3">
+              <button
+                type="submit"
+                disabled={!selectedProviderId || !canRunEnrichment || runEnrichment.isPending}
+                className="inline-flex items-center rounded-lg border border-blue-500 bg-blue-600 px-4 py-2 text-sm font-medium text-white shadow-sm transition hover:bg-blue-700 disabled:cursor-not-allowed disabled:border-slate-300 disabled:bg-slate-200 disabled:text-slate-500"
+              >
+                {runEnrichment.isPending ? 'Running…' : enrichmentDoc ? 'Run again' : 'Run enrichment'}
+              </button>
+              {supportsForce && canForceByRole ? (
+                <button
+                  type="button"
+                  onClick={handleForceEnrichment}
+                  disabled={runEnrichment.isPending}
+                  className="inline-flex items-center rounded-lg border border-slate-300 px-4 py-2 text-sm text-slate-600 transition hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-60"
+                >
+                  Force refresh
+                </button>
+              ) : null}
+              {!canRunEnrichment ? (
+                <span className="text-xs text-slate-500">
+                  You do not have permission to run enrichment for this case.
+                </span>
+              ) : null}
+            </div>
+          </form>
+        </div>
+      </SectionCard>
+
+      <SectionCard title="Enrichment results" subtitle="Review matches and attach any relevant contacts">
+        {enrichmentRefreshing ? (
+          <div className="rounded-lg border border-slate-200 bg-slate-50 p-6 text-center text-sm text-slate-600">
+            Fetching results…
+          </div>
+        ) : !enrichmentDoc ? (
+          <div className="rounded-lg border border-dashed border-slate-200 bg-slate-50 p-6 text-center text-sm text-slate-500">
+            Run enrichment to pull candidate matches from {providerLabel}.
+          </div>
+        ) : (
+          <div className="space-y-4">
+            {enrichmentDoc.status === 'error' ? (
+              <div className="rounded-lg border border-rose-200 bg-rose-50 p-4 text-sm text-rose-700">
+                {enrichmentDoc.error?.message || 'Enrichment failed. Try again later.'}
+              </div>
+            ) : null}
+            {enrichmentSelected.length ? (
+              <div className="text-xs text-slate-500">
+                Attached records: {enrichmentSelected.map((entry) => entry?.recordId).filter(Boolean).join(', ')}
+              </div>
+            ) : null}
+            {enrichmentCandidates.length ? (
+              <div className="overflow-x-auto">
+                <table className="min-w-full table-auto border-collapse text-sm">
+                  <thead className="bg-slate-100 text-left text-xs font-semibold uppercase tracking-wide text-slate-600">
+                    <tr>
+                      <th className="px-3 py-2">Name</th>
+                      <th className="px-3 py-2">Phones</th>
+                      <th className="px-3 py-2">Addresses</th>
+                      <th className="px-3 py-2">Relations</th>
+                      <th className="px-3 py-2" aria-label="Actions" />
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {enrichmentCandidates.map((candidate, index) => {
+                      const rowKey = candidate?.recordId || `${candidate?.fullName || 'candidate'}-${index}`;
+                      const isSelected = candidate?.recordId && enrichmentSelectedSet.has(candidate.recordId);
+                      return (
+                        <tr key={rowKey} className="border-b border-slate-100">
+                          <td className="px-3 py-3 align-top">
+                            <div className="font-medium text-slate-800">{candidate?.fullName || 'Unknown'}</div>
+                            <div className="text-xs text-slate-500">
+                              {candidate?.ageRange ? `${candidate.ageRange}` : null}
+                              {candidate?.gender ? ` ${candidate.gender}` : null}
+                              {candidate?.recordId ? ` • ${candidate.recordId}` : ''}
+                            </div>
+                          </td>
+                          <td className="px-3 py-3 align-top text-xs text-slate-600">
+                            {Array.isArray(candidate?.contacts) && candidate.contacts.length ? (
+                              <ul className="space-y-1">
+                                {candidate.contacts.map((contact, idx) => (
+                                  <li key={`${rowKey}-phone-${idx}`}>
+                                    <span>{contact.value}</span>
+                                    {contact.lineType ? ` • ${contact.lineType}` : ''}
+                                  </li>
+                                ))}
+                              </ul>
+                            ) : (
+                              <span className="text-slate-400">—</span>
+                            )}
+                          </td>
+                          <td className="px-3 py-3 align-top text-xs text-slate-600">
+                            {Array.isArray(candidate?.addresses) && candidate.addresses.length ? (
+                              <ul className="space-y-1">
+                                {candidate.addresses.map((address, idx) => (
+                                  <li key={`${rowKey}-addr-${idx}`}>
+                                    {[address.streetLine1, address.city, address.stateCode, address.postalCode]
+                                      .filter(Boolean)
+                                      .join(', ') || '—'}
+                                  </li>
+                                ))}
+                              </ul>
+                            ) : (
+                              <span className="text-slate-400">—</span>
+                            )}
+                          </td>
+                          <td className="px-3 py-3 align-top text-xs text-slate-600">
+                            {Array.isArray(candidate?.relations) && candidate.relations.length ? (
+                              <ul className="space-y-1">
+                                {candidate.relations.map((relation, idx) => (
+                                  <li key={`${rowKey}-rel-${idx}`}>
+                                    {relation.name || 'Unnamed'}{relation.relation ? ` — ${relation.relation}` : ''}
+                                  </li>
+                                ))}
+                              </ul>
+                            ) : (
+                              <span className="text-slate-400">—</span>
+                            )}
+                          </td>
+                          <td className="px-3 py-3 align-top text-right">
+                            {candidate?.recordId ? (
+                              <button
+                                type="button"
+                                onClick={() => handleSelectEnrichmentRecord(candidate.recordId)}
+                                disabled={!canRunEnrichment || selectEnrichment.isPending || (selectingRecordId === candidate.recordId && selectEnrichment.isPending)}
+                                className={`inline-flex items-center rounded-lg border px-3 py-1 text-xs font-medium transition ${
+                                  isSelected
+                                    ? 'border-emerald-500 bg-emerald-50 text-emerald-700'
+                                    : 'border-slate-300 text-slate-600 hover:bg-slate-100'
+                                } disabled:cursor-not-allowed disabled:opacity-60`}
+                              >
+                                {selectingRecordId === candidate.recordId && selectEnrichment.isPending
+                                  ? 'Saving…'
+                                  : isSelected
+                                    ? 'Attached'
+                                    : 'Attach'}
+                              </button>
+                            ) : (
+                              <span className="text-xs text-slate-400">No record id</span>
+                            )}
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            ) : (
+              <div className="rounded-lg border border-dashed border-slate-200 bg-slate-50 p-6 text-center text-sm text-slate-500">
+                No candidates were returned for the last search.
+              </div>
+            )}
+          </div>
+        )}
       </SectionCard>
     </div>
   );
@@ -1333,6 +2031,7 @@ export default function CaseDetail() {
   let activeContent = overviewContent;
   if (activeTab === 'checklist') activeContent = checklistContent;
   else if (activeTab === 'crm') activeContent = crmContent;
+  else if (activeTab === 'enrichment') activeContent = enrichmentContent;
   else if (activeTab === 'documents') activeContent = documentsContent;
   else if (activeTab === 'communications') activeContent = communicationsContent;
   else if (activeTab === 'activity') activeContent = activityContent;

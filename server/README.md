@@ -18,10 +18,17 @@ Recognized variables:
 - PORT — HTTP port (default: 8080)
 - WEB_ORIGIN — CORS allowlist origin (default: /^http:\/\/localhost:\\d+$/)
 - DASHBOARD_TZ — Timezone used for booking-day windows (default: America/Chicago)
- - FIREBASE_PROJECT_ID — Firebase Admin project id (production)
- - GOOGLE_APPLICATION_CREDENTIALS — Path to Firebase Admin credentials file (e.g., /opt/render/project/secrets/firebase.json on Render)
- - SMTP_HOST, SMTP_PORT, SMTP_SECURE, SMTP_USER, SMTP_PASS — SMTP settings to send invitation emails (optional)
- - EMAIL_FROM — From-address used in invite emails (optional)
+- REDIS_URL — Redis connection string for BullMQ queues (default: redis://localhost:6379/0)
+- QUEUE_HEARTBEAT_MS, MESSAGING_QUEUE_CONCURRENCY — Optional queue tuning knobs
+- FIREBASE_PROJECT_ID — Firebase Admin project id (production)
+- GOOGLE_APPLICATION_CREDENTIALS — Path to Firebase Admin credentials file (e.g., /opt/render/project/secrets/firebase.json on Render)
+- TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN, TWILIO_MESSAGING_SERVICE_SID — Twilio Programmable Messaging credentials
+- TWILIO_STATUS_CALLBACK_URL, TWILIO_WEBHOOK_AUTH_TOKEN — Optional overrides for webhook URL/signature validation
+- SMTP_HOST, SMTP_PORT, SMTP_SECURE, SMTP_USER, SMTP_PASS — SMTP settings to send invitation emails (optional)
+- EMAIL_FROM — From-address used in invite emails (optional)
+- WHITEPAGES_API_KEY — API key used for manual Whitepages enrichment lookups
+- ENRICHMENT_PROVIDERS — comma-separated list of enabled enrichment providers (e.g., `pipl,whitepages`)
+- PIPL_API_KEY — API key used for Pipl enrichment lookups
  - APP_NAME — App name used in invite subject/body (optional)
 
 Notes:

@@ -60,6 +60,16 @@ const formatMoney = (value) => {
   return `$${num.toLocaleString()}`;
 };
 
+const formatShortAddress = (address) => {
+  if (!address || typeof address !== 'object') return '';
+  const line1 = address.streetLine1 || address.line1 || '';
+  const city = address.city || '';
+  const state = address.stateCode || address.state || '';
+  const postal = address.postalCode || address.zip || '';
+  const parts = [line1, [city, state].filter(Boolean).join(', '), postal].filter((part) => part && part.trim().length > 0);
+  return parts.join(' • ');
+};
+
 const formatDate = (date) => {
   if (!(date instanceof Date) || Number.isNaN(date.getTime())) return null;
   return date.toISOString().slice(0, 10);
@@ -248,6 +258,8 @@ export default function Cases() {
       const caseId = String(item._id || item.id || item.case_number || id);
       const assignedOwner = item.crm_details?.assignedTo || '';
       const followUpIso = item.crm_details?.followUpAt || null;
+      const contactAddressShort = formatShortAddress(item.crm_details?.address || item.address || {});
+      const contactPhoneValue = item.crm_details?.phone || item.phone || item.primary_phone || '';
       const ageMs = (() => {
         const ref = item.booking_date;
         if (!ref) return null;
@@ -271,15 +283,17 @@ export default function Cases() {
       flags,
       stage: item.crm_stage || 'new',
       needsAttention: Boolean(item.needs_attention),
-      contacted: Boolean(item.contacted),
-      lastContact: item.last_contact_at ? new Date(item.last_contact_at).toLocaleString() : '—',
-      assignedTo: assignedOwner,
-      followUpAt: followUpIso,
+        contacted: Boolean(item.contacted),
+        lastContact: item.last_contact_at ? new Date(item.last_contact_at).toLocaleString() : '—',
+        assignedTo: assignedOwner,
+        followUpAt: followUpIso,
+        contactPhone: contactPhoneValue,
+        contactAddress: contactAddressShort,
         ageLabel: (ageHours != null)
           ? (ageHours < 24 ? `${ageHours}h` : `${ageDays}d ${ageHours % 24}h`)
           : '—',
-      raw: item,
-    };
+        raw: item,
+      };
     })
   ), [items]);
 
@@ -550,6 +564,16 @@ export default function Cases() {
                         {value}
                       </span>
                     ),
+                  },
+                  {
+                    key: 'contactPhone',
+                    header: 'Phone',
+                    render: (value) => value || '—',
+                  },
+                  {
+                    key: 'contactAddress',
+                    header: 'Address',
+                    render: (value) => value || '—',
                   },
                   {
                     key: 'contacted',

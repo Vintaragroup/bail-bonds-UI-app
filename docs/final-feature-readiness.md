@@ -11,7 +11,7 @@ Track the remaining feature work required before we containerize and promote the
 | Payments | Billing Dashboard, Payment Form, Methods, Confirmation, History, Settings, Refunds, Disputes | ✅ Feature work complete – awaiting containerization/staging rollout tasks | Payment processor SDK, secure vault for keys, transaction schema | Monitoring/SOC2 evidence will be finalized during infrastructure deployment. |
 | Check-ins | Check-in scheduler, attendance log, compliance alerts | In progress – scheduling modal + attendance API live; reminders/GPS queue outstanding | Calendar utilities, notification service | Should follow payments to leverage shared scheduling primitives. |
 | Calendar | Global schedule, court dates, staff allocation | Design assets ready; no data plumbing yet | Time-zone handling, ICS export optional | Supports both check-ins and case management. |
-| Messages | Inbox, templates, automated reminders | Messaging provider decision outstanding | Notification gateway (Twilio, SendGrid, etc.) | Coordinate with compliance for logging/retention. |
+| Messages | Inbox, templates, automated reminders | Backend queue + API wired; awaiting Twilio credentials, thread UI, and compliance artifacts | Notification gateway (Twilio, SendGrid, etc.) | See `docs/messaging-sms-integration.md` for detailed task list and compliance notes. |
 | Reports | KPI overview, export to CSV/PDF | Data queries partially covered by dashboard APIs | Reporting engine, role-based data filtering | Align with SOC2 evidence requirements. |
 
 ## 3. Payments Implementation Plan
@@ -78,9 +78,10 @@ Track the remaining feature work required before we containerize and promote the
    - Add reminder delivery hooks (email/SMS placeholders) + audit logging for attendance outcomes.
    - Build list/detail views with filters (status, upcoming vs missed) and React Query integration.
 2. **Messaging:**
-   - Choose provider (Twilio/SendGrid) and define messaging service wrapper in server.
-   - Implement message composer/templates UI, delivery history, and status indicators.
-   - Ensure retention/export controls for compliance (logging, opt-out handling).
+   - Provision Twilio sandbox credentials and validate end-to-end send/receive flows.
+   - Extend messaging API with thread view, scheduling, and opt-out enforcement.
+   - Flesh out frontend conversation UX (thread viewer, template CRUD, retry flows).
+   - Document opt-in/opt-out, retention, and monitoring runbooks ahead of staging cutover.
 3. **Calendar:** merge case events, check-ins, and court dates with timezone-aware components.
 4. **Reports:** finalize data sources, build export flows, integrate with go-live compliance checklist.
 

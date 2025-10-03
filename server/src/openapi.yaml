@@ -9,9 +9,225 @@ tags:
     description: Administrative user management.
   - name: Payments
     description: Billing dashboards, transactions, methods, and refunds.
+  - name: Messages
+    description: Outbound and inbound messaging.
 servers:
   - url: http://localhost:8080/api
 paths:
+  /cases:
+    get:
+      summary: List cases
+      tags: [Cases]
+      parameters:
+        - in: query
+          name: query
+          schema: { type: string }
+        - in: query
+          name: county
+          schema: { type: string, description: "harris|galveston|brazoria|fortbend|jefferson" }
+        - in: query
+          name: status
+          schema: { type: string }
+        - in: query
+          name: startDate
+          schema: { type: string, format: date }
+        - in: query
+          name: endDate
+          schema: { type: string, format: date }
+        - in: query
+          name: window
+          schema: { type: string, enum: [24h,48h,72h] }
+        - in: query
+          name: sortBy
+          schema: { type: string, enum: [booking_date,bond_amount] }
+        - in: query
+          name: order
+          schema: { type: string, enum: [asc,desc], default: desc }
+        - in: query
+          name: limit
+          schema: { type: integer, minimum: 1, maximum: 200, default: 25 }
+      responses:
+        '200':
+          description: Case list
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items:
+                    type: array
+                    items: { $ref: '#/components/schemas/Case' }
+                  count:
+                    type: integer
+                  total:
+                    type: integer
+  /cases/{id}:
+    get:
+      summary: Get a case by id
+      tags: [Cases]
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          description: Case detail
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Case' }
+        '404': { description: Not found }
+  /cases/{id}/crm:
+    patch:
+      summary: Update CRM contact and metadata
+      tags: [Cases]
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                address: { $ref: '#/components/schemas/CrmAddress' }
+                phone: { type: string }
+                assignedTo: { type: string }
+                followUpAt: { type: string, format: date-time }
+                documents:
+                  type: array
+                  items: { $ref: '#/components/schemas/ChecklistItem' }
+      responses:
+        '200':
+          description: Updated case
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Case' }
+        '400': { description: Invalid payload }
+        '404': { description: Not found }
+  /cases/enrichment/providers:
+    get:
+      summary: List enrichment providers
+      tags: [Cases]
+      responses:
+        '200':
+          description: Available providers
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  providers:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        id: { type: string }
+                        label: { type: string }
+                        description: { type: string, nullable: true }
+                        supportsForce: { type: boolean }
+                        default: { type: boolean }
+  /cases/{id}/enrichment/{providerId}:
+    get:
+      summary: Get latest enrichment attempt for a case
+      tags: [Cases]
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema: { type: string }
+        - in: path
+          name: providerId
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          description: Latest enrichment state
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  enrichment:
+                    oneOf:
+                      - $ref: '#/components/schemas/Enrichment'
+                      - type: 'null'
+                  cached: { type: boolean }
+                  nextRefreshAt: { type: string, format: date-time, nullable: true }
+        '404': { description: Not found }
+    post:
+      summary: Run enrichment for a case
+      tags: [Cases]
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema: { type: string }
+        - in: path
+          name: providerId
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              allOf:
+                - $ref: '#/components/schemas/EnrichmentParams'
+                - type: object
+                  properties:
+                    force: { type: boolean, description: "Bypass cache (requires elevated permission)" }
+      responses:
+        '200':
+          description: Enrichment result
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  enrichment: { $ref: '#/components/schemas/Enrichment' }
+                  cached: { type: boolean }
+                  nextRefreshAt: { type: string, format: date-time, nullable: true }
+        '400': { description: Invalid payload }
+        '404': { description: Not found }
+  /cases/{id}/enrichment/{providerId}/select:
+    post:
+      summary: Attach a selected enrichment result to a case
+      tags: [Cases]
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema: { type: string }
+        - in: path
+          name: providerId
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [recordId]
+              properties:
+                recordId: { type: string }
+      responses:
+        '200':
+          description: Updated enrichment state
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  enrichment: { $ref: '#/components/schemas/Enrichment' }
+                  cached: { type: boolean }
+                  nextRefreshAt: { type: string, format: date-time, nullable: true }
+        '400': { description: Invalid payload }
+        '404': { description: Not found }
   /health:
     get:
       summary: Liveness / readiness
@@ -1058,8 +1274,293 @@ paths:
                     lastContactAt: "2025-09-28T08:00:00.000Z"
         '404':
           description: Not found
+  /messages:
+    get:
+      summary: List messages
+      description: Returns recent inbound and outbound messages with optional case filter.
+      tags: [Messages]
+      parameters:
+        - in: query
+          name: caseId
+          schema:
+            type: string
+            description: Filter messages by case identifier.
+        - in: query
+          name: limit
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 200
+            default: 50
+      responses:
+        '200':
+          description: Message list
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/Message'
+  /messages/send:
+    post:
+      summary: Queue outbound SMS message
+      tags: [Messages]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [caseId, to, body]
+              properties:
+                caseId:
+                  type: string
+                  description: Case identifier the message belongs to.
+                to:
+                  type: string
+                  description: Recipient phone number in E.164 format.
+                body:
+                  type: string
+                  maxLength: 1600
+                  description: Message body to send.
+      responses:
+        '202':
+          description: Message queued for delivery
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: object
+                    properties:
+                      id: { type: string }
+                      status: { type: string }
+        '400':
+          description: Invalid payload
+  /messages/twilio/status:
+    post:
+      summary: Twilio delivery status callback
+      tags: [Messages]
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/x-www-form-urlencoded:
+            schema:
+              type: object
+              properties:
+                MessageSid: { type: string }
+                MessageStatus: { type: string }
+                To: { type: string }
+                From: { type: string }
+                ErrorCode: { type: string, nullable: true }
+                ErrorMessage: { type: string, nullable: true }
+      responses:
+        '200': { description: Acknowledged }
+        '403': { description: Invalid signature }
+  /messages/twilio/inbound:
+    post:
+      summary: Twilio inbound message webhook
+      tags: [Messages]
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/x-www-form-urlencoded:
+            schema:
+              type: object
+              properties:
+                MessageSid: { type: string }
+                From: { type: string }
+                To: { type: string }
+                Body: { type: string }
+      responses:
+        '200': { description: Acknowledged }
+        '403': { description: Invalid signature }
 components:
   schemas:
+    CrmAddress:
+      type: object
+      properties:
+        streetLine1: { type: string }
+        streetLine2: { type: string }
+        city: { type: string }
+        stateCode: { type: string }
+        postalCode: { type: string }
+        countryCode: { type: string }
+    ChecklistItem:
+      type: object
+      properties:
+        key: { type: string }
+        label: { type: string }
+        required: { type: boolean }
+        status: { type: string, enum: [pending, completed] }
+        completedAt: { type: string, format: date-time }
+        note: { type: string }
+    Case:
+      type: object
+      properties:
+        id: { type: string }
+        full_name: { type: string }
+        county: { type: string }
+        booking_date: { type: string }
+        bond_amount: { type: number, nullable: true }
+        bond_label: { type: string }
+        case_number: { type: string }
+        spn: { type: string }
+        phone: { type: string }
+        address: { $ref: '#/components/schemas/CaseSourceAddress' }
+        crm_stage: { type: string, enum: [new, contacted, qualifying, accepted, denied] }
+        crm_details:
+          type: object
+          properties:
+            assignedTo: { type: string }
+            followUpAt: { type: string, format: date-time }
+            phone: { type: string }
+            address: { $ref: '#/components/schemas/CrmAddress' }
+            documents:
+              type: array
+              items: { $ref: '#/components/schemas/ChecklistItem' }
+            attachments:
+              type: array
+              items:
+                type: object
+                additionalProperties: true
+    Message:
+      type: object
+      properties:
+        id: { type: string }
+        caseId: { type: string, nullable: true }
+        direction: { type: string, enum: [out, in] }
+        channel: { type: string, enum: [sms, voice] }
+        status: { type: string, enum: [queued, sending, sent, delivered, failed] }
+        to: { type: string, nullable: true }
+        from: { type: string, nullable: true }
+        body: { type: string, nullable: true }
+        provider: { type: string, nullable: true }
+        providerMessageId: { type: string, nullable: true }
+        createdAt: { type: string, format: date-time, nullable: true }
+        sentAt: { type: string, format: date-time, nullable: true }
+        deliveredAt: { type: string, format: date-time, nullable: true }
+        errorCode: { type: string, nullable: true }
+        errorMessage: { type: string, nullable: true }
+        meta:
+          type: object
+          additionalProperties: true
+    CaseSourceAddress:
+      type: object
+      properties:
+        line1: { type: string }
+        line2: { type: string }
+        city: { type: string }
+        state: { type: string }
+        zip: { type: string }
+        postalCode: { type: string }
+    EnrichmentParams:
+      type: object
+      properties:
+        fullName: { type: string }
+        firstName: { type: string }
+        lastName: { type: string }
+        city: { type: string }
+        stateCode: { type: string }
+        postalCode: { type: string }
+        addressLine1: { type: string }
+        addressLine2: { type: string }
+        phone: { type: string }
+    EnrichmentContact:
+      type: object
+      properties:
+        type: { type: string, nullable: true }
+        value: { type: string }
+        lineType: { type: string, nullable: true }
+        carrier: { type: string, nullable: true }
+    EnrichmentAddress:
+      type: object
+      properties:
+        streetLine1: { type: string, nullable: true }
+        streetLine2: { type: string, nullable: true }
+        city: { type: string, nullable: true }
+        stateCode: { type: string, nullable: true }
+        postalCode: { type: string, nullable: true }
+        countryCode: { type: string, nullable: true }
+        type: { type: string, nullable: true }
+    EnrichmentRelation:
+      type: object
+      properties:
+        name: { type: string, nullable: true }
+        relation: { type: string, nullable: true }
+    EnrichmentCandidate:
+      type: object
+      properties:
+        recordId: { type: string, nullable: true }
+        fullName: { type: string, nullable: true }
+        firstName: { type: string, nullable: true }
+        lastName: { type: string, nullable: true }
+        ageRange: { type: string, nullable: true }
+        gender: { type: string, nullable: true }
+        score: { type: number, nullable: true }
+        contacts:
+          type: array
+          items: { $ref: '#/components/schemas/EnrichmentContact' }
+        addresses:
+          type: array
+          items: { $ref: '#/components/schemas/EnrichmentAddress' }
+        relations:
+          type: array
+          items: { $ref: '#/components/schemas/EnrichmentRelation' }
+        additional:
+          type: object
+          additionalProperties: true
+    Enrichment:
+      type: object
+      properties:
+        id: { type: string }
+        provider: { type: string }
+        providerLabel: { type: string, nullable: true }
+        status: { type: string, enum: [success, empty, error] }
+        params: { $ref: '#/components/schemas/EnrichmentParams' }
+        requestedAt: { type: string, format: date-time }
+        expiresAt: { type: string, format: date-time, nullable: true }
+        requestedBy:
+          type: object
+          properties:
+            uid: { type: string, nullable: true }
+            email: { type: string, nullable: true }
+            name: { type: string, nullable: true }
+        candidates:
+          type: array
+          items: { $ref: '#/components/schemas/EnrichmentCandidate' }
+        error:
+          oneOf:
+            - type: object
+              properties:
+                code: { type: string, nullable: true }
+                message: { type: string, nullable: true }
+            - type: 'null'
+        meta:
+          type: object
+          additionalProperties: true
+          nullable: true
+        selectedRecords:
+          type: array
+          items: { $ref: '#/components/schemas/EnrichmentSelection' }
+    EnrichmentSelection:
+      type: object
+      properties:
+        recordId: { type: string }
+        selectedAt: { type: string, format: date-time }
+        selectedBy:
+          type: object
+          properties:
+            uid: { type: string, nullable: true }
+            email: { type: string, nullable: true }
+            name: { type: string, nullable: true }
+        payload: { $ref: '#/components/schemas/EnrichmentCandidate' }
     Money:
       type: number
       format: double

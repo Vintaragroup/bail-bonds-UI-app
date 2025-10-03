@@ -16,12 +16,14 @@ import dashboard from './routes/dashboard.js';
 import cases from './routes/cases.js';
 import checkins from './routes/checkins.js';
 import documents from './routes/documents.js';
+import messagesRoutes, { twilioWebhooks } from './routes/messages.js';
 import authRoutes from './routes/auth.js';
 import userRoutes from './routes/users.js';
 import accessRequestRoutes from './routes/accessRequests.js';
 import metadataRoutes from './routes/metadata.js';
 import paymentRoutes, { stripeWebhookHandler } from './routes/payments.js';
 import { requireAuth } from './middleware/auth.js';
+import { initQueues } from './jobs/index.js';
 
 const app = express();
 
@@ -54,6 +56,7 @@ app.use(helmet({
 app.post('/api/payments/stripe/webhook', express.raw({ type: 'application/json' }), stripeWebhookHandler);
 app.use(express.json({ limit: '1mb' }));
 app.use(cookieParser());
+app.use('/api/messages/twilio', express.urlencoded({ extended: false }), twilioWebhooks);
 
 const ENV_ORIGINS = (process.env.WEB_ORIGIN || '')
   .split(',')
@@ -77,6 +80,7 @@ app.use('/api/auth', authRoutes);
 app.use('/api/dashboard', requireAuth, dashboard);
 app.use('/api/cases', requireAuth, cases);
 app.use('/api/checkins', requireAuth, checkins);
+app.use('/api/messages', requireAuth, messagesRoutes);
 app.use('/api/cases', requireAuth, documents);
 app.use('/api/users', requireAuth, userRoutes);
 app.use('/api/access-requests', requireAuth, accessRequestRoutes);
@@ -97,6 +101,7 @@ if (MONGO_URI) {
   await connectMongo(MONGO_URI, MONGO_DB);
   app.set('mongo', getMongo());
   try { ensureDashboardIndexes(getMongo()); } catch {}
+  try { initQueues(); } catch (err) { console.error('Queue bootstrap failed', err?.message || err); }
 } else {
   console.warn('⚠️  MONGO_URI not set — starting server without DB connection (some endpoints will return 503)');
   app.set('mongo', null);

@@ -62,3 +62,12 @@ These windows are non-overlapping: 24h, 48h, and 72h are disjoint and contiguous
 - 24h/48h/72h are non-overlapping and sum to 72h set.
 - Lists (/new and /recent) align with the corresponding counts in KPIs and per-county.
 - Harris Civil rows are excluded from aggregates.
+
+## CRM contact fields
+
+- Optional canonical contact fields live under `crm_details`:
+  - `address`: `{ streetLine1, streetLine2, city, stateCode, postalCode, countryCode }`
+  - `phone`: string
+- When upstream source documents (e.g., simple_harris) include address/phone (via address object or fields like `address_line_1`, `city`, `state`, `postal_code`, `phone`), the API backfills `crm_details.address`/`phone` on read, so existing cases surface contact info without a separate migration step.
+- `PATCH /cases/:id/crm` accepts `address` and `phone` to persist edits.
+- Enrichment parameter builder prefers CRM contact fields by default; UI form values can override as needed per run.

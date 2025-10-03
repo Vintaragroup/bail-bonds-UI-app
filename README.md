@@ -48,6 +48,12 @@ npm run smoke:trends        # trends spans smoke (7,14,30)
 - UI: The third KPI card has a small toggle to switch between “48–72h” and “3–7d”.
 - Health: `/api/health/buckets` summarizes `time_bucket_v2` distribution across simple_* for quick scraper alignment checks.
 
+## New: CRM contact capture (address/phone)
+- Schema: Cases now include optional CRM contact fields under `crm_details.address` `{ streetLine1, streetLine2, city, stateCode, postalCode, countryCode }` and `crm_details.phone`.
+- Source mapping: When present on source records (e.g., simple_harris.address or `address_line_1`/`city`/`state`/`postal_code` and `phone`), these are backfilled into CRM on read, so existing records immediately surface contact details.
+- Updates: `PATCH /cases/:id/crm` accepts `address` and `phone` updates; the UI will include them in enrichment defaults.
+- Enrichment defaults: Whitepages lookups now default to CRM address/phone unless overridden in the form.
+
 ## Future Enhancements (Optional)
 - Persist metrics snapshots.
 - Expand aggregated provider to additional windows on demand.

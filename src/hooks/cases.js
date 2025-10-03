@@ -193,3 +193,52 @@ export function useCreateCaseActivity(options = {}) {
     ...options,
   });
 }
+
+export function useEnrichmentProviders(options = {}) {
+  return useQuery({
+    queryKey: ['enrichmentProviders'],
+    queryFn: () => getJSON('/cases/enrichment/providers'),
+    staleTime: 300_000,
+    ...options,
+  });
+}
+
+export function useCaseEnrichment(caseId, providerId, options = {}) {
+  const { enabled = true, ...rest } = options;
+  return useQuery({
+    queryKey: ['caseEnrichment', providerId, caseId],
+    enabled: Boolean(caseId) && Boolean(providerId) && enabled,
+    queryFn: () => getJSON(`/cases/${encodeURIComponent(caseId)}/enrichment/${encodeURIComponent(providerId)}`),
+    staleTime: 60_000,
+    ...rest,
+  });
+}
+
+export function useRunCaseEnrichment(options = {}) {
+  return useMutation({
+    mutationFn: ({ caseId, providerId, payload }) => {
+      if (!caseId) throw new Error('caseId is required');
+      if (!providerId) throw new Error('providerId is required');
+      return sendJSON(`/cases/${encodeURIComponent(caseId)}/enrichment/${encodeURIComponent(providerId)}`, {
+        method: 'POST',
+        body: payload,
+      });
+    },
+    ...options,
+  });
+}
+
+export function useSelectCaseEnrichment(options = {}) {
+  return useMutation({
+    mutationFn: ({ caseId, providerId, recordId }) => {
+      if (!caseId) throw new Error('caseId is required');
+      if (!providerId) throw new Error('providerId is required');
+      if (!recordId) throw new Error('recordId is required');
+      return sendJSON(`/cases/${encodeURIComponent(caseId)}/enrichment/${encodeURIComponent(providerId)}/select`, {
+        method: 'POST',
+        body: { recordId },
+      });
+    },
+    ...options,
+  });
+}

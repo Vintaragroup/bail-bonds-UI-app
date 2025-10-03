@@ -81,6 +81,20 @@ _Last updated: 2025-01-15_
 - Quiet hours: auto-shift SMS to the next allowed window (configurable per department).
 - SLA monitoring: send metrics to observability stack (missed reminder dispatches, queue delays).
 
+#### 3.3.2 GPS Ping Verification Checklist
+- [ ] Confirm Redis/Bull queue configuration in dev and staging with `checkin:gps` workers registered and processing heartbeats.
+- [ ] Add automated health probes (e.g., `/api/health` extension) that validate queue connectivity and surface last successful ping timestamp.
+- [ ] Create a gpsEnabled check-in in dev, verify three daily ping jobs get enqueued with correct client timezone metadata, and snapshot job IDs in the document.
+- [ ] Run manual worker test to simulate provider callback (mock GPS payload) and ensure `CheckInPingLog` persists location, status transition, and audit trail.
+- [ ] Confirm `CaseDetail` and `CheckIns` timelines render latest ping + status without relying on mock data.
+- [ ] Capture SOC2 evidence: job configuration screenshot, ping log excerpt, and alerting screenshot stored in compliance vault.
+- [ ] Draft operator runbook for investigating missed pings (queue backlog, provider outage, client device issues) and link it in `docs/final-feature-readiness.md`.
+
+#### 3.3.3 Immediate Actions
+- [x] Add Redis service to `docker-compose.dev.yml` + staging infra plan, documenting ports/credentials.
+- [x] Scaffold `jobs/checkins.queue.js` with placeholder workers and logging (no-op handler) to unblock queue health checks.
+- [ ] Define `/api/health` extension contract for queue metrics and coordinate with ops for alert thresholds.
+
 ### 3.4 Notifications & Reminders
 1. Hook into messaging provider (Twilio/SendGrid) once selected.
 2. Templates: reminder email/SMS, missed check-in alert, manual ping instructions.
@@ -148,6 +162,7 @@ To make supervision more flexible while keeping a strong audit trail, support ad
 ## 4. Dependencies & Open Questions
 - Messaging provider decision (Twilio vs SendGrid/SMS alternative).
 - Push vs SMS for GPS pings; need or availability of client mobile app.
+- Redis/Bull queue infrastructure scaffolded for development; staging provisioning + health checks still pending.
 - Infrastructure for job queue (Redis) in production.
 - Legal review of GPS consent language and data retention.
 - Observability stack for queue + reminder metrics (Grafana/Datadog); confirm logging standards with DevOps.
