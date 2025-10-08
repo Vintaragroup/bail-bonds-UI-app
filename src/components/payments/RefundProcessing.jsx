@@ -16,7 +16,7 @@ import { useToast } from '../ToastContext';
 function formatCurrency(amount, currency = 'USD') {
   try {
     return new Intl.NumberFormat('en-US', { style: 'currency', currency }).format(amount);
-  } catch (error) {
+  } catch {
     return `$${Number(amount || 0).toFixed(2)}`;
   }
 }

@@ -57,7 +57,6 @@ export function useSerializedPolling(endpoints, { enabled = true, align = true, 
   const [data, setData] = useState({});
   const [errors, setErrors] = useState({});
   const [running, setRunning] = useState(false);
-  const loopRef = useRef(null);
   const startedRef = useRef(false); // StrictMode guard
   const stopRef = useRef(false);
   const scheduleRef = useRef(null);

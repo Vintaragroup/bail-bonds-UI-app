@@ -1,4 +1,5 @@
 // Lightweight API client for the dashboard (uses browser fetch)
+import { firebaseAuthClient } from './firebaseClient';
 // Base URL can be provided at runtime via window.__ENV__.VITE_API_URL, or at build time via import.meta.env.VITE_API_URL.
 // Default to same-origin proxy path '/api' to work with Nginx/Vite proxy.
 //
@@ -8,11 +9,12 @@
 
 export async function getAuthHeader() {
   try {
-    const mod = await import('./firebaseClient');
-    const user = mod?.firebaseAuthClient?.currentUser;
+    const user = firebaseAuthClient?.currentUser;
     const token = user ? await user.getIdToken().catch(() => null) : null;
     if (token) return { Authorization: `Bearer ${token}` };
-  } catch {}
+  } catch {
+    // ignore auth header errors
+  }
   return undefined;
 }
 
@@ -34,20 +36,24 @@ function reportOverlay(msg) {
     if (typeof window !== 'undefined' && typeof window.__REPORT_ERROR === 'function') {
       window.__REPORT_ERROR(msg);
     }
-  } catch {}
+  } catch {
+    // overlay reporter not available
+  }
 }
 
 async function parseJsonResponse(res) {
   const clone = res.clone();
   try {
     return await res.json();
-  } catch (e) {
+  } catch {
     // Provide a clearer message when the server returns HTML or plain text
     let snippet = '';
     try {
       const text = await clone.text();
       snippet = (text || '').slice(0, 160).replace(/\s+/g, ' ').trim();
-    } catch {}
+    } catch {
+      // ignore body read issues
+    }
     const extra = snippet ? ` Snippet: ${snippet}` : '';
     const errMsg = `Invalid JSON response.${extra}`;
     reportOverlay(errMsg);
@@ -64,9 +70,9 @@ async function httpGet(path) {
       credentials: 'include',
       headers,
     });
-  } catch (e) {
-    reportOverlay(`Network error fetching ${API_BASE}${fullPath}: ${e?.message || e}`);
-    throw e;
+  } catch (_e) {
+    reportOverlay(`Network error fetching ${API_BASE}${fullPath}: ${_e?.message || _e}`);
+    throw _e;
   }
   if (!res.ok) {
     const text = await res.text().catch(() => '');

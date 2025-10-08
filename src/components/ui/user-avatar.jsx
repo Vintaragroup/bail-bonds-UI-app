@@ -1,3 +1,4 @@
+/* eslint-disable react-refresh/only-export-components */
 import React from 'react';
 import { User, Shield, Star, Crown, Briefcase, UserCheck } from 'lucide-react';
 import { Avatar, AvatarFallback, AvatarImage } from './avatar';

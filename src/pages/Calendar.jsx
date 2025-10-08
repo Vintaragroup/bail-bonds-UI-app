@@ -106,7 +106,7 @@ export default function Calendar() {
               },
             ]}
             rows={filteredEvents}
-            renderActions={(row) => (
+            renderActions={() => (
               <div className="flex justify-end gap-2">
                 <button
                   type="button"

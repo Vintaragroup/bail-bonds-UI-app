@@ -123,7 +123,7 @@ export default function Admin() {
             },
           ]}
           rows={JOBS}
-          renderActions={(row) => (
+          renderActions={() => (
             <div className="flex justify-end gap-2">
               <button
                 type="button"
@@ -177,7 +177,7 @@ export default function Admin() {
               { key: 'lastSeen', header: 'Last seen' },
             ]}
             rows={USERS}
-            renderActions={(row) => (
+            renderActions={() => (
               <div className="flex justify-end gap-2">
                 <button
                   type="button"

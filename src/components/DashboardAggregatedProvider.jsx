@@ -1,3 +1,4 @@
+/* eslint-disable react-refresh/only-export-components */
 // src/components/DashboardAggregatedProvider.jsx
 // Optional context provider wiring the serialized polling hook so nested components
 // can consume aggregated data without each spinning its own polling timers.

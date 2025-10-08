@@ -17,18 +17,18 @@ export default function BottomNav() {
       aria-label="Primary"
     >
       <ul className="grid grid-cols-4 gap-0">
-        {items.map(({ to, label, Icon, end }) => (
-          <li key={to} className="min-w-0">
+        {items.map((it) => (
+          <li key={it.to} className="min-w-0">
             <NavLink
-              to={to}
-              end={end}
+              to={it.to}
+              end={it.end}
               className={({ isActive }) =>
                 'flex flex-col items-center justify-center py-2 text-xs leading-tight'
                 + (isActive ? ' text-blue-600' : ' text-gray-600 hover:text-gray-900')
               }
             >
-              <Icon className="h-5 w-5" aria-hidden="true" />
-              <span className="mt-0.5">{label}</span>
+              <it.Icon className="h-5 w-5" aria-hidden="true" />
+              <span className="mt-0.5">{it.label}</span>
             </NavLink>
           </li>
         ))}

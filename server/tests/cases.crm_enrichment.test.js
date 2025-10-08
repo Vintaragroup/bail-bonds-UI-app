@@ -16,7 +16,6 @@ vi.mock('mongoose', () => {
   class FakeSchema {
     static Types = { ObjectId: FakeObjectId, Mixed: Object };
     constructor(def) { this.def = def; this._virtuals = new Map(); this.methods = {}; this._indexes = []; }
-    static get Types() { return this.Types; }
     virtual(name) { const v = { get: () => v, set: () => v }; this._virtuals.set(name, v); return v; }
     pre() { return this; }
     index(spec) { this._indexes.push(spec); return this; }

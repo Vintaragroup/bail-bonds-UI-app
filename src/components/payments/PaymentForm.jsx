@@ -34,7 +34,7 @@ const PAYMENT_TYPE_LABELS = {
 function formatCurrency(amount, currency = 'USD') {
   try {
     return new Intl.NumberFormat('en-US', { style: 'currency', currency }).format(amount);
-  } catch (err) {
+  } catch {
     return `$${Number(amount || 0).toFixed(2)}`;
   }
 }

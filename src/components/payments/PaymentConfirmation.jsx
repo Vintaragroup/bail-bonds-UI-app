@@ -20,7 +20,7 @@ function formatCurrency(amount, currency = 'USD') {
   const value = Number.isFinite(Number(amount)) ? Number(amount) : 0;
   try {
     return new Intl.NumberFormat('en-US', { style: 'currency', currency }).format(value);
-  } catch (err) {
+  } catch {
     return `$${value.toFixed(2)}`;
   }
 }

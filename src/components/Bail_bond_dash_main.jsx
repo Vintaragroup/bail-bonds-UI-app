@@ -13,7 +13,7 @@ import {
 import { legacyWindowForBucket, bucketClasses } from '../lib/buckets';
 import { useCaseStats, useCases } from '../hooks/cases';
 import DashboardDebugPanel from './DashboardDebugPanel.jsx';
-import { API_BASE } from '../lib/api';
+import { API_BASE, getAuthHeader } from '../lib/api';
 
 // Always render these 5
 const ALL_COUNTIES = ['brazoria', 'fortbend', 'galveston', 'harris', 'jefferson'];
@@ -329,23 +329,33 @@ export default function DashboardScreen() {
       const sp = new URLSearchParams(window.location.search);
       if (sp.get('debug') === '1') return true;
       return localStorage.getItem('dashDebug') === '1';
-    } catch { return false; }
+    } catch {
+      // ignore storage access
+      return false;
+    }
   });
   const toggleDebug = useCallback(() => {
     setDebug((prev) => {
       const next = !prev;
-      try { localStorage.setItem('dashDebug', next ? '1' : '0'); } catch {}
+      try { localStorage.setItem('dashDebug', next ? '1' : '0'); } catch {
+        // ignore storage failures
+      }
       return next;
     });
   }, []);
   // Debug minimize toggle (persisted)
   const [debugMin, setDebugMin] = useState(() => {
-    try { return localStorage.getItem('dashDebugMin') === '1'; } catch { return false; }
+    try { return localStorage.getItem('dashDebugMin') === '1'; } catch {
+      // ignore storage access
+      return false;
+    }
   });
   const toggleDebugMin = useCallback(() => {
     setDebugMin((prev) => {
       const next = !prev;
-      try { localStorage.setItem('dashDebugMin', next ? '1' : '0'); } catch {}
+      try { localStorage.setItem('dashDebugMin', next ? '1' : '0'); } catch {
+        // ignore storage failures
+      }
       return next;
     });
   }, []);
@@ -367,23 +377,25 @@ export default function DashboardScreen() {
       ];
       keys.forEach((key) => queryClient.invalidateQueries({ queryKey: key }));
       keys.forEach((key) => queryClient.refetchQueries({ queryKey: key }));
-    } catch {}
+    } catch {
+      // ignore refetch errors
+    }
   }, [queryClient, valueWindow]);
 
   // ── Queries
-  const { data: kpiData, isLoading: kpisLoading } = useKpis();
-  const { data: top10, isLoading: topLoading } = useTopByValue(valueWindow, 10);
-  const { data: perCounty, isLoading: perCountyLoading } = usePerCounty(valueWindow);
-  const { data: countyTrends, isLoading: trendsLoading } = useCountyTrends(7);
-  const { data: new24h, isLoading: new24Loading } = useNewToday('all');
+  const { data: kpiData, isLoading: _kpisLoading } = useKpis();
+  const { data: top10, isLoading: _topLoading } = useTopByValue(valueWindow, 10);
+  const { data: perCounty, isLoading: _perCountyLoading } = usePerCounty(valueWindow);
+  const { data: countyTrends, isLoading: _trendsLoading } = useCountyTrends(7);
+  const { data: new24h, isLoading: _new24Loading } = useNewToday('all');
   // Recent window toggle (default 48–72h); options: '48-72h' | '3-7d'
   const [recentWindow, setRecentWindow] = useState('48-72h');
   // KPI card toggle for the "New (48–72h)" card
   const [kpiRecentWindow, setKpiRecentWindow] = useState('48-72h');
-  const { data: recent48to72, isLoading: recentLoadingLegacy } = useRecent48to72(10);
-  const { data: recentSelectable, isLoading: recentLoadingNew } = useRecent(recentWindow, 10);
+  const { data: recent48to72, isLoading: _recentLoadingLegacy } = useRecent48to72(10);
+  const { data: recentSelectable, isLoading: _recentLoadingNew } = useRecent(recentWindow, 10);
   const recentData = recentSelectable || recent48to72;
-  const recentLoading = (recentLoadingLegacy && !recentSelectable) || recentLoadingNew;
+  const recentLoading = (_recentLoadingLegacy && !recentSelectable) || _recentLoadingNew;
   const { data: caseStats } = useCaseStats({ staleTime: 120_000 });
   const [snapshotTab, setSnapshotTab] = useState('top');
   const [snapshotFilters, setSnapshotFilters] = useState({
@@ -1131,8 +1143,8 @@ export default function DashboardScreen() {
                   {/* Targeted loading row per active tab to avoid showing empty-state during fetch */}
                   {(() => {
                     const activeLoading =
-                      (snapshotTab === 'top' && topLoading) ||
-                      (snapshotTab === 'new' && new24Loading) ||
+                      (snapshotTab === 'top' && _topLoading) ||
+                      (snapshotTab === 'new' && _new24Loading) ||
                       (snapshotTab === 'recent' && recentLoading) ||
                       (snapshotTab === 'attention' && attentionLoading);
                     if (activeLoading) {
@@ -1255,7 +1267,7 @@ export default function DashboardScreen() {
                       </tr>
                     );
                   })}
-                  {activeRows.length === 0 && !((snapshotTab === 'top' && topLoading) || (snapshotTab === 'new' && new24Loading) || (snapshotTab === 'recent' && recentLoading) || (snapshotTab === 'attention' && attentionLoading)) ? (
+                  {activeRows.length === 0 && !((snapshotTab === 'top' && _topLoading) || (snapshotTab === 'new' && _new24Loading) || (snapshotTab === 'recent' && recentLoading) || (snapshotTab === 'attention' && attentionLoading)) ? (
                     <tr>
                       <td colSpan={7} className="py-6 text-center text-slate-500">
                         {emptyMessage}
@@ -1636,7 +1648,6 @@ function ProbeSection({ county, countyKey, selectedDayLabel }) {
     const started = performance.now();
     let status = 0, ok = false, ms = 0, summary = '', data = null;
     try {
-      const { getAuthHeader } = await import('../lib/api');
       const auth = await getAuthHeader();
       const res = await fetch(url, {
         headers: { 'Cache-Control': 'no-cache', ...(auth||{}) },

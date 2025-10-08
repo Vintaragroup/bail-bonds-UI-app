@@ -1,5 +1,4 @@
 /* eslint-env node */
-/* global process */
 // server/src/routes/dashboard.js
 import { Router } from 'express';
 import { bucketsForWindow, V2_BUCKET_ORDER } from '../lib/buckets.js';
@@ -1417,15 +1416,16 @@ r.get('/recent', withMetrics('recent', async (req, res) => {
     let variant = useV2 ? 'v2-buckets-fast-recent' : 'legacy';
     let items = [];
     let count48h = 0, count72h = 0, bond48h = 0, bond72h = 0;
+    // Compute once and reuse for both fast path and ticker
+    const selectedBuckets = requestedWindow === '3d_7d'
+      ? ['3d_7d']
+      : requestedWindow === '72h'
+        ? ['48_72h']
+        : requestedWindow === '48h'
+          ? ['24_48h']
+          : ['24_48h','48_72h'];
     if (useV2) {
       // Accurate counts & bonds (no limit)
-      const selectedBuckets = requestedWindow === '3d_7d'
-        ? ['3d_7d']
-        : requestedWindow === '72h'
-          ? ['48_72h']
-          : requestedWindow === '48h'
-            ? ['24_48h']
-            : ['24_48h','48_72h'];
       const countPipe = [
         ...unionBucketsFast({ time_bucket_v2: { $in: selectedBuckets } }, { time_bucket_v2: 1, bond_amount: 1 }, { needBond: true }),
         { $group: { _id: '$time_bucket_v2', n: { $sum: 1 }, bond: { $sum: { $ifNull: ['$bond_amount', 0] } } } }

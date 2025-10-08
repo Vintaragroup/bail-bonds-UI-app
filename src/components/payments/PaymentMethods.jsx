@@ -35,7 +35,7 @@ export function PaymentMethods({ onNavigate }) {
 
   const paymentMethods = useMemo(() => data?.methods ?? [], [data]);
 
-  const getCardIcon = (brand) => {
+  const getCardIcon = () => {
     return <CreditCard className="h-5 w-5 text-muted-foreground" aria-hidden />;
   };
 
