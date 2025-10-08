@@ -144,6 +144,7 @@ export function UserProvider({ children }: { children: React.ReactNode }) {
   const [loading, setLoading] = useState<boolean>(true);
   const [error, setError] = useState<string | null>(null);
   const queryClient = useQueryClient();
+  const REDIRECT_FLAG = 'asap_auth_redirect_pending';
 
   function invalidateAuthSensitiveQueries() {
     try {
@@ -175,7 +176,16 @@ export function UserProvider({ children }: { children: React.ReactNode }) {
   }, []);
 
   useEffect(() => {
-    // Complete OAuth redirect sign-in if we have a result (important for iOS)
+    // If we initiated a redirect sign-in, reflect that in loading UI immediately
+    try {
+      if (window.sessionStorage.getItem(REDIRECT_FLAG) === '1') {
+        setLoading(true);
+      }
+    } catch {}
+
+    // Complete OAuth redirect sign-in if we have a result (important for iOS).
+    // During this phase, keep loading=true so the UI shows a spinner instead of a blank state.
+    setLoading(true);
     getRedirectResult(firebaseAuthClient)
       .then(async (result) => {
         if (!result || !result.user) return;
@@ -190,6 +200,10 @@ export function UserProvider({ children }: { children: React.ReactNode }) {
           console.warn('OAuth redirect sign-in failed:', err);
           setError(err instanceof Error ? err.message : String(err));
         }
+      })
+      .finally(() => {
+        try { window.sessionStorage.removeItem(REDIRECT_FLAG); } catch {}
+        // Don't force loading=false here; let onAuthStateChanged finalize based on actual auth state
       });
 
     const unsubscribe = onAuthStateChanged(firebaseAuthClient, (fbUser) => {
@@ -234,6 +248,7 @@ export function UserProvider({ children }: { children: React.ReactNode }) {
       const isMobileWeb = typeof navigator !== 'undefined' && /iPhone|iPad|iPod|Android/i.test(navigator.userAgent);
       if (isMobileWeb) {
         // iOS Safari/Chrome often blocks popups; prefer redirect on mobile
+        try { window.sessionStorage.setItem(REDIRECT_FLAG, '1'); } catch {}
         await signInWithRedirect(firebaseAuthClient, providerInstance);
         return; // flow will continue after redirect
       }
@@ -249,6 +264,7 @@ export function UserProvider({ children }: { children: React.ReactNode }) {
         const code = (popupErr && popupErr.code) || '';
         const shouldFallback = typeof code === 'string' && (code.includes('operation-not-supported') || code.includes('popup-blocked') || code.includes('popup-closed'));
         if (shouldFallback) {
+          try { window.sessionStorage.setItem(REDIRECT_FLAG, '1'); } catch {}
           await signInWithRedirect(firebaseAuthClient, providerInstance);
           return;
         }
