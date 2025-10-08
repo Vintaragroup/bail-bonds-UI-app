@@ -2,7 +2,7 @@
 import { useQuery } from '@tanstack/react-query';
 // NOTE: For aggregated polling across multiple endpoints prefer useSerializedPolling in polling.js
 import { useOptionalDashboardAggregated } from '../components/DashboardAggregatedProvider.jsx';
-import { API_BASE } from '../lib/api';
+import { API_BASE, getAuthHeader } from '../lib/api';
 export { API_BASE } from '../lib/api';
 
 // Base URL is resolved centrally in src/lib/api to ensure production builds also honor VITE_API_URL.
@@ -37,10 +37,11 @@ export async function getJSON(path) {
   }
 
   const p = (async () => {
+    const auth = await getAuthHeader();
     const res = await fetch(url, {
       cache: 'no-store',
       credentials: 'include',
-      headers: { 'Accept': 'application/json' },
+      headers: { 'Accept': 'application/json', ...(auth||{}) },
     });
     if (!res.ok) {
       const text = await res.text();
@@ -60,12 +61,14 @@ export async function getJSON(path) {
 
 export async function sendJSON(path, { method = 'POST', body, headers } = {}) {
   const url = `${API_BASE}${path.startsWith('/') ? path : `/${path}`}`;
+  const auth = await getAuthHeader();
   const res = await fetch(url, {
     method,
     headers: {
       'Content-Type': 'application/json',
       'Accept': 'application/json',
       'Cache-Control': 'no-cache',
+      ...(auth||{}),
       ...headers,
     },
     body: body !== undefined ? JSON.stringify(body) : undefined,
@@ -84,12 +87,14 @@ export async function sendJSON(path, { method = 'POST', body, headers } = {}) {
 
 export async function sendFormData(path, { method = 'POST', formData, headers } = {}) {
   const url = `${API_BASE}${path.startsWith('/') ? path : `/${path}`}`;
+  const auth = await getAuthHeader();
   const res = await fetch(url, {
     method,
     body: formData,
     headers: {
       'Accept': 'application/json',
       'Cache-Control': 'no-cache',
+      ...(auth||{}),
       ...headers,
     },
     cache: 'no-store',

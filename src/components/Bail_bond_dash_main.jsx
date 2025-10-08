@@ -1636,8 +1636,10 @@ function ProbeSection({ county, countyKey, selectedDayLabel }) {
     const started = performance.now();
     let status = 0, ok = false, ms = 0, summary = '', data = null;
     try {
+      const { getAuthHeader } = await import('../lib/api');
+      const auth = await getAuthHeader();
       const res = await fetch(url, {
-        headers: { 'Cache-Control': 'no-cache' },
+        headers: { 'Cache-Control': 'no-cache', ...(auth||{}) },
         credentials: 'include',
       });
       status = res.status;

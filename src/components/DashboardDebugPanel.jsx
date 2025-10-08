@@ -3,12 +3,14 @@
 // Renders nothing in production builds unless explicitly mounted behind a flag.
 import React, { useEffect, useState, useCallback } from 'react';
 import { API_BASE } from '../hooks/dashboard.js';
+import { getAuthHeader } from '../lib/api';
 import { useOptionalDashboardAggregated } from './DashboardAggregatedProvider.jsx';
 
-function fetchMetrics(signal) {
+async function fetchMetrics(signal) {
+  const auth = await getAuthHeader();
   return fetch(`${API_BASE}/dashboard/metrics?_cb=${Date.now()}`, {
     signal,
-    headers: { 'Accept': 'application/json', 'Cache-Control': 'no-cache' },
+    headers: { 'Accept': 'application/json', 'Cache-Control': 'no-cache', ...(auth||{}) },
     cache: 'no-store',
     credentials: 'include',
   })

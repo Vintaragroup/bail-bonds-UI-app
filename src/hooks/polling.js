@@ -25,11 +25,13 @@
 
 import { useEffect, useRef, useState, useCallback } from 'react';
 import { API_BASE } from './dashboard.js';
+import { getAuthHeader } from '../lib/api';
 import { useQueryClient } from '@tanstack/react-query';
 
 async function fetchJSONWithHeaders(fullUrl) {
+  const auth = await getAuthHeader();
   const res = await fetch(fullUrl, {
-    headers: { 'Accept': 'application/json', 'Cache-Control': 'no-cache' },
+    headers: { 'Accept': 'application/json', 'Cache-Control': 'no-cache', ...(auth||{}) },
     cache: 'no-store',
     credentials: 'include',
   });

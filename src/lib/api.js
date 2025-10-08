@@ -6,7 +6,7 @@
 // To be resilient, we also attach an Authorization: Bearer <Firebase ID token> when available.
 // The server already supports bearer auth alongside the session cookie.
 
-async function getBearerAuthHeader() {
+export async function getAuthHeader() {
   try {
     const mod = await import('./firebaseClient');
     const user = mod?.firebaseAuthClient?.currentUser;
@@ -58,7 +58,7 @@ async function parseJsonResponse(res) {
 async function httpGet(path) {
   const fullPath = path.startsWith('/') ? path : `/${path}`;
   let res;
-  const headers = await getBearerAuthHeader();
+  const headers = await getAuthHeader();
   try {
     res = await fetch(`${API_BASE}${fullPath}`, {
       credentials: 'include',
