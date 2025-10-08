@@ -3,6 +3,7 @@ import { ToastProvider } from "../components/ToastContext";
 import { useUser } from "../components/UserContext";
 import { PillButton } from "../components/ui/pill-button";
 import { UserAvatar } from "../components/ui/user-avatar";
+import BottomNav from "../components/BottomNav";
 
 const tabs = [
   { to: "/", label: "Dashboard", end: true },
@@ -85,9 +86,11 @@ export default function AppLayout() {
       </div>
 
       {/* Page content */}
-      <main className="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8 py-6">
+      <main className="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8 py-6 pb-24 md:pb-6">
         <Outlet />
       </main>
+      {/* bottom nav for mobile */}
+      <BottomNav />
     </div>
     </ToastProvider>
   );
