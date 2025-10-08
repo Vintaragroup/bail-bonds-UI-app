@@ -25,6 +25,13 @@
     <div id="root"></div>
     <script>
       (function () {
+        var env = (typeof window !== 'undefined' && window.__ENV__) || {};
+        var enabled = false;
+        try {
+          enabled = String(env.DEV_ERROR_OVERLAY || '').toLowerCase() === 'true' || /(?:^|[?&])dev_error_overlay=1(?:&|$)/.test(location.search);
+        } catch (_) {}
+        if (!enabled) return; // Overlay disabled by default; enable via env or URL param
+
         function showErr(msg) {
           try {
             var el = document.getElementById('mobile-error-overlay');

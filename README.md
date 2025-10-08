@@ -134,6 +134,14 @@ Server `.env` (see `server/.env.example`):
 - DB errors / timeouts: ensure `MONGO_URI` is set and Atlas network access allows your host.
 - Swagger not loading routes: ensure the server is running and browse to http://localhost:8080/api/docs.
 
+### Optional: Minimal error overlay (debug only)
+To surface top-of-page errors quickly on mobile, you can enable a minimal overlay banner. It’s off by default.
+
+- Runtime env: set `DEV_ERROR_OVERLAY='true'` in `public/env.js` (or `env.example.js` -> copy to `env.js`).
+- Or append `?dev_error_overlay=1` to the URL.
+
+Note: Avoid enabling this permanently in production; it’s intended for short-term troubleshooting and does not display stack traces or PII.
+
 ---
 
 ## Mobile dev over LAN (iOS/Android)
