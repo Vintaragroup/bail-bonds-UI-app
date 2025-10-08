@@ -35,8 +35,9 @@ vi.mock('mongoose', () => {
 vi.mock('../src/models/Case.js', async () => {
   const updateOne = vi.fn();
   const findOne = vi.fn();
+  const findOneAndUpdate = vi.fn(() => ({ lean: () => ({ exec: () => Promise.resolve({ _id: '507f1f77bcf86cd799439011', crm_details: {} }) }) }));
   const aggregate = vi.fn(() => ({ option: () => ({ exec: () => Promise.resolve([]) }) }));
-  CaseModel = { updateOne, findOne, aggregate };
+  CaseModel = { updateOne, findOne, findOneAndUpdate, aggregate };
   return { default: CaseModel };
 });
 
@@ -103,9 +104,15 @@ describe('Cases CRM + Enrichment', () => {
       .send({ phone: '+1-555-0111', address: { city: 'Houston', stateCode: 'TX', postalCode: '77001' } });
 
     expect(res.status).toBeLessThan(400);
-    expect(CaseModel.updateOne).toHaveBeenCalledWith(
+    expect(CaseModel.findOneAndUpdate).toHaveBeenCalledWith(
       { _id: '507f1f77bcf86cd799439011' },
-      expect.objectContaining({ $set: expect.objectContaining({ 'crm_details.phone': '+1-555-0111', 'crm_details.address.city': 'Houston' }) })
+      expect.objectContaining({
+        $set: expect.objectContaining({
+          'crm_details.phone': '+1-555-0111',
+          'crm_details.address': expect.objectContaining({ city: 'Houston' }),
+        }),
+      }),
+      expect.objectContaining({ new: true })
     );
   });
 

@@ -16,8 +16,9 @@ const MAX_DB_MS = parseInt(process.env.CASES_MAX_DB_MS || process.env.MAX_DB_MS 
 // Helper to timeout a promise-returning DB operation so handlers don't hang
 function withTimeout(promise, ms = MAX_DB_MS, label = 'cases op') {
   let timer;
+  const p = (promise && typeof promise.then === 'function') ? promise : Promise.resolve(promise);
   return Promise.race([
-    promise.finally(() => clearTimeout(timer)),
+    p.finally(() => clearTimeout(timer)),
     new Promise((_, rej) => {
       timer = setTimeout(() => {
         console.warn(`[cases] ${label} timed out after ${ms}ms`);
@@ -1295,8 +1296,12 @@ r.patch('/:id/crm', async (req, res) => {
     if (!ensureMongoConnected(res)) return;
     ensurePermission(req, ['cases:write', 'cases:write:department']);
     const selector = scopedCaseFilter(req, { _id: req.params.id });
+    let qExisting = Case.findOne(selector);
+    if (qExisting && typeof qExisting.lean === 'function') {
+      qExisting = qExisting.lean();
+    }
     const existing = await withTimeout(
-      Case.findOne(selector).lean(),
+      qExisting && typeof qExisting.exec === 'function' ? qExisting.exec() : qExisting,
       MAX_DB_MS
     ).catch((err) => {
       console.error('PATCH /cases/:id/crm load error', err?.message);
@@ -1382,10 +1387,13 @@ r.patch('/:id/crm', async (req, res) => {
 
     update.updatedAt = new Date();
 
-    const updateQuery = Case.findOneAndUpdate(selector, { $set: update }, { new: true });
-    const queryWithLean = updateQuery.lean();
+    let updateQuery = Case.findOneAndUpdate(selector, { $set: update }, { new: true });
+    if (updateQuery && typeof updateQuery.lean === 'function') {
+      updateQuery = updateQuery.lean();
+    }
+    const toAwait = (updateQuery && typeof updateQuery.exec === 'function') ? updateQuery.exec() : updateQuery;
     const doc = await withTimeout(
-      (queryWithLean.maxTimeMS ? queryWithLean.maxTimeMS(MAX_DB_MS) : queryWithLean),
+      (toAwait && typeof toAwait.maxTimeMS === 'function') ? toAwait.maxTimeMS(MAX_DB_MS) : toAwait,
       MAX_DB_MS
     ).catch((err) => {
       console.error('PATCH /cases/:id/crm update error', err?.message);
@@ -1597,15 +1605,21 @@ r.get('/:caseId/enrichment/:providerId', async (req, res) => {
     if (!ensureMongoConnected(res)) return;
     ensurePermission(req, ['cases:read', 'cases:read:department']);
 
-    const provider = getEnrichmentProvider(req.params.providerId);
+  const provider = getEnrichmentProvider(req.params.providerId);
     if (!provider) {
       return res.status(404).json({ error: 'Unknown enrichment provider' });
     }
 
     const selector = scopedCaseFilter(req, { _id: req.params.caseId });
-    const qCase = Case.findOne(selector).select({ _id: 1 }).lean();
+    let qCase = Case.findOne(selector);
+    if (qCase && typeof qCase.select === 'function') {
+      qCase = qCase.select({ _id: 1 });
+    }
+    if (qCase && typeof qCase.lean === 'function') {
+      qCase = qCase.lean();
+    }
     const caseDoc = await withTimeout(
-      qCase.maxTimeMS ? qCase.maxTimeMS(MAX_DB_MS) : qCase,
+      qCase && typeof qCase.exec === 'function' ? qCase.exec() : qCase,
       MAX_DB_MS,
       `${provider.id}:case`
     );
@@ -1614,15 +1628,19 @@ r.get('/:caseId/enrichment/:providerId', async (req, res) => {
       return res.status(404).json({ error: 'Case not found' });
     }
 
-    const qEnrichment = CaseEnrichment.findOne({
+    let qEnrichment = CaseEnrichment.findOne({
       caseId: caseDoc._id,
       provider: provider.id,
-    })
-      .sort({ requestedAt: -1, createdAt: -1 })
-      .lean();
+    });
+    if (qEnrichment && typeof qEnrichment.sort === 'function') {
+      qEnrichment = qEnrichment.sort({ requestedAt: -1, createdAt: -1 });
+    }
+    if (qEnrichment && typeof qEnrichment.lean === 'function') {
+      qEnrichment = qEnrichment.lean();
+    }
 
     const enrichmentDoc = await withTimeout(
-      qEnrichment.exec ? qEnrichment.exec() : qEnrichment,
+      qEnrichment && typeof qEnrichment.exec === 'function' ? qEnrichment.exec() : qEnrichment,
       MAX_DB_MS,
       `${provider.id}:enrichment`
     );
@@ -1659,9 +1677,12 @@ r.post('/:caseId/enrichment/:providerId', async (req, res) => {
     }
 
     const selector = scopedCaseFilter(req, { _id: req.params.caseId });
-    const qCase = Case.findOne(selector).lean();
+    let qCase = Case.findOne(selector);
+    if (qCase && typeof qCase.lean === 'function') {
+      qCase = qCase.lean();
+    }
     const caseDoc = await withTimeout(
-      qCase.maxTimeMS ? qCase.maxTimeMS(MAX_DB_MS) : qCase,
+      qCase && typeof qCase.exec === 'function' ? qCase.exec() : qCase,
       MAX_DB_MS,
       `${provider.id}:case`
     );
@@ -1670,15 +1691,19 @@ r.post('/:caseId/enrichment/:providerId', async (req, res) => {
       return res.status(404).json({ error: 'Case not found' });
     }
 
-    const qLatest = CaseEnrichment.findOne({
+    let qLatest = CaseEnrichment.findOne({
       caseId: caseDoc._id,
       provider: provider.id,
-    })
-      .sort({ requestedAt: -1, createdAt: -1 })
-      .lean();
+    });
+    if (qLatest && typeof qLatest.sort === 'function') {
+      qLatest = qLatest.sort({ requestedAt: -1, createdAt: -1 });
+    }
+    if (qLatest && typeof qLatest.lean === 'function') {
+      qLatest = qLatest.lean();
+    }
 
     const latest = await withTimeout(
-      qLatest.exec ? qLatest.exec() : qLatest,
+      qLatest && typeof qLatest.exec === 'function' ? qLatest.exec() : qLatest,
       MAX_DB_MS,
       `${provider.id}:latest`
     );
@@ -1794,9 +1819,12 @@ r.post('/:caseId/enrichment/:providerId/select', async (req, res) => {
     }
 
     const selector = scopedCaseFilter(req, { _id: req.params.caseId });
-    const qCase = Case.findOne(selector).lean();
+    let qCase = Case.findOne(selector);
+    if (qCase && typeof qCase.lean === 'function') {
+      qCase = qCase.lean();
+    }
     const caseDoc = await withTimeout(
-      qCase.maxTimeMS ? qCase.maxTimeMS(MAX_DB_MS) : qCase,
+      qCase && typeof qCase.exec === 'function' ? qCase.exec() : qCase,
       MAX_DB_MS,
       `${provider.id}:case`
     );
@@ -1805,11 +1833,18 @@ r.post('/:caseId/enrichment/:providerId/select', async (req, res) => {
       return res.status(404).json({ error: 'Case not found' });
     }
 
-    const enrichmentDoc = await CaseEnrichment.findOne({
+    let qSel = CaseEnrichment.findOne({
       caseId: caseDoc._id,
       provider: provider.id,
-    })
-      .sort({ requestedAt: -1, createdAt: -1 });
+    });
+    if (qSel && typeof qSel.sort === 'function') {
+      qSel = qSel.sort({ requestedAt: -1, createdAt: -1 });
+    }
+    const enrichmentDoc = await withTimeout(
+      qSel && typeof qSel.exec === 'function' ? qSel.exec() : qSel,
+      MAX_DB_MS,
+      `${provider.id}:selectLatest`
+    );
 
     if (!enrichmentDoc) {
       return res.status(404).json({ error: 'No enrichment results available for selection' });

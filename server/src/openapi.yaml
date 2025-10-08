@@ -152,9 +152,8 @@ paths:
                 type: object
                 properties:
                   enrichment:
-                    oneOf:
-                      - $ref: '#/components/schemas/Enrichment'
-                      - type: 'null'
+                    $ref: '#/components/schemas/Enrichment'
+                    nullable: true
                   cached: { type: boolean }
                   nextRefreshAt: { type: string, format: date-time, nullable: true }
         '404': { description: Not found }
@@ -1536,12 +1535,11 @@ components:
           type: array
           items: { $ref: '#/components/schemas/EnrichmentCandidate' }
         error:
-          oneOf:
-            - type: object
-              properties:
-                code: { type: string, nullable: true }
-                message: { type: string, nullable: true }
-            - type: 'null'
+          type: object
+          nullable: true
+          properties:
+            code: { type: string, nullable: true }
+            message: { type: string, nullable: true }
         meta:
           type: object
           additionalProperties: true
