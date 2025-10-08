@@ -3,8 +3,28 @@ import react from '@vitejs/plugin-react'
 import legacy from '@vitejs/plugin-legacy'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
+import fs from 'node:fs'
 
 const rootDir = path.dirname(fileURLToPath(import.meta.url))
+
+function httpsConfigFromEnv() {
+  // If DEV_HTTPS is set (truthy), enable HTTPS. Optionally read key/cert paths.
+  const useHttps = String(process.env.DEV_HTTPS || '').toLowerCase() === '1' || String(process.env.DEV_HTTPS || '').toLowerCase() === 'true'
+  if (!useHttps) return false
+
+  const keyPath = process.env.DEV_HTTPS_KEY
+  const certPath = process.env.DEV_HTTPS_CERT
+  try {
+    if (keyPath && certPath && fs.existsSync(keyPath) && fs.existsSync(certPath)) {
+      return {
+        key: fs.readFileSync(keyPath),
+        cert: fs.readFileSync(certPath),
+      }
+    }
+  } catch {}
+  // Fall back to simple self-signed via Vite when no files provided
+  return true
+}
 
 // https://vite.dev/config/
 export default defineConfig({
@@ -19,6 +39,8 @@ export default defineConfig({
     }),
   ],
   server: {
+    host: true, // allow LAN devices to access dev server
+    https: httpsConfigFromEnv(),
     proxy: {
       '/api': {
         // Use container-friendly target when running under docker (set via compose)
