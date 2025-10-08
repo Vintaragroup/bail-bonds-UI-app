@@ -111,8 +111,10 @@ services:
     image: node:20-alpine
     working_dir: /app
     environment:
-      # Point the browser (Vite dev) to the API exposed on host:8080
-      - VITE_API_URL=${VITE_API_URL_DEV:-http://localhost:8080/api}
+      # Keep SPA requests same-origin to enable first-party cookies on iOS
+      - VITE_API_URL=${VITE_API_URL_DEV:-/api}
+      # Point Vite's proxy to the API; in compose, the service hostname is 'api-dev'
+      - VITE_PROXY_API_TARGET=${VITE_PROXY_API_TARGET:-http://api-dev:8080}
       - VITE_FIREBASE_API_KEY=${VITE_FIREBASE_API_KEY}
       - VITE_FIREBASE_AUTH_DOMAIN=${VITE_FIREBASE_AUTH_DOMAIN}
       - VITE_FIREBASE_PROJECT_ID=${VITE_FIREBASE_PROJECT_ID}

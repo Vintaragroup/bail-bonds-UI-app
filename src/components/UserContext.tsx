@@ -14,6 +14,8 @@ import {
   onAuthStateChanged,
   signOut as firebaseSignOut,
   signInWithPopup,
+  signInWithRedirect,
+  getRedirectResult,
   GoogleAuthProvider,
   OAuthProvider,
   User as FirebaseUser,
@@ -167,6 +169,23 @@ export function UserProvider({ children }: { children: React.ReactNode }) {
   }, []);
 
   useEffect(() => {
+    // Complete OAuth redirect sign-in if we have a result (important for iOS)
+    getRedirectResult(firebaseAuthClient)
+      .then(async (result) => {
+        if (!result || !result.user) return;
+        const idToken = await result.user.getIdToken(true);
+        await exchangeSession(idToken);
+        const profile = await fetchProfile();
+        setCurrentUser(profile);
+        invalidateAuthSensitiveQueries();
+      })
+      .catch((err) => {
+        if (err) {
+          console.warn('OAuth redirect sign-in failed:', err);
+          setError(err instanceof Error ? err.message : String(err));
+        }
+      });
+
     const unsubscribe = onAuthStateChanged(firebaseAuthClient, (fbUser) => {
       setLoading(true);
       handleFirebaseUser(fbUser);
@@ -206,12 +225,29 @@ export function UserProvider({ children }: { children: React.ReactNode }) {
         providerInstance.addScope?.('name');
       }
 
-      const credential = await signInWithPopup(firebaseAuthClient, providerInstance);
-      const idToken = await credential.user.getIdToken(true);
-      await exchangeSession(idToken);
-      const profile = await fetchProfile();
-      setCurrentUser(profile);
-  invalidateAuthSensitiveQueries();
+      const isMobileWeb = typeof navigator !== 'undefined' && /iPhone|iPad|iPod|Android/i.test(navigator.userAgent);
+      if (isMobileWeb) {
+        // iOS Safari/Chrome often blocks popups; prefer redirect on mobile
+        await signInWithRedirect(firebaseAuthClient, providerInstance);
+        return; // flow will continue after redirect
+      }
+
+      try {
+        const credential = await signInWithPopup(firebaseAuthClient, providerInstance);
+        const idToken = await credential.user.getIdToken(true);
+        await exchangeSession(idToken);
+        const profile = await fetchProfile();
+        setCurrentUser(profile);
+        invalidateAuthSensitiveQueries();
+      } catch (popupErr) {
+        const code = (popupErr && popupErr.code) || '';
+        const shouldFallback = typeof code === 'string' && (code.includes('operation-not-supported') || code.includes('popup-blocked') || code.includes('popup-closed'));
+        if (shouldFallback) {
+          await signInWithRedirect(firebaseAuthClient, providerInstance);
+          return;
+        }
+        throw popupErr;
+      }
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Failed to sign in with provider';
       setError(message);

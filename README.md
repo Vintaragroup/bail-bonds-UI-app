@@ -110,12 +110,12 @@ cd ..
 npm run dev
 ```
 
-Frontend will typically be at http://localhost:5173 and proxy requests to the API at http://localhost:8080/api (via `VITE_API_URL`).
+Frontend will typically be at http://localhost:5173 and proxy requests to the API at http://localhost:8080 via Vite's dev proxy (browser calls `/api`, Vite forwards to the API).
 
 ## Environment
 
 Root `.env` (frontend):
-- `VITE_API_URL` — default is `http://localhost:8080/api`
+- `VITE_API_URL` — default is `/api` for same-origin requests via Vite's proxy. If you are not using the proxy, set it to a full URL (e.g., `http://localhost:8080/api`).
 
 Server `.env` (see `server/.env.example`):
 - `MONGO_URI` — MongoDB connection string (Atlas or local)
@@ -135,6 +135,29 @@ Server `.env` (see `server/.env.example`):
 - Swagger not loading routes: ensure the server is running and browse to http://localhost:8080/api/docs.
 
 ---
+
+## Mobile dev over LAN (iOS/Android)
+
+When testing on a phone over Wi‑Fi, prefer same‑origin API calls so session cookies are first‑party on iOS.
+
+- Compose dev stack exposes:
+	- Web (Vite): http://<your-mac-ip>:5173
+	- API: proxied via the web origin as `/api` (Vite forwards to the API container)
+- Configuration:
+	- `docker-compose.dev.yml` sets `VITE_API_URL=/api` and `VITE_PROXY_API_TARGET=http://api-dev:8080`
+	- `vite.config.js` reads `VITE_PROXY_API_TARGET` and proxies `/api` to the API
+- Why: iOS may treat third‑party cookies differently; using same‑origin avoids 401s after login.
+
+Steps
+1) Ensure phone and laptop are on the same Wi‑Fi
+2) Start dev stack with the hotreload profile
+3) On phone browser, open `http://<your-mac-ip>:5173`
+4) Log in (mobile uses OAuth redirect flow)
+
+Gotchas
+- Firebase Auth → Authorized domains: add your LAN IP (e.g., `10.0.0.24`) to avoid provider warnings during dev
+- Stripe.js warns about HTTP in dev; this is safe. For live, use HTTPS.
+- Optional HTTPS locally: enable HTTPS in Vite if needed; proxy still applies.
 
 ## Original Vite README
 

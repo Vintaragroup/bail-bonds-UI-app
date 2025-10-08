@@ -11,7 +11,9 @@ export default defineConfig({
   server: {
     proxy: {
       '/api': {
-        target: 'http://localhost:8080',
+        // Use container-friendly target when running under docker (set via compose)
+        // Falls back to localhost for non-docker local dev
+        target: process.env.VITE_PROXY_API_TARGET || 'http://localhost:8080',
         changeOrigin: true,
         secure: false,
       },

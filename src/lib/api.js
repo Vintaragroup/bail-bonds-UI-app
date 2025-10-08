@@ -15,6 +15,14 @@ const RAW_API_BASE =
   || '/api';
 export const API_BASE = String(RAW_API_BASE).replace(/\/$/, ''); // normalize: no trailing slash
 
+function reportOverlay(msg) {
+  try {
+    if (typeof window !== 'undefined' && typeof window.__REPORT_ERROR === 'function') {
+      window.__REPORT_ERROR(msg);
+    }
+  } catch {}
+}
+
 async function parseJsonResponse(res) {
   const clone = res.clone();
   try {
@@ -27,18 +35,28 @@ async function parseJsonResponse(res) {
       snippet = (text || '').slice(0, 160).replace(/\s+/g, ' ').trim();
     } catch {}
     const extra = snippet ? ` Snippet: ${snippet}` : '';
-    throw new Error(`Invalid JSON response.${extra}`);
+    const errMsg = `Invalid JSON response.${extra}`;
+    reportOverlay(errMsg);
+    throw new Error(errMsg);
   }
 }
 
 async function httpGet(path) {
   const fullPath = path.startsWith('/') ? path : `/${path}`;
-  const res = await fetch(`${API_BASE}${fullPath}`, {
-    credentials: 'include',
-  });
+  let res;
+  try {
+    res = await fetch(`${API_BASE}${fullPath}`, {
+      credentials: 'include',
+    });
+  } catch (e) {
+    reportOverlay(`Network error fetching ${API_BASE}${fullPath}: ${e?.message || e}`);
+    throw e;
+  }
   if (!res.ok) {
     const text = await res.text().catch(() => '');
-    throw new Error(`HTTP ${res.status} ${res.statusText}: ${text}`);
+    const errMsg = `HTTP ${res.status} ${res.statusText}: ${text}`;
+    reportOverlay(errMsg);
+    throw new Error(errMsg);
   }
   return parseJsonResponse(res);
 }
