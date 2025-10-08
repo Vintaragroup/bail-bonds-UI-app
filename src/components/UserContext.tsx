@@ -63,9 +63,15 @@ async function exchangeSession(idToken: string) {
 }
 
 async function fetchProfile(): Promise<AuthenticatedUser | null> {
+  let headers: Record<string, string> | undefined;
+  try {
+    const token = await firebaseAuthClient.currentUser?.getIdToken();
+    if (token) headers = { Authorization: `Bearer ${token}` };
+  } catch {}
   const response = await fetch(`${API_BASE}/auth/me`, {
     method: 'GET',
     credentials: 'include',
+    headers,
   });
 
   if (response.status === 401) {

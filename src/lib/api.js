@@ -1,6 +1,20 @@
 // Lightweight API client for the dashboard (uses browser fetch)
 // Base URL can be provided at runtime via window.__ENV__.VITE_API_URL, or at build time via import.meta.env.VITE_API_URL.
 // Default to same-origin proxy path '/api' to work with Nginx/Vite proxy.
+//
+// Mobile Safari note: Some iOS configurations (ITP/content blockers) can interfere with cross-site cookies.
+// To be resilient, we also attach an Authorization: Bearer <Firebase ID token> when available.
+// The server already supports bearer auth alongside the session cookie.
+
+async function getBearerAuthHeader() {
+  try {
+    const mod = await import('./firebaseClient');
+    const user = mod?.firebaseAuthClient?.currentUser;
+    const token = user ? await user.getIdToken().catch(() => null) : null;
+    if (token) return { Authorization: `Bearer ${token}` };
+  } catch {}
+  return undefined;
+}
 
 const RUNTIME_ENV = (typeof window !== 'undefined' && window.__ENV__) || {};
 // Resolution order:
@@ -44,9 +58,11 @@ async function parseJsonResponse(res) {
 async function httpGet(path) {
   const fullPath = path.startsWith('/') ? path : `/${path}`;
   let res;
+  const headers = await getBearerAuthHeader();
   try {
     res = await fetch(`${API_BASE}${fullPath}`, {
       credentials: 'include',
+      headers,
     });
   } catch (e) {
     reportOverlay(`Network error fetching ${API_BASE}${fullPath}: ${e?.message || e}`);
