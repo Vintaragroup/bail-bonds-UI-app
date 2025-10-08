@@ -38,25 +38,6 @@ export default defineConfig({
       modernPolyfills: true,
     }),
   ],
-  build: {
-    // Quiet down overly chatty size warnings once we vendor-split
-    chunkSizeWarningLimit: 1000,
-    rollupOptions: {
-      output: {
-        manualChunks(id) {
-          if (!id.includes('node_modules')) return undefined;
-          if (id.includes('react-router') || id.includes('react-dom') || id.includes('/react/')) return 'vendor-react';
-          if (id.includes('firebase')) return 'vendor-firebase';
-          if (id.includes('@stripe')) return 'vendor-stripe';
-          if (id.includes('recharts')) return 'vendor-charts';
-          if (id.includes('@radix-ui')) return 'vendor-radix';
-          if (id.includes('@tanstack')) return 'vendor-query';
-          if (id.includes('lucide-react')) return 'vendor-icons';
-          return 'vendor';
-        },
-      },
-    },
-  },
   server: {
     host: true, // allow LAN devices to access dev server
     https: httpsConfigFromEnv(),
