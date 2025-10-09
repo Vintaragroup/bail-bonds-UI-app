@@ -276,9 +276,10 @@ export default function Cases() {
         name: item.full_name || 'Unknown',
         county: prettyCounty(item.county),
         bookingDate: item.booking_date || '—',
+        dob: item.dob || null,
         bondAmount: item.bond_amount,
         status: item.status || '—',
-        spn: item.spn || '—',
+  spn: item.spn || item.booking_number || '—',
         manualTags,
       flags,
       stage: item.crm_stage || 'new',
@@ -540,6 +541,20 @@ export default function Cases() {
                   { key: 'id', header: 'Case ID' },
                   { key: 'county', header: 'County' },
                   { key: 'bookingDate', header: 'Booked' },
+                  {
+                    key: 'dob',
+                    header: 'DOB',
+                    render: (value) => {
+                      if (!value) return '—';
+                      const v = String(value);
+                      if (/^\d{1,2}\/\d{1,2}\/\d{4}$/.test(v)) return v;
+                      if (/^\d{4}-\d{2}-\d{2}$/.test(v)) {
+                        const [y, m, d] = v.split('-');
+                        return `${Number(m)}/${Number(d)}/${y}`;
+                      }
+                      return v;
+                    },
+                  },
                   { key: 'ageLabel', header: 'Age' },
                   {
                     key: 'bondAmount',

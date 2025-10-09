@@ -797,6 +797,7 @@ r.get('/', async (req, res) => {
       first_name: 1,
       last_name: 1,
       county: 1,
+      dob: 1,
       offense: 1,
       agency: 1,
       facility: 1,

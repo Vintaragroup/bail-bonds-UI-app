@@ -327,6 +327,16 @@ export default function CaseDetail() {
   const stageDisplay = stageLabel(data?.crm_stage || 'new');
   const followUpDisplay = formatRelative(crmDetails.followUpAt);
   const lastContactDisplay = formatRelative(data?.last_contact_at);
+  const dobDisplay = useMemo(() => {
+    const v = data?.dob;
+    if (!v) return '—';
+    if (/^\d{1,2}\/\d{1,2}\/\d{4}$/.test(v)) return v;
+    if (/^\d{4}-\d{2}-\d{2}$/.test(v)) {
+      const [y, m, d] = String(v).split('-');
+      return `${Number(m)}/${Number(d)}/${y}`;
+    }
+    return String(v);
+  }, [data?.dob]);
   const bondDisplay = (() => {
     const numeric = formatMoney(data?.bond_amount);
     if (numeric) return numeric;
@@ -355,6 +365,14 @@ export default function CaseDetail() {
     if (!phone || typeof phone !== 'string') return '';
     return phone;
   }, [data?.crm_details?.phone, data?.phone, data?.primary_phone]);
+
+  const headerSubtitle = useMemo(() => {
+    const parts = [];
+    if (data?.spn) parts.push(`SPN ${data.spn}`);
+    if (data?.case_number) parts.push(`Case #${data.case_number}`);
+    if (dobDisplay && dobDisplay !== '—') parts.push(`DOB ${dobDisplay}`);
+    return parts.length ? parts.join(' • ') : 'Full record overview';
+  }, [data?.spn, data?.case_number, dobDisplay]);
   const messagePhoneOptions = useMemo(() => {
     const options = [];
     const seen = new Set();
@@ -1077,13 +1095,24 @@ export default function CaseDetail() {
       <SectionCard title="Case summary" subtitle="Reference details for this client file">
         <div className="grid gap-6 md:grid-cols-2">
           <div className="space-y-3">
+            <DetailItem label="SPN" value={data.spn || data.booking_number || '—'} />
             <DetailItem label="Case number" value={data.case_number || '—'} />
-            <DetailItem label="Booking number" value={data.booking_number || '—'} />
+            <DetailItem label="Date of birth" value={(() => {
+              const v = data?.dob;
+              if (!v) return '—';
+              // Accept either MM/DD/YYYY or YYYY-MM-DD and display as MM/DD/YYYY
+              if (/^\d{1,2}\/\d{1,2}\/\d{4}$/.test(v)) return v;
+              if (/^\d{4}-\d{2}-\d{2}$/.test(v)) {
+                const [y, m, d] = v.split('-');
+                return `${Number(m)}/${Number(d)}/${y}`;
+              }
+              return String(v);
+            })()} />
+            <DetailItem label="Status" value={data.status || '—'} />
             <DetailItem label="County" value={data.county || '—'} />
             <DetailItem label="Category" value={data.category || '—'} />
             <DetailItem label="Agency" value={data.agency || '—'} />
             <DetailItem label="Facility" value={data.facility || '—'} />
-            <DetailItem label="Status" value={data.status || '—'} />
           </div>
           <div className="space-y-3">
             <DetailItem label="Primary charge" value={data.charge || data.offense || '—'} />
@@ -2225,7 +2254,7 @@ export default function CaseDetail() {
     <div className="space-y-6">
       <PageHeader
         title={data.full_name || 'Case detail'}
-        subtitle={data.case_number ? `Case #${data.case_number}` : 'Full record overview'}
+        subtitle={headerSubtitle}
         actions={(
           <div className="flex gap-2">
             <button
@@ -2260,6 +2289,27 @@ export default function CaseDetail() {
           </div>
         )}
       />
+
+      <div className="flex flex-wrap items-center gap-2">
+        {Boolean(data?.needs_attention) && Array.isArray(data?.attention_reasons) && data.attention_reasons.length > 0 ? (
+          <div className="mr-2 flex flex-wrap gap-2">
+            {data.attention_reasons.map((r) => (
+              <span key={`ar-${r}`} className="inline-flex items-center gap-1 rounded-full bg-amber-50 px-2 py-0.5 text-xs font-medium text-amber-800">
+                ⚠ {String(r).replace(/_/g, ' ')}
+              </span>
+            ))}
+          </div>
+        ) : null}
+        {manualTags.length ? (
+          <div className="mr-2 hidden flex-wrap gap-2 sm:flex">
+            {manualTags.map((t) => (
+              <span key={`mt-${t}`} className="inline-flex rounded-full bg-slate-100 px-2 py-0.5 text-xs text-slate-700">
+                {t.replace(/_/g, ' ')}
+              </span>
+            ))}
+          </div>
+        ) : null}
+      </div>
 
       <div className="flex flex-wrap gap-2">
         {TABS.map((tab) => (
