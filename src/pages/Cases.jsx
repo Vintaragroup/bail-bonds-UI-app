@@ -70,6 +70,16 @@ const formatShortAddress = (address) => {
   return parts.join(' • ');
 };
 
+const formatPhone = (value) => {
+  if (!value) return '';
+  const v = String(value);
+  const digits = v.replace(/\D/g, '');
+  if (digits.length === 10) {
+    return `(${digits.slice(0, 3)}) ${digits.slice(3, 6)}-${digits.slice(6)}`;
+  }
+  return v;
+};
+
 const formatDate = (date) => {
   if (!(date instanceof Date) || Number.isNaN(date.getTime())) return null;
   return date.toISOString().slice(0, 10);
@@ -259,7 +269,14 @@ export default function Cases() {
       const assignedOwner = item.crm_details?.assignedTo || '';
       const followUpIso = item.crm_details?.followUpAt || null;
       const contactAddressShort = formatShortAddress(item.crm_details?.address || item.address || {});
-      const contactPhoneValue = item.crm_details?.phone || item.phone || item.primary_phone || '';
+      const contactPhoneValue =
+        item.crm_details?.phone
+        || item.phone
+        || item.primary_phone
+        || item.phone_nbr1
+        || item.phone_nbr2
+        || item.phone_nbr3
+        || '';
       const ageMs = (() => {
         const ref = item.booking_date;
         if (!ref) return null;
@@ -583,7 +600,7 @@ export default function Cases() {
                   {
                     key: 'contactPhone',
                     header: 'Phone',
-                    render: (value) => value || '—',
+                    render: (value) => (value ? formatPhone(value) : '—'),
                   },
                   {
                     key: 'contactAddress',
@@ -612,6 +629,7 @@ export default function Cases() {
                 ]}
                 rows={rows}
                 empty="No cases match these filters yet."
+                onRowClick={(row) => navigate(`/cases/${row.caseId}`)}
                 renderActions={(row) => (
                   <CaseActionsPopover
                     caseId={row.caseId}

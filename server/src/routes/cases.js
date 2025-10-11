@@ -816,6 +816,12 @@ r.get('/', async (req, res) => {
       manual_tags: 1,
       crm_stage: 1,
       crm_details: 1,
+  // Phone enrichment fields (simple_harris)
+  phone_nbr1: 1,
+  phone_nbr2: 1,
+  phone_nbr3: 1,
+  phones_source: 1,
+  phones_updated_at: 1,
       "_upsert_key.anchor": 1,
       // Timestamps to compute "age" on the client
       createdAt: 1,

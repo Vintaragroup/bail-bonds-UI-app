@@ -75,6 +75,16 @@ const formatAddressDisplay = (address) => {
   return parts.join('\n');
 };
 
+const formatPhone = (value) => {
+  if (!value) return '';
+  const v = String(value);
+  const digits = v.replace(/\D/g, '');
+  if (digits.length === 10) {
+    return `(${digits.slice(0, 3)}) ${digits.slice(3, 6)}-${digits.slice(6)}`;
+  }
+  return v;
+};
+
 const FOLLOW_UP_PRESETS = [
   { id: 'today', label: 'Later today', offsetHours: 4 },
   { id: 'tomorrow', label: 'Tomorrow 9am', offsetDays: 1, setHour: 9 },
@@ -360,11 +370,6 @@ export default function CaseDetail() {
     () => formatAddressDisplay(data?.crm_details?.address || data?.address || null),
     [data?.crm_details?.address, data?.address]
   );
-  const contactPhoneDisplay = useMemo(() => {
-    const phone = data?.crm_details?.phone || data?.phone || data?.primary_phone;
-    if (!phone || typeof phone !== 'string') return '';
-    return phone;
-  }, [data?.crm_details?.phone, data?.phone, data?.primary_phone]);
 
   const headerSubtitle = useMemo(() => {
     const parts = [];
@@ -390,6 +395,9 @@ export default function CaseDetail() {
     push(data?.crm_details?.phone, data?.full_name ? `${data.full_name} (CRM)` : 'Client phone');
     push(data?.phone, 'Case record phone');
     push(data?.primary_phone, 'Primary phone');
+  push(data?.phone_nbr1, 'Alt phone 1');
+  push(data?.phone_nbr2, 'Alt phone 2');
+  push(data?.phone_nbr3, 'Alt phone 3');
 
     if (Array.isArray(data?.crm_details?.contacts)) {
       data.crm_details.contacts.forEach((contact, index) => {
@@ -410,6 +418,9 @@ export default function CaseDetail() {
     data?.full_name,
     data?.phone,
     data?.primary_phone,
+    data?.phone_nbr1,
+    data?.phone_nbr2,
+    data?.phone_nbr3,
   ]);
   const caseCheckins = Array.isArray(caseCheckinsData?.items) ? caseCheckinsData.items : [];
   const gpsCheckins = caseCheckins.filter((checkin) => Boolean(checkin?.gpsEnabled));
@@ -1126,7 +1137,41 @@ export default function CaseDetail() {
                 ))}
               </div>
             </DetailItem>
-            <DetailItem label="Phone" value={contactPhoneDisplay || '—'} />
+            <DetailItem label="Phones">
+              <div className="mt-1 flex flex-wrap gap-2">
+                {(() => {
+                  const list = [];
+                  const seen = new Set();
+                  const pushPhone = (val) => {
+                    if (!val || typeof val !== 'string') return;
+                    const digits = val.replace(/\D/g, '');
+                    if (digits.length < 10) return;
+                    const key = digits.length === 11 && digits.startsWith('1') ? digits.slice(1) : digits;
+                    if (seen.has(key)) return;
+                    seen.add(key);
+                    list.push(formatPhone(val));
+                  };
+                  pushPhone(data?.crm_details?.phone);
+                  pushPhone(data?.phone);
+                  pushPhone(data?.primary_phone);
+                  pushPhone(data?.phone_nbr1);
+                  pushPhone(data?.phone_nbr2);
+                  pushPhone(data?.phone_nbr3);
+                  return list.length
+                    ? list.map((p) => (
+                        <span key={p} className="inline-flex rounded-full bg-slate-100 px-2 py-0.5 text-xs text-slate-700">{p}</span>
+                      ))
+                    : <span className="text-slate-500">—</span>;
+                })()}
+              </div>
+              {(data?.phones_source || data?.phones_updated_at) ? (
+                <div className="mt-1 text-[11px] text-slate-400">
+                  {data?.phones_source ? `Source: ${data.phones_source}` : null}
+                  {(data?.phones_source && data?.phones_updated_at) ? ' • ' : ''}
+                  {data?.phones_updated_at ? `Updated: ${new Date(data.phones_updated_at).toLocaleString()}` : null}
+                </div>
+              ) : null}
+            </DetailItem>
             <DetailItem label="Address">
               <div className="mt-1 whitespace-pre-line text-sm text-slate-800">
                 {contactAddressDisplay || '—'}

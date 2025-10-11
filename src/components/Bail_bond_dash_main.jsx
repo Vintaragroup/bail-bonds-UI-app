@@ -14,6 +14,7 @@ import { legacyWindowForBucket, bucketClasses } from '../lib/buckets';
 import { useCaseStats, useCases } from '../hooks/cases';
 import DashboardDebugPanel from './DashboardDebugPanel.jsx';
 import { API_BASE, getAuthHeader } from '../lib/api';
+import { getJSON } from '../hooks/dashboard';
 
 // Always render these 5
 const ALL_COUNTIES = ['brazoria', 'fortbend', 'galveston', 'harris', 'jefferson'];
@@ -450,6 +451,85 @@ export default function DashboardScreen() {
     () => applyContactFilter(top10Raw, snapshotFilters.top),
     [top10Raw, snapshotFilters.top]
   );
+  // Toggle to prioritize items with phone numbers and recency in Top tab
+  const [prioritizePhone, setPrioritizePhone] = useState(false);
+  const [contactMeta, setContactMeta] = useState({}); // id -> { hasPhone, recencyTs }
+
+  // Enrich Top list with phone presence when toggled on
+  useEffect(() => {
+    if (!prioritizePhone || snapshotTab !== 'top') return;
+    const ids = (top10Raw || []).map((it) => String(it?.id || '')).filter(Boolean);
+    const missing = ids.filter((id) => contactMeta[id] == null);
+    if (!missing.length) return;
+    let alive = true;
+    (async () => {
+      try {
+        const results = await Promise.all(
+          missing.map(async (id) => {
+            try {
+              const detail = await getJSON(`/cases/${encodeURIComponent(id)}`);
+              const phones = [
+                detail?.crm_details?.phone,
+                detail?.phone,
+                detail?.primary_phone,
+                detail?.phone_nbr1,
+                detail?.phone_nbr2,
+                detail?.phone_nbr3,
+              ];
+              const hasPhone = phones.some((p) => p && String(p).replace(/\D/g, '').length >= 10);
+              const tsRaw = detail?.updatedAt || detail?.normalized_at || detail?.scraped_at || detail?.booking_date || null;
+              const recencyTs = tsRaw ? (Date.parse(tsRaw) || 0) : 0;
+              return [id, { hasPhone, recencyTs }];
+            } catch {
+              return [id, { hasPhone: false, recencyTs: 0 }];
+            }
+          })
+        );
+        if (!alive) return;
+        setContactMeta((prev) => {
+          const next = { ...prev };
+          results.forEach(([id, meta]) => { next[id] = meta; });
+          return next;
+        });
+      } catch {
+        // ignore
+      }
+    })();
+    return () => { alive = false; };
+  }, [prioritizePhone, snapshotTab, top10Raw, contactMeta]);
+
+  const top10Prioritized = useMemo(() => {
+    if (!prioritizePhone || snapshotTab !== 'top') return top10List;
+    const arr = (top10List || []).slice();
+    // Only change ordering if at least one item actually has a phone on file;
+    // otherwise keep original order to avoid confusing resorting on recency alone.
+    const anyHasPhone = arr.some((it) => {
+      const id = it?.id != null ? String(it.id) : null;
+      return id && contactMeta[id]?.hasPhone;
+    });
+    if (!anyHasPhone) return arr;
+    const tsOf = (it) => Date.parse(it?.normalized_at || it?.scraped_at || it?.booking_date || '') || 0;
+    const bondOf = (it) => Number(it?.bond_amount ?? it?.value ?? 0) || 0;
+    arr.sort((a, b) => {
+      const ma = contactMeta[a?.id] || { hasPhone: false, recencyTs: tsOf(a) };
+      const mb = contactMeta[b?.id] || { hasPhone: false, recencyTs: tsOf(b) };
+      if (ma.hasPhone !== mb.hasPhone) return ma.hasPhone ? -1 : 1;
+      if (ma.recencyTs !== mb.recencyTs) return mb.recencyTs - ma.recencyTs;
+      return bondOf(b) - bondOf(a);
+    });
+    return arr;
+  }, [prioritizePhone, snapshotTab, top10List, contactMeta]);
+
+  // Count how many of the current Top items have a phone on file
+  const topHasPhoneCount = useMemo(() => {
+    const list = Array.isArray(top10Raw) ? top10Raw : [];
+    let n = 0;
+    for (const it of list) {
+      const id = it?.id != null ? String(it.id) : null;
+      if (id && contactMeta[id]?.hasPhone) n += 1;
+    }
+    return n;
+  }, [top10Raw, contactMeta]);
   const top10Counts = useMemo(() => {
     const contacted = top10Raw.filter((item) => item.contacted).length;
     return {
@@ -613,7 +693,7 @@ export default function DashboardScreen() {
 
   const snapshotRowsByTab = useMemo(
     () => ({
-      top: top10List.map((item, index) =>
+      top: (prioritizePhone ? top10Prioritized : top10List).map((item, index) =>
         shapeSnapshotRow(item, 'top', { key: item.id || `top-${index}` })
       ),
       new: new24List.map((item, index) =>
@@ -635,7 +715,7 @@ export default function DashboardScreen() {
         })
       ),
     }),
-    [top10List, new24List, recentList, attentionList]
+    [top10List, top10Prioritized, prioritizePhone, new24List, recentList, attentionList]
   );
 
   const snapshotSummaries = useMemo(
@@ -846,6 +926,8 @@ export default function DashboardScreen() {
       if (activeSummary.fallbackWindow) {
         chips.push(`Window fallback: ${activeSummary.fallbackWindow}`);
       }
+      // Surface how many of the Top have a phone detected (helps explain prioritization)
+      chips.push(`${formatCount(topHasPhoneCount)} with phone`);
     } else if (snapshotTab === 'new') {
       chips.push(showing);
       chips.push(`${formatCount(activeSummary.uncontacted)} uncontacted`);
@@ -1061,7 +1143,18 @@ export default function DashboardScreen() {
                   </span>
                 ))}
                 {snapshotTab === 'top' ? (
-                  <WindowSwitcher value={valueWindow} onChange={setValueWindow} />
+                  <div className="ml-auto flex items-center gap-3">
+                    <WindowSwitcher value={valueWindow} onChange={setValueWindow} />
+                    <label className="inline-flex items-center gap-2 text-xs text-slate-600">
+                      <input
+                        type="checkbox"
+                        checked={prioritizePhone}
+                        onChange={(e) => setPrioritizePhone(e.target.checked)}
+                        className="h-4 w-4 rounded border-slate-300 text-blue-600 focus:ring-blue-500"
+                      />
+                      Prioritize phone numbers
+                    </label>
+                  </div>
                 ) : null}
               </div>
             </div>
@@ -1242,6 +1335,11 @@ export default function DashboardScreen() {
                           ) : (
                             <span className="text-xs text-slate-400">No outreach available</span>
                           )}
+                          {row.caseId && contactMeta[row.caseId]?.hasPhone ? (
+                            <div className="mt-1 inline-flex items-center rounded-md bg-blue-50 px-1.5 py-0.5 text-[10px] text-blue-700">
+                              Phone on file
+                            </div>
+                          ) : null}
                           {lastContact ? (
                             <div className="mt-1 text-[10px] text-slate-400">Last contact {lastContact}</div>
                           ) : null}
