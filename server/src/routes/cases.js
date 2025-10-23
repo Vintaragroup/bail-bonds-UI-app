@@ -1580,6 +1580,21 @@ r.get('/:id/activity', async (req, res) => {
           details: `Before: ${before.join(', ') || 'none'} | After: ${after.join(', ') || 'none'}`,
           actor: audit.actor || 'system',
         });
+      } else if (audit.type && audit.type.startsWith('enrichment_')) {
+        // Handle enrichment audits with full JSON response and parameters
+        const providerId = String(audit.type.replace(/^enrichment_/, '')).toLowerCase();
+        const details = audit.details;
+        const status = details?.status || 'unknown';
+        const title = `Enrichment: ${providerId} (${status})`;
+        
+        events.push({
+          type: audit.type,
+          title,
+          occurredAt: audit.createdAt,
+          // Pass details object as-is so frontend can parse JSON responses
+          details: details,
+          actor: audit.actor || 'system',
+        });
       } else {
         events.push({
           type: audit.type,
@@ -1776,16 +1791,24 @@ r.post('/:caseId/enrichment/:providerId', async (req, res) => {
       meta: lookupResult?.meta || null,
     });
 
+    // Build comprehensive audit details with full response for debugging
+    const auditDetails = {
+      status,
+      httpStatus: status === 'error' ? 500 : 200,
+      candidateCount: enrichmentDoc.candidates?.length || 0,
+      error: errorPayload,
+      expiresAt,
+      // Include full enrichment result for review and debugging
+      enrichmentResult: lookupResult ? JSON.stringify(lookupResult, null, 2) : null,
+      // Include search parameters that were sent
+      params: JSON.stringify(params, null, 2),
+    };
+
     await CaseAudit.create({
       caseId: caseDoc._id,
       type: `enrichment_${provider.id}`,
       actor: req.user?.email || req.user?.uid || 'system',
-      details: {
-        status,
-        candidateCount: enrichmentDoc.candidates?.length || 0,
-        error: errorPayload,
-        expiresAt,
-      },
+      details: auditDetails,
     });
 
     const responsePayload = mapEnrichmentDocument(enrichmentDoc.toObject({ virtuals: true }), provider);

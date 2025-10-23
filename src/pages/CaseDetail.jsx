@@ -597,6 +597,7 @@ export default function CaseDetail() {
     return enrichmentInputs[selectedProviderId] || defaultEnrichmentInput;
   }, [enrichmentInputs, selectedProviderId, defaultEnrichmentInput]);
   const [selectingRecordId, setSelectingRecordId] = useState('');
+  const [expandedActivityDetails, setExpandedActivityDetails] = useState({}); // Track expanded enrichment audit accordions
   const fileInputRef = useRef(null);
 
   useEffect(() => {
@@ -2269,18 +2270,96 @@ export default function CaseDetail() {
         </div>
       ) : (
         <ul className="space-y-3">
-          {activityEvents.map((event, idx) => (
-            <li key={`${event.type || 'event'}-${idx}`} className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
-              <div className="flex flex-col gap-1 sm:flex-row sm:items-center sm:justify-between">
-                <div>
-                  <div className="text-sm font-semibold text-slate-900">{event.title}</div>
-                  {event.details ? <div className="text-xs text-slate-500">{event.details}</div> : null}
-                  {event.actor ? <div className="text-[11px] text-slate-400">By {event.actor}</div> : null}
+          {activityEvents.map((event, idx) => {
+            // Parse enrichment audit details if present
+            let enrichmentDetails = null;
+            if (event.type && event.type.startsWith('enrichment_')) {
+              try {
+                let details = event.details;
+                if (typeof details === 'string') {
+                  details = JSON.parse(details);
+                }
+                enrichmentDetails = details;
+              } catch (e) {
+                console.warn(`Failed to parse enrichment details for event ${idx}:`, e);
+              }
+            }
+
+            return (
+              <li key={`${event.type || 'event'}-${idx}`} className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
+                <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
+                  <div className="flex-1">
+                    <div className="text-sm font-semibold text-slate-900">{event.title}</div>
+                    
+                    {/* Enrichment-specific details */}
+                    {enrichmentDetails ? (
+                      <div className="mt-3 space-y-3 text-xs text-slate-600">
+                        <div><span className="font-medium">Status:</span> {enrichmentDetails.status || 'unknown'} (HTTP {enrichmentDetails.httpStatus || '?'})</div>
+                        <div><span className="font-medium">Candidates:</span> {enrichmentDetails.candidateCount || 0}</div>
+                        
+                        {/* Error block if present */}
+                        {enrichmentDetails.error ? (
+                          <div className="rounded-md border border-rose-200 bg-rose-50 p-2 text-rose-700">
+                            <div className="font-medium">{enrichmentDetails.error.code}</div>
+                            <div>{enrichmentDetails.error.message}</div>
+                          </div>
+                        ) : null}
+                        
+                        {/* JSON Response Accordion */}
+                        {enrichmentDetails.enrichmentResult && (
+                          <div className="border-2 border-blue-500 rounded-lg bg-blue-50 overflow-hidden mt-3">
+                            <button
+                              type="button"
+                              onClick={() => setExpandedActivityDetails(prev => ({ ...prev, [idx]: !prev[idx] }))}
+                              className="w-full text-left cursor-pointer p-4 font-bold text-blue-900 hover:bg-blue-100 select-none flex items-center gap-3"
+                            >
+                              <span className="inline-block text-lg">{expandedActivityDetails[idx] ? 'v' : '>'}</span>
+                              <span>RESPONSE JSON</span>
+                            </button>
+                            {expandedActivityDetails[idx] && (
+                              <div className="max-h-96 overflow-auto border-t-2 border-blue-500 bg-white">
+                                <pre className="p-4 text-[9px] leading-tight text-slate-700 font-mono whitespace-pre-wrap break-words">
+                                  {enrichmentDetails.enrichmentResult}
+                                </pre>
+                              </div>
+                            )}
+                          </div>
+                        )}
+                        
+                        {/* Search Parameters Accordion */}
+                        {enrichmentDetails.params && (
+                          <div className="border-2 border-green-500 rounded-lg bg-green-50 overflow-hidden mt-2">
+                            <button
+                              type="button"
+                              onClick={() => setExpandedActivityDetails(prev => ({ ...prev, [`params-${idx}`]: !prev[`params-${idx}`] }))}
+                              className="w-full text-left cursor-pointer p-4 font-bold text-green-900 hover:bg-green-100 select-none flex items-center gap-3"
+                            >
+                              <span className="inline-block text-lg">{expandedActivityDetails[`params-${idx}`] ? 'v' : '>'}</span>
+                              <span>SEARCH PARAMETERS</span>
+                            </button>
+                            {expandedActivityDetails[`params-${idx}`] && (
+                              <div className="max-h-96 overflow-auto border-t-2 border-green-500 bg-white">
+                                <pre className="p-4 text-[9px] leading-tight text-slate-700 font-mono whitespace-pre-wrap break-words">
+                                  {enrichmentDetails.params}
+                                </pre>
+                              </div>
+                            )}
+                          </div>
+                        )}
+                      </div>
+                    ) : event.details ? (
+                      <div className="text-xs text-slate-500 break-words mt-2">{event.details}</div>
+                    ) : null}
+                    
+                    {event.actor ? <div className="text-[11px] text-slate-400 mt-2">By {event.actor}</div> : null}
+                  </div>
+                  <div className="flex items-center gap-2 shrink-0">
+                    <div className="text-xs text-slate-500">{formatRelative(event.occurredAt)}</div>
+                  </div>
                 </div>
-                <div className="text-xs text-slate-500">{formatRelative(event.occurredAt)}</div>
-              </div>
-            </li>
-          ))}
+              </li>
+            );
+          })}
         </ul>
       )}
     </SectionCard>

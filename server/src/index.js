@@ -22,6 +22,7 @@ import userRoutes from './routes/users.js';
 import accessRequestRoutes from './routes/accessRequests.js';
 import metadataRoutes from './routes/metadata.js';
 import paymentRoutes, { stripeWebhookHandler } from './routes/payments.js';
+import enrichmentProxy from './routes/enrichmentProxy.js';
 import { requireAuth } from './middleware/auth.js';
 import { initQueues } from './jobs/index.js';
 
@@ -79,6 +80,7 @@ app.get('/api/health/light', (_req, res) => res.json({ ok: true, pid: process.pi
 app.use('/api/auth', authRoutes);
 app.use('/api/dashboard', requireAuth, dashboard);
 app.use('/api/cases', requireAuth, cases);
+app.use('/api/enrichment', requireAuth, enrichmentProxy);
 app.use('/api/checkins', requireAuth, checkins);
 app.use('/api/messages', requireAuth, messagesRoutes);
 app.use('/api/cases', requireAuth, documents);

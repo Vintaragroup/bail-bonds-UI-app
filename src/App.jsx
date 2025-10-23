@@ -4,6 +4,7 @@ import AppLayout from "./layouts/AppLayout";
 const Dashboard = lazy(() => import("./pages/Dashboard"));
 const Cases = lazy(() => import("./pages/Cases"));
 const CaseDetail = lazy(() => import("./pages/CaseDetail"));
+const Prospects = lazy(() => import("./pages/Prospects"));
 const CheckIns = lazy(() => import("./pages/CheckIns"));
 const Calendar = lazy(() => import("./pages/Calendar"));
 const PaymentsRoutes = lazy(() => import("./pages/PaymentsRoutes"));
@@ -33,6 +34,7 @@ export default function App() {
             <Route path="/" element={<Dashboard />} />
             <Route path="/cases" element={<Cases />} />
             <Route path="/cases/:caseId" element={<CaseDetail />} />
+            <Route path="/prospects" element={<Prospects />} />
             <Route path="/check-ins" element={<CheckIns />} />
             <Route path="/calendar" element={<Calendar />} />
             <Route path="/payments/*" element={<PaymentsRoutes />} />
