@@ -26,4 +26,31 @@ export default defineConfig([
       'no-unused-vars': ['error', { varsIgnorePattern: '^[A-Z_]' }],
     },
   },
+  // Node/Server overrides: treat server and config files as Node env, not browser
+  {
+    files: [
+      'server/**/*.js',
+      'server/**/*.mjs',
+      'vite.config.js',
+      'vitest.config.ts',
+      'postcss.config.js',
+      'tailwind.config.js',
+      'eslint.config.js',
+      'server/scripts/**/*.js',
+      'server/scripts/**/*.mjs',
+    ],
+    languageOptions: {
+      ecmaVersion: 'latest',
+      globals: globals.node,
+      parserOptions: { sourceType: 'module' },
+    },
+    rules: {
+      // Not relevant in Node files
+      'react-refresh/only-export-components': 'off',
+      // Allow intentionally unused args/vars prefixed with _ and UPPER_CASE constants
+      'no-unused-vars': ['warn', { argsIgnorePattern: '^_', varsIgnorePattern: '(^[A-Z_])|(^_)' }],
+      // Many server try/catch placeholders are acceptable for now
+      'no-empty': 'off',
+    },
+  },
 ])

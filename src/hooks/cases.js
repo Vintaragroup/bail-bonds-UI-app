@@ -7,14 +7,18 @@ function buildCasesQuery(params = {}) {
   if (params.county) qs.set('county', params.county);
   if (params.status) qs.set('status', params.status);
   if (params.attention) qs.set('attention', 'true');
+  if (params.attentionType) qs.set('attentionType', params.attentionType);
+  if (params.noCount) qs.set('noCount', 'true');
   if (params.limit) qs.set('limit', String(params.limit));
   if (params.sortBy) qs.set('sortBy', params.sortBy);
   if (params.order) qs.set('order', params.order);
   if (params.startDate) qs.set('startDate', params.startDate);
   if (params.endDate) qs.set('endDate', params.endDate);
+  if (params.window) qs.set('window', params.window);
   if (params.minBond != null && params.minBond !== '') qs.set('minBond', String(params.minBond));
   if (params.maxBond != null && params.maxBond !== '') qs.set('maxBond', String(params.maxBond));
   if (params.stage) qs.set('stage', params.stage);
+  if (params.county) qs.set('county', params.county);
   return qs.toString();
 }
 
@@ -186,6 +190,55 @@ export function useCreateCaseActivity(options = {}) {
         method: 'POST',
         body: payload,
       }),
+    ...options,
+  });
+}
+
+export function useEnrichmentProviders(options = {}) {
+  return useQuery({
+    queryKey: ['enrichmentProviders'],
+    queryFn: () => getJSON('/cases/enrichment/providers'),
+    staleTime: 300_000,
+    ...options,
+  });
+}
+
+export function useCaseEnrichment(caseId, providerId, options = {}) {
+  const { enabled = true, ...rest } = options;
+  return useQuery({
+    queryKey: ['caseEnrichment', providerId, caseId],
+    enabled: Boolean(caseId) && Boolean(providerId) && enabled,
+    queryFn: () => getJSON(`/cases/${encodeURIComponent(caseId)}/enrichment/${encodeURIComponent(providerId)}`),
+    staleTime: 60_000,
+    ...rest,
+  });
+}
+
+export function useRunCaseEnrichment(options = {}) {
+  return useMutation({
+    mutationFn: ({ caseId, providerId, payload }) => {
+      if (!caseId) throw new Error('caseId is required');
+      if (!providerId) throw new Error('providerId is required');
+      return sendJSON(`/cases/${encodeURIComponent(caseId)}/enrichment/${encodeURIComponent(providerId)}`, {
+        method: 'POST',
+        body: payload,
+      });
+    },
+    ...options,
+  });
+}
+
+export function useSelectCaseEnrichment(options = {}) {
+  return useMutation({
+    mutationFn: ({ caseId, providerId, recordId }) => {
+      if (!caseId) throw new Error('caseId is required');
+      if (!providerId) throw new Error('providerId is required');
+      if (!recordId) throw new Error('recordId is required');
+      return sendJSON(`/cases/${encodeURIComponent(caseId)}/enrichment/${encodeURIComponent(providerId)}/select`, {
+        method: 'POST',
+        body: { recordId },
+      });
+    },
     ...options,
   });
 }
