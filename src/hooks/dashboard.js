@@ -1,32 +1,79 @@
 // src/hooks/dashboard.js
 import { useQuery } from '@tanstack/react-query';
+// NOTE: For aggregated polling across multiple endpoints prefer useSerializedPolling in polling.js
+import { useOptionalDashboardAggregated } from '../components/DashboardAggregatedProvider.jsx';
+import { API_BASE, getAuthHeader } from '../lib/api';
+export { API_BASE } from '../lib/api';
 
-// Base URL – works with your root .env: VITE_API_URL=http://localhost:8080/api
-export const API_BASE =
-  (typeof import.meta !== 'undefined' && import.meta.env?.VITE_API_URL
-    ? import.meta.env.VITE_API_URL
-    : 'http://localhost:8080/api'
-  ).replace(/\/$/, '');
+// Base URL is resolved centrally in src/lib/api to ensure production builds also honor VITE_API_URL.
+
+// In-flight request de-duplication to prevent bursts of identical GETs
+const inflight = new Map(); // key -> Promise
+
+function normalizeKey(urlStr) {
+  try {
+    const u = new URL(urlStr);
+    // Drop cache-buster and any local-only churn keys
+    const qp = new URLSearchParams(u.search);
+    ['_cb', '_', 'cb', 'cacheBust', 'cachebuster'].forEach((k) => qp.delete(k));
+    // Re-add kept params in stable order
+    const stable = new URLSearchParams();
+    Array.from(qp.keys()).sort().forEach((k) => stable.set(k, qp.get(k)));
+    const qs = stable.toString();
+    return `${u.origin}${u.pathname}${qs ? `?${qs}` : ''}`;
+  } catch {
+    return urlStr;
+  }
+}
 
 export async function getJSON(path) {
-  const url = `${API_BASE}${path.startsWith('/') ? path : `/${path}`}`;
-  const res = await fetch(url);
-  if (!res.ok) {
-    const text = await res.text();
-    throw new Error(`Request failed ${res.status}: ${text}`);
+  const base = `${API_BASE}${path.startsWith('/') ? path : `/${path}`}`;
+  // Add a cache-busting param to avoid conditional GET/304 and keep request simple
+  const url = `${base}${base.includes('?') ? '&' : '?'}_cb=${Date.now()}`;
+  const key = normalizeKey(url);
+
+  if (inflight.has(key)) {
+    return inflight.get(key);
   }
-  return res.json();
+
+  const p = (async () => {
+    const auth = await getAuthHeader();
+    const res = await fetch(url, {
+      cache: 'no-store',
+      credentials: 'include',
+      headers: { 'Accept': 'application/json', ...(auth||{}) },
+    });
+    if (!res.ok) {
+      const text = await res.text();
+      throw new Error(`Request failed ${res.status}: ${text}`);
+    }
+    return res.json();
+  })();
+
+  inflight.set(key, p);
+  // Clear after it settles to allow a small coalesce window
+  p.finally(() => {
+    // Leave result available for a short moment in case of immediate re-renders
+    setTimeout(() => inflight.delete(key), 1000);
+  });
+  return p;
 }
 
 export async function sendJSON(path, { method = 'POST', body, headers } = {}) {
   const url = `${API_BASE}${path.startsWith('/') ? path : `/${path}`}`;
+  const auth = await getAuthHeader();
   const res = await fetch(url, {
     method,
     headers: {
       'Content-Type': 'application/json',
+      'Accept': 'application/json',
+      'Cache-Control': 'no-cache',
+      ...(auth||{}),
       ...headers,
     },
     body: body !== undefined ? JSON.stringify(body) : undefined,
+    cache: 'no-store',
+    credentials: 'include',
   });
 
   if (!res.ok) {
@@ -40,10 +87,18 @@ export async function sendJSON(path, { method = 'POST', body, headers } = {}) {
 
 export async function sendFormData(path, { method = 'POST', formData, headers } = {}) {
   const url = `${API_BASE}${path.startsWith('/') ? path : `/${path}`}`;
+  const auth = await getAuthHeader();
   const res = await fetch(url, {
     method,
     body: formData,
-    headers,
+    headers: {
+      'Accept': 'application/json',
+      'Cache-Control': 'no-cache',
+      ...(auth||{}),
+      ...headers,
+    },
+    cache: 'no-store',
+    credentials: 'include',
   });
 
   if (!res.ok) {
@@ -62,10 +117,15 @@ export async function sendFormData(path, { method = 'POST', formData, headers } 
  *  Returns: { newCountsBooked, perCountyBondToday, bondTodayTotal, perCountyLastPull }
  */
 export function useKpis(options = {}) {
+  const agg = useOptionalDashboardAggregated();
+  const enabled = !agg; // disable individual query if aggregated polling supplies data
   return useQuery({
     queryKey: ['kpis'],
     queryFn: () => getJSON('/dashboard/kpis'),
+    enabled,
+    initialData: agg?.data?.kpis,
     staleTime: 60_000,
+    placeholderData: (previous) => previous ?? agg?.data?.kpis,
     ...options,
   });
 }
@@ -77,11 +137,18 @@ export function useKpis(options = {}) {
  *  Returns: Array<{ id, name, county, booking_date, bond_amount, value }>
  */
 export function useTopByValue(window = '24h', limit = 10, options = {}) {
+  const agg = useOptionalDashboardAggregated();
+  // aggregated key uses fixed limit=10 & window=24h currently; only map if matching
+  const aggKeyMatch = window === '24h' && limit === 10;
+  const initial = aggKeyMatch ? agg?.data?.top24 : undefined;
+  const enabled = !(agg && aggKeyMatch);
   return useQuery({
     queryKey: ['topByValue', window, limit],
-    queryFn: () =>
-      getJSON(`/dashboard/top?window=${encodeURIComponent(window)}&limit=${encodeURIComponent(limit)}`),
+    queryFn: async () => getJSON(`/dashboard/top?window=${encodeURIComponent(window)}&limit=${encodeURIComponent(limit)}`),
+    enabled,
+    initialData: initial,
     staleTime: 60_000,
+    placeholderData: (previous) => previous ?? initial,
     ...options,
   });
 }
@@ -95,10 +162,17 @@ export function useTopByValue(window = '24h', limit = 10, options = {}) {
 export function useNewToday(scope = 'all', options = {}) {
   // scope can be 'all' or a county slug
   const qs = scope && scope !== 'all' ? `?county=${encodeURIComponent(scope)}` : '';
+  const agg = useOptionalDashboardAggregated();
+  const aggKeyMatch = scope === 'all';
+  const initial = aggKeyMatch ? agg?.data?.newToday : undefined;
+  const enabled = !(agg && aggKeyMatch);
   return useQuery({
     queryKey: ['newToday', scope],
-    queryFn: () => getJSON(`/dashboard/new${qs}`),
+    queryFn: async () => getJSON(`/dashboard/new${qs}`),
+    enabled,
+    initialData: initial,
     staleTime: 30_000,
+    placeholderData: (previous) => previous ?? initial,
     ...options,
   });
 }
@@ -111,46 +185,48 @@ export function useNewToday(scope = 'all', options = {}) {
  *  We also derive a tiny client-side summary for convenience.
  */
 export function useRecent48to72(limit = 10, options = {}) {
+  const agg = useOptionalDashboardAggregated();
+  const aggKeyMatch = limit === 10;
+  const initial = aggKeyMatch ? agg?.data?.recent : undefined;
+  const enabled = !(agg && aggKeyMatch);
   return useQuery({
     queryKey: ['recent48to72', limit],
-    queryFn: async () => {
-      const data = await getJSON(`/dashboard/recent?limit=${encodeURIComponent(limit)}`);
-      const items = Array.isArray(data?.items) ? data.items : [];
-
-      if (data.summary) {
-        return { items: items.slice(0, limit), summary: data.summary };
-      }
-
-      // Derive quick client summary (counts & totals) to show above the table.
-      const totals = items.reduce(
-        (acc, it) => {
-          const amount = Number(it.bond_amount ?? 0) || 0;
-          acc.totalCount += 1;
-          acc.totalBond += amount;
-
-          // Partition by booking_date relative age if needed on UI
-          // (You can keep this simple: everything from /recent is 48–72h.)
-          acc.count48 += 1; // keep all here; tweak if you later split by exact date
-          acc.bond48 += amount;
-          return acc;
-        },
-        { totalCount: 0, totalBond: 0, count48: 0, bond48: 0 }
-      );
-
-      return {
-        items: items.slice(0, limit),
-        summary: {
-          total: totals.totalCount,
-          totalBond: totals.totalBond,
-          // Keeping 72h bucket 0 for now (endpoint is 48–72 combined)
-          byBucket: [
-            { label: '48h', count: totals.count48, bond: totals.bond48 },
-            { label: '72h', count: 0, bond: 0 },
-          ],
-        },
-      };
-    },
+    queryFn: async () => getJSON(`/dashboard/recent?limit=${encodeURIComponent(limit)}`),
+    enabled,
+    initialData: initial,
     staleTime: 30_000,
+    placeholderData: (previous) => previous ?? initial,
+    ...options,
+  });
+}
+
+/** -----------------------------
+ *  Recent (selectable window)
+ *  -----------------------------
+ *  Backend: GET /recent?window=(48h|72h|3d_7d)
+ *  Notes: Omitting window returns the legacy combined (24_48h + 48_72h) behavior.
+ */
+export function useRecent(window = '48-72h', limit = 10, options = {}) {
+  const agg = useOptionalDashboardAggregated();
+  const aggKeyMatch = window === '48-72h' && limit === 10;
+  const initial = aggKeyMatch ? agg?.data?.recent : undefined;
+  const enabled = !(agg && aggKeyMatch);
+  // Map UI window to API param
+  const apiWindow = (() => {
+    const w = String(window || '').toLowerCase();
+    if (w === '3-7d' || w === '3d_7d') return '3d_7d';
+    if (w === '72h') return '72h';
+    if (w === '48h') return '48h';
+    return '';
+  })();
+  const qs = apiWindow ? `&window=${encodeURIComponent(apiWindow)}` : '';
+  return useQuery({
+    queryKey: ['recent', window, limit],
+    queryFn: async () => getJSON(`/dashboard/recent?limit=${encodeURIComponent(limit)}${qs}`),
+    enabled,
+    initialData: initial,
+    staleTime: 30_000,
+    placeholderData: (previous) => previous ?? initial,
     ...options,
   });
 }
@@ -204,6 +280,7 @@ export function useCountyTrends(days = 7, options = {}) {
       };
     },
     staleTime: 60_000,
+    placeholderData: (previous) => previous,
     ...options,
   });
 }
@@ -215,10 +292,17 @@ export function useCountyTrends(days = 7, options = {}) {
  *  Returns: { items:[{ county, counts:{today,yesterday,twoDaysAgo,last7d,last30d}, bondToday }] }
  */
 export function usePerCounty(window = 'rolling72', options = {}) {
+  const agg = useOptionalDashboardAggregated();
+  const aggKeyMatch = window === '24h'; // provider only fetches 24h snapshot currently
+  const initial = aggKeyMatch ? agg?.data?.perCounty24 : undefined;
+  const enabled = !(agg && aggKeyMatch);
   return useQuery({
     queryKey: ['perCounty', window],
-    queryFn: () => getJSON(`/dashboard/per-county?window=${encodeURIComponent(window)}`),
+    queryFn: async () => getJSON(`/dashboard/per-county?window=${encodeURIComponent(window)}`),
+    enabled,
+    initialData: initial,
     staleTime: 60_000,
+    placeholderData: (previous) => previous ?? initial,
     ...options,
   });
 }

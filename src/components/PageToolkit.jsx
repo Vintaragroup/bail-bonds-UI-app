@@ -69,9 +69,9 @@ export function FilterPills({ items = [], onClear }) {
   );
 }
 
-export function DataTable({ columns = [], rows = [], empty, renderActions }) {
+export function DataTable({ columns = [], rows = [], empty, renderActions, onRowClick }) {
   return (
-    <div className="overflow-hidden rounded-xl border border-slate-200">
+    <div className="overflow-x-auto rounded-xl border border-slate-200">
       <table className="min-w-full divide-y divide-slate-200">
         <thead className="bg-slate-50 text-left text-xs font-semibold uppercase tracking-wide text-slate-500">
           <tr>
@@ -90,13 +90,27 @@ export function DataTable({ columns = [], rows = [], empty, renderActions }) {
             </tr>
           ) : (
             rows.map((row) => (
-              <tr key={row.id || row.key} className="hover:bg-slate-50">
+              <tr
+                key={row.id || row.key}
+                className={`hover:bg-slate-50 ${onRowClick ? 'cursor-pointer' : ''}`}
+                onClick={onRowClick ? () => onRowClick(row) : undefined}
+              >
                 {columns.map((col) => (
                   <td key={col.key} className="px-4 py-3 align-top">
                     {col.render ? col.render(row[col.key], row) : row[col.key]}
                   </td>
                 ))}
-                {renderActions ? <td className="px-4 py-3 text-right">{renderActions(row)}</td> : null}
+                {renderActions ? (
+                  <td
+                    className="px-4 py-3 text-right"
+                    onClick={(e) => {
+                      // Prevent row-level navigation when interacting with actions
+                      e.stopPropagation();
+                    }}
+                  >
+                    {renderActions(row)}
+                  </td>
+                ) : null}
               </tr>
             ))
           )}
