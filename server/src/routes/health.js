@@ -1,9 +1,12 @@
 import { Router } from 'express';
 import mongoose from 'mongoose';
+import { getRedisConnection } from '../lib/redis.js';
+import { getLastGpsJobHeartbeat } from '../jobs/checkins.js';
 
 const r = Router();
 
-const MAX_DB_MS = 5000; // default max for individual DB operations in this file
+const MAX_DB_MS = 2000; // tighter bounds to avoid infra health probe timeouts
+const HEALTH_OVERALL_BUDGET_MS = 1500; // total time budget for /api/health handler
 
 // Small helper to add a timeout to any promise-returning DB operation so
 // health/trends endpoints don't hang indefinitely when Atlas is slow.
@@ -15,20 +18,29 @@ function withTimeout(promise, ms = 5000) {
 }
 
 // GET /health — pings MongoDB and summarizes simple_* collections
-r.get('/', async (_req, res) => {
+r.get('/', async (req, res) => {
   const started = Date.now();
   try {
     const conn = mongoose.connection;
     if (!conn || !conn.db) {
-      return res.status(503).json({ ok: false, error: 'DB not configured', ts: new Date().toISOString() });
+      // For health consumers, respond 200 with ok:false so platform doesn't kill the container during transient states
+      return res.status(200).json({ ok: false, error: 'DB not configured', ts: new Date().toISOString() });
     }
+
+    const verbose = String(req.query.verbose || '').toLowerCase() === '1' || String(req.query.v || '').toLowerCase() === '1';
+    const timeLeft = () => Math.max(0, HEALTH_OVERALL_BUDGET_MS - (Date.now() - started));
 
     // 1) Ping DB
   const pingStart = Date.now();
-  await withTimeout(conn.db.admin().command({ ping: 1 }), 5000);
+  await withTimeout(conn.db.admin().command({ ping: 1 }), Math.min(MAX_DB_MS, timeLeft() || 1));
   const pingMs = Date.now() - pingStart;
 
-    // 2) Inspect key collections
+    // If we're not in verbose mode and we're close to the budget, return immediately
+    if (!verbose && (Date.now() - started) >= HEALTH_OVERALL_BUDGET_MS) {
+      return res.json({ ok: true, uptime_ms: Date.now() - started, db: { ping_ms: pingMs, status: 'ok' }, ts: new Date().toISOString() });
+    }
+
+    // 2) Inspect key collections (skippable/heavy)
     const names = [
       'simple_harris',
       'simple_brazoria',
@@ -39,25 +51,28 @@ r.get('/', async (_req, res) => {
 
     const details = {};
     for (const name of names) {
+      // Respect overall time budget in non-verbose mode
+      if (!verbose && timeLeft() < 200) break;
       try {
         const col = conn.db.collection(name);
 
         // counts — guard each call with maxTimeMS and a global timeout
+        const budget = Math.max(200, timeLeft());
         const [count, latestNorm, latestBook] = await Promise.all([
-          withTimeout(col.estimatedDocumentCount(), 5000),
+          withTimeout(col.estimatedDocumentCount(), Math.min(MAX_DB_MS, budget)),
           withTimeout(col
             .find({ normalized_at: { $exists: true } }, { projection: { normalized_at: 1 } })
             .sort({ normalized_at: -1 })
             .limit(1)
-            .maxTimeMS(3000)
-            .toArray(), 5000),
+            .maxTimeMS(1000)
+            .toArray(), Math.min(MAX_DB_MS, budget)),
           withTimeout(col
             .find({ booking_date: { $exists: true } }, { projection: { booking_date: 1 } })
             .sort({ booking_date: -1 }) // YYYY-MM-DD strings sort correctly
             .limit(1)
-            .maxTimeMS(3000)
-            .toArray(), 5000),
-        ]);
+            .maxTimeMS(1000)
+            .toArray(), Math.min(MAX_DB_MS, budget)),
+        ]).catch(() => [0, [], []]);
 
         // light-weight field parity checks against our simple_* spec
         const required = [
@@ -65,20 +80,27 @@ r.get('/', async (_req, res) => {
           'booking_date', 'time_bucket', 'tags', 'bond', 'bond_amount', 'bond_label', 'full_name',
         ];
         const missingCounts = {};
+        // Cap missingCounts checks to a subset to keep this endpoint snappy under load
+        const subset = required.slice(0, verbose ? 6 : 2);
         await Promise.all(
-          required.map(async (f) => {
-            missingCounts[f] = await withTimeout(col.countDocuments({ [f]: { $exists: false } }).maxTimeMS ? col.countDocuments({ [f]: { $exists: false } }).maxTimeMS(3000) : col.countDocuments({ [f]: { $exists: false } }), 5000).catch(() => -1);
+          subset.map(async (f) => {
+            if (!verbose && timeLeft() < 150) return; // skip if budget is nearly exhausted
+            const q = col.countDocuments({ [f]: { $exists: false } });
+            const qq = q.maxTimeMS ? q.maxTimeMS(750) : q;
+            missingCounts[f] = await withTimeout(qq, Math.min(MAX_DB_MS, timeLeft() || 1)).catch(() => -1);
           }),
         );
 
         // anchor format audit (minimal, only for our standardized pairs)
         let anchorAudit = null;
-        if (name === 'simple_jefferson') {
-          // Jefferson anchors should be URLs
-          anchorAudit = await withTimeout(col.countDocuments({ "_upsert_key.anchor": { $not: /^http/ } }), 5000).catch(() => -1);
-        } else if (name === 'simple_harris') {
-          // Harris anchors should be all digits (case_number)
-          anchorAudit = await withTimeout(col.countDocuments({ "_upsert_key.anchor": { $not: /^\d+$/ } }), 5000).catch(() => -1);
+        if (verbose && timeLeft() >= 250) {
+          if (name === 'simple_jefferson') {
+            // Jefferson anchors should be URLs
+            anchorAudit = await withTimeout(col.countDocuments({ "_upsert_key.anchor": { $not: /^http/ } }), Math.min(1000, timeLeft())).catch(() => -1);
+          } else if (name === 'simple_harris') {
+            // Harris anchors should be all digits (case_number)
+            anchorAudit = await withTimeout(col.countDocuments({ "_upsert_key.anchor": { $not: /^\d+$/ } }), Math.min(1000, timeLeft())).catch(() => -1);
+          }
         }
 
         details[name] = {
@@ -93,8 +115,8 @@ r.get('/', async (_req, res) => {
       }
     }
 
-    // 3) Basic warnings
-    const warnings = [];
+  // 3) Basic warnings (may be partial if we exited early on some collections)
+  const warnings = [];
 
     for (const [k, v] of Object.entries(details)) {
       if ((v?.count ?? 0) === 0) warnings.push(`${k} has zero documents`);
@@ -112,17 +134,44 @@ r.get('/', async (_req, res) => {
       }
     }
 
+    let redisInfo = { status: 'unavailable' };
+    try {
+      const redis = getRedisConnection();
+      const pingStart = Date.now();
+      await withTimeout(redis.ping(), Math.min(1000, timeLeft() || 1000));
+      redisInfo = { status: 'ok', ping_ms: Date.now() - pingStart };
+    } catch (err) {
+      redisInfo = { status: 'error', error: err?.message || 'redis_ping_failed' };
+    }
+
+    const gpsHeartbeat = getLastGpsJobHeartbeat();
+    const lastJobDate = gpsHeartbeat.lastJobAt ? new Date(gpsHeartbeat.lastJobAt) : null;
+    const gpsInfo = {
+      last_job_at: gpsHeartbeat.lastJobAt || null,
+      age_seconds: lastJobDate && !Number.isNaN(lastJobDate.getTime())
+        ? Math.floor((Date.now() - lastJobDate.getTime()) / 1000)
+        : null,
+      meta: gpsHeartbeat.lastJobMeta || null,
+    };
+
     res.json({
       ok: true,
       uptime_ms: Date.now() - started,
       db: { ping_ms: pingMs, status: 'ok' },
       collections: details,
       warnings,
+      verbose,
+      budget_ms: HEALTH_OVERALL_BUDGET_MS,
+      queues: {
+        redis: redisInfo,
+        gps: gpsInfo,
+      },
       ts: new Date().toISOString(),
     });
   } catch (err) {
     console.error('GET /health error:', err);
-    res.status(500).json({ ok: false, error: 'DB health check failed', ts: new Date().toISOString() });
+    // Avoid failing platform probes: return 200 with ok:false so the service remains up while signaling an issue
+    res.status(200).json({ ok: false, error: 'DB health check failed', ts: new Date().toISOString() });
   }
 });
 
@@ -247,6 +296,31 @@ r.get('/trends', async (req, res) => {
   } catch (err) {
     console.error('GET /dashboard/trends error:', err);
     res.status(500).json({ ok: false, error: 'Failed to compute trends' });
+  }
+});
+
+// GET /dashboard/buckets — distribution of time_bucket_v2 across all simple_* (public health diagnostic)
+r.get('/buckets', async (req, res) => {
+  try {
+    const conn = mongoose.connection;
+    if (!conn || !conn.db) {
+      return res.status(503).json({ ok: false, error: 'DB not configured', ts: new Date().toISOString() });
+    }
+    const pipeline = [
+      // Anchor on simple_harris and union others with only the bucket field
+      ...unionSimple({}, { time_bucket_v2: 1 }),
+      { $group: { _id: '$time_bucket_v2', n: { $sum: 1 } } },
+      { $project: { _id: 0, bucket: '$_id', n: 1 } },
+      { $sort: { bucket: 1 } },
+    ];
+    const anchor = conn.db.collection('simple_harris');
+    const agg = anchor.aggregate(pipeline);
+    const cursor = agg.maxTimeMS ? agg.maxTimeMS(MAX_DB_MS) : agg;
+    const rows = await withTimeout(cursor.toArray(), MAX_DB_MS).catch(() => []);
+    res.json({ ok: true, buckets: rows, ts: new Date().toISOString() });
+  } catch (err) {
+    console.error('GET /dashboard/buckets error:', err);
+    res.status(500).json({ ok: false, error: 'Failed to aggregate buckets' });
   }
 });
 

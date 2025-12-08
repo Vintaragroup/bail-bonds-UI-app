@@ -1,0 +1,4 @@
+services:
+  web:
+    volumes:
+      - ./public/env.js:/usr/share/nginx/html/env.js:ro

@@ -20,16 +20,11 @@ export function useEnrichmentProxyHealth(options = {}) {
   });
 }
 
-// Providers list for the Enrichment dropdown
-// UI -> GET /api/enrichment/providers (same-origin) -> server enrichmentProxy -> ENRICHMENT_API_URL/api/enrichment/providers
-// Returned shape: { providers: [{ id, label, default?, supportsForce? }] }
-// Note: This endpoint requires an authenticated session or valid bearer token.
+// GET /enrichment/providers (proxied to enrichment service)
 export function useEnrichmentProviders(options = {}) {
   return useQuery({
     queryKey: ['enrichmentProviders:proxy'],
     queryFn: () => getJSON('/enrichment/providers'),
-    // Always refetch on mount to pick up newly enabled providers (e.g., Pipl)
-    refetchOnMount: 'always',
     staleTime: 300_000,
     ...options,
   });

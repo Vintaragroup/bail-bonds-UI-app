@@ -10,12 +10,7 @@ export function useProspects({ windowHours = 24, minBond = undefined, limit = 20
   if (minBond != null) qs.set('minBond', String(minBond));
   if (limit != null) qs.set('limit', String(limit));
   if (county) qs.set('county', String(county));
-  if (attention) {
-    // Map UI "Needs attention" to include not-bondable items from the enrichment API
-    // so reviewers can see DENIED/Not bondable cases in the list when desired.
-    qs.set('attention', 'true');
-    qs.set('includeNotBondable', 'true');
-  }
+  if (attention) qs.set('attention', 'true');
   const queryString = qs.toString();
 
   return useQuery({

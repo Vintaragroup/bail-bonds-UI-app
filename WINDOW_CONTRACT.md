@@ -32,6 +32,7 @@ These windows are non-overlapping: 24h, 48h, and 72h are disjoint and contiguous
 
 - GET /api/dashboard/kpis
   - Counts: 24h, 48h, 72h, 7d, 30d using booking_dt.
+  - Also exposes threeToSeven (3–7d) when v2 buckets are available; falls back to legacy counting if coverage is low.
   - contacted24h: computed against 24h set.
   - perCountyBond: bond sums per county using preferred window list [24h, 48h, 72h, 7d] (first non-zero).
 
@@ -44,8 +45,8 @@ These windows are non-overlapping: 24h, 48h, and 72h are disjoint and contiguous
   - List of recent bookings by booking_dt in 24h window.
   - Sorted by booking_dt desc.
 
-- GET /api/dashboard/recent?limit=N
-  - List of bookings in 48–72h window (booking_dt ∈ [now−72h, now−48h)).
+- GET /api/dashboard/recent?limit=N[&window=(48h|72h|3d_7d)]
+  - List of bookings for the requested window; default behavior returns the combined 48–72h slice when `window` is omitted.
   - Sorted by booking_dt desc.
 
 - GET /api/dashboard/top?window=(24h|48h|72h|7d|30d)
@@ -61,3 +62,12 @@ These windows are non-overlapping: 24h, 48h, and 72h are disjoint and contiguous
 - 24h/48h/72h are non-overlapping and sum to 72h set.
 - Lists (/new and /recent) align with the corresponding counts in KPIs and per-county.
 - Harris Civil rows are excluded from aggregates.
+
+## CRM contact fields
+
+- Optional canonical contact fields live under `crm_details`:
+  - `address`: `{ streetLine1, streetLine2, city, stateCode, postalCode, countryCode }`
+  - `phone`: string
+- When upstream source documents (e.g., simple_harris) include address/phone (via address object or fields like `address_line_1`, `city`, `state`, `postal_code`, `phone`), the API backfills `crm_details.address`/`phone` on read, so existing cases surface contact info without a separate migration step.
+- `PATCH /cases/:id/crm` accepts `address` and `phone` to persist edits.
+- Enrichment parameter builder prefers CRM contact fields by default; UI form values can override as needed per run.

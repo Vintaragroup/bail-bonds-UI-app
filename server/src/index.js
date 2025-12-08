@@ -1,4 +1,4 @@
-import dotenv from 'dotenv';
+import './config/loadEnv.js';
 import express from 'express';
 import cors from 'cors';
 import helmet from 'helmet';
@@ -7,66 +7,91 @@ import rateLimit from 'express-rate-limit';
 import swaggerUi from 'swagger-ui-express';
 import fs from 'node:fs';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import YAML from 'yaml';
 import { connectMongo, getMongo } from './db.js';
+import { ensureDashboardIndexes } from './indexes.js';
 import health from './routes/health.js';
 import dashboard from './routes/dashboard.js';
 import cases from './routes/cases.js';
 import checkins from './routes/checkins.js';
 import documents from './routes/documents.js';
-
-// Load .env from both repo root and server/ if present
-try { dotenv.config({ path: new URL('../../.env', import.meta.url) }); } catch {}
-try { dotenv.config({ path: new URL('../.env', import.meta.url) }); } catch {}
+import messagesRoutes, { twilioWebhooks } from './routes/messages.js';
+import authRoutes from './routes/auth.js';
+import userRoutes from './routes/users.js';
+import accessRequestRoutes from './routes/accessRequests.js';
+import metadataRoutes from './routes/metadata.js';
+import paymentRoutes, { stripeWebhookHandler } from './routes/payments.js';
+import enrichmentProxy from './routes/enrichmentProxy.js';
+import { requireAuth } from './middleware/auth.js';
+import { initQueues } from './jobs/index.js';
 
 const app = express();
 
-// Lightweight request logger to help debug stalls: logs method + path quickly
+// Light request logger with sampling to reduce noise in production.
+const LOG_SAMPLE_RATE = Number(process.env.LOG_SAMPLE_RATE || (process.env.NODE_ENV === 'production' ? 0.1 : 1));
 app.use((req, _res, next) => {
-  console.log(`➡️  ${req.method} ${req.originalUrl}`);
+  if (Math.random() < LOG_SAMPLE_RATE || req.originalUrl?.startsWith('/api/health')) {
+    console.log(`➡️  ${req.method} ${req.originalUrl}`);
+  }
   next();
 });
 
 app.set('trust proxy', 1);
 
-// Serve API docs (Swagger UI) from local openapi.yaml
 let openapiDoc = null;
 try {
   const specText = fs.readFileSync(new URL('./openapi.yaml', import.meta.url), 'utf8');
   openapiDoc = YAML.parse(specText);
   app.use('/api/docs', swaggerUi.serve, swaggerUi.setup(openapiDoc, { explorer: true }));
+  app.get('/api/docs.json', (_req, res) => res.json(openapiDoc));
   console.log('📚 Swagger UI available at /api/docs');
 } catch (e) {
   console.warn('⚠️  OpenAPI spec not found or invalid; /api/docs disabled:', e.message);
 }
 
-// security & basics
-// Helmet with relaxed CSP so Swagger UI works in dev
 app.use(helmet({
   contentSecurityPolicy: false,
   crossOriginResourcePolicy: { policy: 'cross-origin' },
 }));
+app.post('/api/payments/stripe/webhook', express.raw({ type: 'application/json' }), stripeWebhookHandler);
 app.use(express.json({ limit: '1mb' }));
 app.use(cookieParser());
+app.use('/api/messages/twilio', express.urlencoded({ extended: false }), twilioWebhooks);
+
+const ENV_ORIGINS = (process.env.WEB_ORIGIN || '')
+  .split(',')
+  .map((s) => s.trim())
+  .filter(Boolean);
+const DEFAULT_LOCALHOST_REGEX = /^http:\/\/localhost:\d+$/;
+const isProd = String(process.env.NODE_ENV || '').toLowerCase() === 'production';
+const ALLOWED_ORIGINS = isProd
+  ? (ENV_ORIGINS.length ? ENV_ORIGINS : [])
+  : [...ENV_ORIGINS, DEFAULT_LOCALHOST_REGEX];
+
 app.use(cors({
-  origin: process.env.WEB_ORIGIN || [/^http:\/\/localhost:\d+$/],
+  origin: ALLOWED_ORIGINS.length ? ALLOWED_ORIGINS : DEFAULT_LOCALHOST_REGEX,
   credentials: true,
 }));
 app.use(rateLimit({ windowMs: 60_000, max: 120 }));
 
-// routes
 app.use('/api/health', health);
-// Light health endpoint (no DB calls) for liveness checks
 app.get('/api/health/light', (_req, res) => res.json({ ok: true, pid: process.pid, ts: new Date().toISOString() }));
-app.use('/api/dashboard', dashboard);
-app.use('/api/cases', cases);
-app.use('/api/checkins', checkins);
-app.use('/api/cases', documents);
+app.use('/api/auth', authRoutes);
+app.use('/api/dashboard', requireAuth, dashboard);
+app.use('/api/cases', requireAuth, cases);
+app.use('/api/enrichment', requireAuth, enrichmentProxy);
+app.use('/api/checkins', requireAuth, checkins);
+app.use('/api/messages', requireAuth, messagesRoutes);
+app.use('/api/cases', requireAuth, documents);
+app.use('/api/users', requireAuth, userRoutes);
+app.use('/api/access-requests', requireAuth, accessRequestRoutes);
+app.use('/api/payments', requireAuth, paymentRoutes);
+app.use('/api/metadata', metadataRoutes);
 app.use('/uploads', express.static(new URL('../uploads', import.meta.url).pathname));
 
 const port = Number(process.env.PORT || 8080);
 
-// Resolve Mongo connection details from several common env names
 const MONGO_URI = process.env.MONGO_URI
   || process.env.MONGODB_URI
   || process.env.MONGO_URL
@@ -77,18 +102,25 @@ const MONGO_DB = process.env.MONGO_DB || process.env.MONGODB_DB || 'warrantdb';
 if (MONGO_URI) {
   await connectMongo(MONGO_URI, MONGO_DB);
   app.set('mongo', getMongo());
+  try { ensureDashboardIndexes(getMongo()); } catch {}
+  try { initQueues(); } catch (err) { console.error('Queue bootstrap failed', err?.message || err); }
 } else {
   console.warn('⚠️  MONGO_URI not set — starting server without DB connection (some endpoints will return 503)');
   app.set('mongo', null);
 }
 
-// Use the returned server instance so we can log low-level connection events
-const server = app.listen(port, () => console.log(`🚀 API listening on http://localhost:${port}`));
+const USE_TIME_BUCKET_V2 = String(process.env.DISABLE_TIME_BUCKET_V2 || 'false').toLowerCase() === 'true' ? false : true;
+app.locals.flags = { USE_TIME_BUCKET_V2 };
+
+const server = app.listen(port, () => {
+  console.log(`🚀 API listening on http://localhost:${port}`);
+  console.log(`🧪 Feature Flags: USE_TIME_BUCKET_V2=${USE_TIME_BUCKET_V2} (set DISABLE_TIME_BUCKET_V2=true to turn off)`);
+});
 
 server.on('connection', (sock) => {
   try {
     console.log(`🔌 new TCP connection from ${sock.remoteAddress}:${sock.remotePort} (local:${sock.localAddress}:${sock.localPort})`);
-  } catch (e) { /* best-effort logging */ }
+  } catch (e) {}
 });
 
 server.on('request', (req, res) => {
@@ -97,9 +129,13 @@ server.on('request', (req, res) => {
   } catch (e) {}
 });
 
-// basic error handler
-// eslint-disable-next-line no-unused-vars
 app.use((err, req, res, next) => {
-  console.error('Unhandled error:', err);
-  res.status(500).json({ ok: false, error: 'Internal server error' });
+  const status = Number(err?.statusCode || err?.status || 500);
+  const message =
+    status === 401 ? 'Unauthorized'
+    : status === 403 ? 'Forbidden'
+    : status === 400 ? (err?.message || 'Bad Request')
+    : 'Internal server error';
+  console.error('Unhandled error:', { status, message, err: err?.message });
+  res.status(status).json({ ok: false, error: message });
 });

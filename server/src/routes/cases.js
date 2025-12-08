@@ -3,16 +3,54 @@ import mongoose from 'mongoose';
 import Case from '../models/Case.js';
 import Message from '../models/Message.js';
 import CaseAudit from '../models/CaseAudit.js';
+import CaseEnrichment from '../models/CaseEnrichment.js';
+import { listMessages, resendMessage as queueResendMessage } from '../services/messaging.js';
+import { assertPermission as ensurePermission, filterByDepartment, hasPermission } from './utils/authz.js';
+import { listProviders as listEnrichmentProviders, getProvider as getEnrichmentProvider, getDefaultProviderId } from '../lib/enrichment/registry.js';
+import { splitName, nextExpiry } from '../lib/enrichment/utils.js';
 
-// Per-file DB timeout for potentially expensive queries
-const MAX_DB_MS = 5000;
+// Per-file DB timeout for potentially expensive queries (env overridable)
+// Bump a bit for wide attention scans to avoid near-miss timeouts
+const MAX_DB_MS = parseInt(process.env.CASES_MAX_DB_MS || process.env.MAX_DB_MS || '12000', 10);
 
 // Helper to timeout a promise-returning DB operation so handlers don't hang
-function withTimeout(promise, ms = MAX_DB_MS) {
+function withTimeout(promise, ms = MAX_DB_MS, label = 'cases op') {
+  let timer;
+  const p = (promise && typeof promise.then === 'function') ? promise : Promise.resolve(promise);
   return Promise.race([
-    promise,
-    new Promise((_, rej) => setTimeout(() => rej(new Error('operation timed out')), ms)),
+    p.finally(() => clearTimeout(timer)),
+    new Promise((_, rej) => {
+      timer = setTimeout(() => {
+        console.warn(`[cases] ${label} timed out after ${ms}ms`);
+        rej(new Error('operation timed out'));
+      }, ms);
+    }),
   ]);
+}
+
+// Tiny in-memory cache for expensive stats endpoint
+const CACHE_TTL_MS = parseInt(process.env.CASES_CACHE_MS || process.env.DASH_CACHE_MS || '30000', 10);
+const _cache = new Map(); // key -> { ts, data }
+const _inflight = new Map(); // key -> Promise
+const cacheGet = (k) => {
+  const e = _cache.get(k);
+  if (!e) return null;
+  if (Date.now() - e.ts > CACHE_TTL_MS) { _cache.delete(k); return null; }
+  return e.data;
+};
+const cacheSet = (k, v) => _cache.set(k, { ts: Date.now(), data: v });
+const DEFAULT_ENRICHMENT_TTL_MINUTES = Number(process.env.ENRICHMENT_CACHE_TTL_MINUTES || 60);
+const DEFAULT_ENRICHMENT_ERROR_TTL_MINUTES = Number(process.env.ENRICHMENT_ERROR_CACHE_TTL_MINUTES || 15);
+async function withCache(key, compute) {
+  const hit = cacheGet(key);
+  if (hit !== null) return { fromCache: true, data: hit };
+  if (_inflight.has(key)) {
+    try { const d = await _inflight.get(key); return { fromCache: true, data: d }; } catch {}
+  }
+  const p = (async () => await compute())();
+  _inflight.set(key, p);
+  try { const d = await p; cacheSet(key, d); return { fromCache: false, data: d }; }
+  finally { _inflight.delete(key); }
 }
 
 const r = Router();
@@ -27,6 +65,18 @@ const CRM_CHECKLIST = [
   { key: 'collateral', label: 'Collateral documented', required: false },
   { key: 'co_signer', label: 'Co-signer interviewed', required: false },
 ];
+
+const CASE_SCOPE_FIELDS = [
+  'crm_details.assignedDepartment',
+  'crm_details.department',
+  'crm_details.assignedTo',
+  'department',
+  'county',
+];
+
+function scopedCaseFilter(req, baseFilter = {}, options = { includeUnassigned: true }) {
+  return filterByDepartment(baseFilter, req, CASE_SCOPE_FIELDS, options);
+}
 
 function ensureMongoConnected(res) {
   if (!mongoose.connection || mongoose.connection.readyState !== 1) {
@@ -134,6 +184,82 @@ function normalizeAttachments(attachments = [], previous = []) {
     .filter(Boolean);
 }
 
+r.get('/enrichment/providers', (req, res) => {
+  try {
+    ensurePermission(req, ['cases:read', 'cases:read:department']);
+    const providers = listEnrichmentProviders().map((provider) => ({
+      id: provider.id,
+      label: provider.label,
+      description: provider.description || null,
+      supportsForce: Boolean(provider.supportsForce),
+      default: provider.id === getDefaultProviderId(),
+    }));
+    res.json({ providers });
+  } catch (err) {
+    if (err?.statusCode) {
+      return res.status(err.statusCode).json({ error: err.message || 'Forbidden' });
+    }
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+function buildEnrichmentParams(caseDoc = {}, overrides = {}) {
+  const sourceName = overrides.fullName || overrides.name || caseDoc?.full_name || '';
+  const nameParts = splitName(sourceName);
+
+  const firstName = overrides.firstName || overrides.givenName || nameParts.firstName;
+  const lastName = overrides.lastName || overrides.surname || nameParts.lastName;
+  const fullName = overrides.fullName || overrides.name || nameParts.fullName;
+
+  const crmAddr = caseDoc?.crm_details?.address || {};
+  const crmPhone = caseDoc?.crm_details?.phone || undefined;
+
+  const city = overrides.city || overrides.town || crmAddr.city || undefined;
+  const stateCode = overrides.state || overrides.stateCode || crmAddr.stateCode || undefined;
+  const postalCode = overrides.postalCode || overrides.postal_code || overrides.zip || crmAddr.postalCode || undefined;
+  const addressLine1 = overrides.addressLine1 || overrides.address || overrides.streetLine1 || crmAddr.streetLine1 || undefined;
+  const addressLine2 = overrides.addressLine2 || overrides.streetLine2 || crmAddr.streetLine2 || undefined;
+  const phone = overrides.phone || overrides.phoneNumber || crmPhone || undefined;
+
+  return {
+    fullName,
+    firstName,
+    lastName,
+    city,
+    stateCode,
+    postalCode,
+    addressLine1,
+    addressLine2,
+    phone,
+  };
+}
+
+function mapEnrichmentDocument(doc, provider) {
+  if (!doc) return null;
+  return {
+    id: doc.id || doc._id?.toString(),
+    provider: doc.provider,
+    providerLabel: provider?.label || null,
+    status: doc.status,
+    params: doc.params,
+    requestedAt: doc.requestedAt || doc.createdAt,
+    expiresAt: doc.expiresAt,
+    requestedBy: doc.requestedBy,
+    meta: doc.meta || null,
+    candidates: Array.isArray(doc.candidates) ? doc.candidates : [],
+    error: doc.error || null,
+    selectedRecords: Array.isArray(doc.selectedRecords) ? doc.selectedRecords : [],
+  };
+}
+
+function userIdentity(req) {
+  return {
+    uid: req.user?.uid || req.user?.id || null,
+    email: req.user?.email || null,
+    name: req.user?.name || req.user?.displayName || req.user?.email || null,
+  };
+}
+
 async function fetchContactMeta(caseIds = []) {
   if (!caseIds.length) return { contactSet: new Set(), lastMap: new Map() };
 
@@ -193,19 +319,34 @@ r.get('/meta', (_req, res) => {
   });
 });
 
-r.get('/stats', async (_req, res) => {
+r.get('/stats', async (req, res) => {
   try {
     if (!ensureMongoConnected(res)) return;
+    ensurePermission(req, ['cases:read', 'cases:read:department']);
 
-    const startOfToday = new Date();
-    startOfToday.setHours(0, 0, 0, 0);
-    const endOfToday = new Date(startOfToday);
-    endOfToday.setDate(endOfToday.getDate() + 1);
-    const upcomingEnd = new Date(startOfToday);
-    upcomingEnd.setDate(upcomingEnd.getDate() + 7);
+    const rolesKey = Array.isArray(req.user?.roles)
+      ? [...req.user.roles].sort().join(',')
+      : 'none';
+    const deptKey = Array.isArray(req.user?.departments)
+      ? [...req.user.departments].sort().join(',')
+      : 'none';
+    const cacheKey = `cases:stats:v1:${rolesKey}:${deptKey}`;
 
-    const agg = Case.aggregate([
-      {
+    const { fromCache, data } = await withCache(cacheKey, async () => {
+      const startOfToday = new Date();
+      startOfToday.setHours(0, 0, 0, 0);
+      const endOfToday = new Date(startOfToday);
+      endOfToday.setDate(endOfToday.getDate() + 1);
+      const upcomingEnd = new Date(startOfToday);
+      upcomingEnd.setDate(upcomingEnd.getDate() + 7);
+
+      const scopedMatch = scopedCaseFilter(req, {});
+      const pipeline = [];
+      if (Object.keys(scopedMatch).length) {
+        pipeline.push({ $match: scopedMatch });
+      }
+
+      pipeline.push({
         $facet: {
           stages: [
             {
@@ -397,83 +538,90 @@ r.get('/stats', async (_req, res) => {
             },
           ],
         },
-      },
-    ]).option({ maxTimeMS: MAX_DB_MS });
-
-    const [result] = await withTimeout(agg.exec(), MAX_DB_MS).catch((err) => {
-      console.error('GET /cases/stats aggregate failed', err?.message);
-      return [{}];
-    });
-
-    const stageCounts = {};
-    let totalCases = 0;
-    if (Array.isArray(result?.stages)) {
-      result.stages.forEach((row) => {
-        const key = row?._id || 'unknown';
-        const count = Number(row?.count || 0);
-        stageCounts[key] = count;
-        totalCases += count;
       });
-    }
-    CRM_STAGES.forEach((stage) => {
-      if (!Object.prototype.hasOwnProperty.call(stageCounts, stage)) {
-        stageCounts[stage] = 0;
+
+      const agg = Case.aggregate(pipeline).option({ maxTimeMS: MAX_DB_MS, allowDiskUse: true });
+
+      const [result] = await withTimeout(agg.exec(), MAX_DB_MS, 'stats.aggregate').catch((err) => {
+        console.error('GET /cases/stats aggregate failed', err?.message);
+        return [{}];
+      });
+
+      const stageCounts = {};
+      let totalCases = 0;
+      if (Array.isArray(result?.stages)) {
+        result.stages.forEach((row) => {
+          const key = row?._id || 'unknown';
+          const count = Number(row?.count || 0);
+          stageCounts[key] = count;
+          totalCases += count;
+        });
       }
-    });
-
-    const followRaw = Array.isArray(result?.followUps) ? result.followUps[0] || {} : {};
-    const followUps = {
-      overdue: Number(followRaw.overdue || 0),
-      dueToday: Number(followRaw.dueToday || 0),
-      upcoming: Number(followRaw.upcoming || 0),
-      unscheduled: Number(followRaw.unscheduled || 0),
-    };
-
-    const checklistRaw = Array.isArray(result?.checklist) ? result.checklist[0] || {} : {};
-    const checklist = {
-      totalPending: Number(checklistRaw.totalPending || 0),
-      requiredPending: Number(checklistRaw.requiredPending || 0),
-      casesMissingRequired: Number(checklistRaw.casesMissingRequired || 0),
-    };
-
-    const assignments = { assigned: 0, unassigned: 0 };
-    if (Array.isArray(result?.assignments)) {
-      result.assignments.forEach((row) => {
-        if (!row?._id) return;
-        if (row._id === 'unassigned') assignments.unassigned = Number(row.count || 0);
-        else assignments.assigned += Number(row.count || 0);
+      CRM_STAGES.forEach((stage) => {
+        if (!Object.prototype.hasOwnProperty.call(stageCounts, stage)) {
+          stageCounts[stage] = 0;
+        }
       });
-    }
 
-    const tags = {};
-    if (Array.isArray(result?.tags)) {
-      result.tags.forEach((row) => {
-        if (!row?._id) return;
-        tags[row._id] = Number(row.count || 0);
-      });
-    }
+      const followRaw = Array.isArray(result?.followUps) ? result.followUps[0] || {} : {};
+      const followUps = {
+        overdue: Number(followRaw.overdue || 0),
+        dueToday: Number(followRaw.dueToday || 0),
+        upcoming: Number(followRaw.upcoming || 0),
+        unscheduled: Number(followRaw.unscheduled || 0),
+      };
 
-    const attentionRaw = Array.isArray(result?.attention) ? result.attention[0] || {} : {};
-    const attention = {
-      needsAttention: Number(attentionRaw.needsAttention || 0),
-      referToMagistrate: Number(attentionRaw.referToMagistrate || 0),
-      letterSuffix: Number(attentionRaw.letterSuffix || 0),
-    };
+      const checklistRaw = Array.isArray(result?.checklist) ? result.checklist[0] || {} : {};
+      const checklist = {
+        totalPending: Number(checklistRaw.totalPending || 0),
+        requiredPending: Number(checklistRaw.requiredPending || 0),
+        casesMissingRequired: Number(checklistRaw.casesMissingRequired || 0),
+      };
 
-    res.json({
-      stages: stageCounts,
-      followUps,
-      checklist,
-      assignments,
-      tags,
-      attention,
-      totals: {
-        cases: totalCases,
-      },
-      generatedAt: new Date().toISOString(),
+      const assignments = { assigned: 0, unassigned: 0 };
+      if (Array.isArray(result?.assignments)) {
+        result.assignments.forEach((row) => {
+          if (!row?._id) return;
+          if (row._id === 'unassigned') assignments.unassigned = Number(row.count || 0);
+          else assignments.assigned += Number(row.count || 0);
+        });
+      }
+
+      const tags = {};
+      if (Array.isArray(result?.tags)) {
+        result.tags.forEach((row) => {
+          if (!row?._id) return;
+          tags[row._id] = Number(row.count || 0);
+        });
+      }
+
+      const attentionRaw = Array.isArray(result?.attention) ? result.attention[0] || {} : {};
+      const attention = {
+        needsAttention: Number(attentionRaw.needsAttention || 0),
+        referToMagistrate: Number(attentionRaw.referToMagistrate || 0),
+        letterSuffix: Number(attentionRaw.letterSuffix || 0),
+      };
+
+      return {
+        stages: stageCounts,
+        followUps,
+        checklist,
+        assignments,
+        tags,
+        attention,
+        totals: {
+          cases: totalCases,
+        },
+        generatedAt: new Date().toISOString(),
+      };
     });
+    res.set('X-Cache', data && fromCache ? 'HIT' : 'MISS');
+    res.json(data);
   } catch (err) {
     console.error('GET /cases/stats error:', err);
+    if (err?.statusCode) {
+      return res.status(err.statusCode).json({ error: err.message || 'Forbidden' });
+    }
     res.status(500).json({ error: 'Internal server error' });
   }
 });
@@ -500,10 +648,12 @@ r.get('/stats', async (_req, res) => {
 r.get('/', async (req, res) => {
   try {
     if (!ensureMongoConnected(res)) return;
+    ensurePermission(req, ['cases:read', 'cases:read:department']);
     const {
       query = '',
       county,
       status,
+      window: windowId,
       startDate,
       endDate,
       minBond,
@@ -517,6 +667,7 @@ r.get('/', async (req, res) => {
       attentionType,
       contacted,
       stage,
+      noCount,
     } = req.query;
     const bondLabelAlias = req.query.bond_label;
 
@@ -529,11 +680,79 @@ r.get('/', async (req, res) => {
     // Text search (ensure a text index on relevant fields: full_name, offense, case_number, etc.)
     if (query) filter.$text = { $search: query };
 
-    // Date window on normalized booking_date (YYYY-MM-DD)
-    if (startDate || endDate) {
+    // Date window based on booking time: support rolling windows via ?window=24h|48h|72h
+    const WINDOW_SET = new Set(['24h','48h','72h']);
+    const now = Date.now();
+    let useExprWindow = false;
+    if (windowId && WINDOW_SET.has(String(windowId).toLowerCase())) {
+      const id = String(windowId).toLowerCase();
+      const sinceHours = id === '24h' ? 24 : id === '48h' ? 48 : 72;
+      const prevHours  = id === '24h' ? null : id === '48h' ? 24 : 48;
+      const since = new Date(now - sinceHours * 3600000);
+      const until = prevHours != null ? new Date(now - prevHours * 3600000) : new Date();
+      // Build $expr comparing coalesced booking_dt to [since, until)
+      filter.$expr = {
+        $and: [
+          { $gte: [
+            {
+              $let: {
+                vars: { ba: '$bookedAt', iso: '$booking_date_iso', ymd: '$booking_date' },
+                in: {
+                  $let: {
+                    vars: {
+                      baD: { $cond: [ { $eq: [ { $type: '$$ba' }, 'date' ] }, '$$ba', null ] },
+                      isoD: { $cond: [ { $eq: [ { $type: '$$iso' }, 'date' ] }, '$$iso', null ] },
+                      ymdD: {
+                        $cond: [
+                          { $and: [ { $ne: ['$$ymd', null] }, { $ne: ['$$ymd', ''] } ] },
+                          { $dateFromString: { dateString: '$$ymd', format: '%Y-%m-%d', timezone: 'America/Chicago', onError: null, onNull: null } },
+                          null
+                        ]
+                      }
+                    },
+                    in: { $ifNull: ['$$baD', { $ifNull: ['$$isoD', '$$ymdD'] }] }
+                  }
+                }
+              }
+            }, since ] },
+          { $lt: [
+            {
+              $let: {
+                vars: { ba: '$bookedAt', iso: '$booking_date_iso', ymd: '$booking_date' },
+                in: {
+                  $let: {
+                    vars: {
+                      baD: { $cond: [ { $eq: [ { $type: '$$ba' }, 'date' ] }, '$$ba', null ] },
+                      isoD: { $cond: [ { $eq: [ { $type: '$$iso' }, 'date' ] }, '$$iso', null ] },
+                      ymdD: {
+                        $cond: [
+                          { $and: [ { $ne: ['$$ymd', null] }, { $ne: ['$$ymd', ''] } ] },
+                          { $dateFromString: { dateString: '$$ymd', format: '%Y-%m-%d', timezone: 'America/Chicago', onError: null, onNull: null } },
+                          null
+                        ]
+                      }
+                    },
+                    in: { $ifNull: ['$$baD', { $ifNull: ['$$isoD', '$$ymdD'] }] }
+                  }
+                }
+              }
+            }, until ] },
+        ]
+      };
+      useExprWindow = true;
+    }
+    // Date window on normalized booking_date (YYYY-MM-DD) for non-rolling cases
+    if (!useExprWindow && (startDate || endDate)) {
       filter.booking_date = {};
       if (startDate) filter.booking_date.$gte = String(startDate);
       if (endDate) filter.booking_date.$lte = String(endDate);
+    }
+    // Safety default: for attention scans with no explicit window, restrict to last 30 days
+    if ((attention === '1' || attention === 'true' || attention === true) && !startDate && !endDate) {
+      const dt = new Date();
+      dt.setDate(dt.getDate() - 30);
+      const ymd = dt.toISOString().slice(0, 10);
+      filter.booking_date = { ...(filter.booking_date || {}), $gte: ymd };
     }
 
     // Bond range on normalized bond_amount
@@ -550,11 +769,18 @@ r.get('/', async (req, res) => {
     const limitNum = Math.min(Number(limit) || 25, 500);
     if (bondLabel || bondLabelAlias) filter.bond_label = bondLabel || bondLabelAlias;
     if (attention === '1' || attention === 'true' || attention === true) {
-      filter.$or = [
-        { bond_label: { $regex: /^REFER TO MAGISTRATE$/i } },
-        { bond: { $regex: /^REFER TO MAGISTRATE$/i } },
-        { "_upsert_key.anchor": { $not: /^[0-9]+$/ } }
+      const referValues = ['REFER TO MAGISTRATE', 'Refer to Magistrate', 'refer to magistrate'];
+      // By default, prefer fast equality checks that hit the bond_label index.
+      // The anchor regex is expensive; include it only if attentionType=letter or attentionType=all.
+      const ors = [
+        { bond_label: { $in: referValues } },
+        { bond: { $in: referValues } },
       ];
+      const attType = String(attentionType || '').toLowerCase();
+      if (attType === 'letter' || attType === 'all') {
+        ors.push({ "_upsert_key.anchor": { $not: /^[0-9]+$/ } });
+      }
+      filter.$or = ors;
     }
     if (stage && CRM_STAGES.includes(String(stage).toLowerCase())) {
       filter.crm_stage = String(stage).toLowerCase();
@@ -571,6 +797,7 @@ r.get('/', async (req, res) => {
       first_name: 1,
       last_name: 1,
       county: 1,
+      dob: 1,
       offense: 1,
       agency: 1,
       facility: 1,
@@ -589,31 +816,48 @@ r.get('/', async (req, res) => {
       manual_tags: 1,
       crm_stage: 1,
       crm_details: 1,
+  // Phone enrichment fields (simple_harris)
+  phone_nbr1: 1,
+  phone_nbr2: 1,
+  phone_nbr3: 1,
+  phones_source: 1,
+  phones_updated_at: 1,
       "_upsert_key.anchor": 1,
+      // Timestamps to compute "age" on the client
+      createdAt: 1,
+      updatedAt: 1,
+      normalized_at: 1,
+      scraped_at: 1,
       // Legacy fields kept only for back-compat view (not used for sorting/sums)
       bookedAt: 1,
       booking_date_iso: 1,
       bond: 1,
     };
 
+    const scopedFilter = scopedCaseFilter(req, filter);
+
     const qFind = Case
-      .find(filter)
+      .find(scopedFilter)
       .select(projection)
       .sort({ [sortField]: sortDir, booking_date: -1, _id: -1 })
       .limit(limitNum)
       .lean();
 
-    const qCount = Case.countDocuments(filter);
+  const wantCount = !noCount || !TRUE_SET.has(String(noCount).toLowerCase());
+  const qCount = wantCount ? Case.countDocuments(scopedFilter) : null;
 
     // Apply maxTimeMS when the driver/query supports it, and wrap with a timeout
     let items = await withTimeout((qFind.maxTimeMS ? qFind.maxTimeMS(MAX_DB_MS) : qFind), MAX_DB_MS).catch((e) => {
       console.warn('cases: find timed out or failed', e?.message);
       return [];
     });
-    const count = await withTimeout((qCount.maxTimeMS ? qCount.maxTimeMS(MAX_DB_MS) : qCount), MAX_DB_MS).catch((e) => {
-      console.warn('cases: count timed out or failed', e?.message);
-      return 0;
-    });
+    let count = null;
+    if (qCount) {
+      count = await withTimeout((qCount.maxTimeMS ? qCount.maxTimeMS(MAX_DB_MS) : qCount), MAX_DB_MS).catch((e) => {
+        console.warn('cases: count timed out or failed', e?.message);
+        return 0;
+      });
+    }
 
     const caseIds = items.map((item) => item._id).filter(Boolean);
     const { contactSet, lastMap } = await fetchContactMeta(caseIds);
@@ -648,11 +892,52 @@ r.get('/', async (req, res) => {
     if (last) item.last_contact_at = last;
     if (!item.crm_stage) item.crm_stage = 'new';
     if (!item.crm_details) item.crm_details = {};
+    // Backfill canonical CRM contact fields from any available source keys
+    const sourceAddr = item.address || item.address_obj || null;
+    const normalizedCrmAddress = {
+      streetLine1:
+        item.address_line_1
+        || item.addressLine1
+        || sourceAddr?.streetLine1
+        || sourceAddr?.street_line_1
+        || sourceAddr?.line1
+        || sourceAddr?.line_1
+        || '',
+      streetLine2:
+        item.address_line_2
+        || item.addressLine2
+        || sourceAddr?.streetLine2
+        || sourceAddr?.street_line_2
+        || sourceAddr?.line2
+        || sourceAddr?.line_2
+        || '',
+      city: item.city || sourceAddr?.city || '',
+      stateCode:
+        item.state
+        || item.stateCode
+        || sourceAddr?.state
+        || sourceAddr?.stateCode
+        || sourceAddr?.state_code
+        || '',
+      postalCode:
+        item.postal_code
+        || item.postalCode
+        || item.zip
+        || sourceAddr?.postalCode
+        || sourceAddr?.postal_code
+        || sourceAddr?.zip
+        || '',
+      countryCode: sourceAddr?.countryCode || sourceAddr?.country_code || '',
+    };
+    const normalizedPhone = item.phone || item.primary_phone || '';
+
     item.crm_details = {
       qualificationNotes: item.crm_details.qualificationNotes || '',
       documents: normalizeChecklist(item.crm_details.documents),
       followUpAt: item.crm_details.followUpAt || null,
       assignedTo: item.crm_details.assignedTo || '',
+      address: item.crm_details.address || normalizedCrmAddress,
+      phone: item.crm_details.phone || normalizedPhone,
       attachments: Array.isArray(item.crm_details.attachments) ? item.crm_details.attachments : [],
       acceptance: {
         accepted: Boolean(item.crm_details.acceptance?.accepted),
@@ -684,9 +969,12 @@ r.get('/', async (req, res) => {
 
     const limitedItems = mappedItems.slice(0, limitNum);
 
-    res.json({ items: limitedItems, count: mappedItems.length, total: count });
+  res.json({ items: limitedItems, count: mappedItems.length, total: count });
   } catch (err) {
     console.error('GET /cases error:', err);
+    if (err?.statusCode) {
+      return res.status(err.statusCode).json({ error: err.message || 'Forbidden' });
+    }
     res.status(500).json({ error: 'Internal server error' });
   }
 });
@@ -694,6 +982,7 @@ r.get('/', async (req, res) => {
 r.patch('/:id/tags', async (req, res) => {
   try {
     if (!ensureMongoConnected(res)) return;
+    ensurePermission(req, ['cases:write', 'cases:write:department']);
     const incoming = Array.isArray(req.body?.tags) ? req.body.tags : null;
     if (!incoming) {
       return res.status(400).json({ error: 'tags array is required' });
@@ -710,8 +999,9 @@ r.patch('/:id/tags', async (req, res) => {
       return res.status(400).json({ error: `Invalid tags: ${invalid.join(', ')}` });
     }
 
+    const selector = scopedCaseFilter(req, { _id: req.params.id });
     const existing = await withTimeout(
-      Case.findById(req.params.id).select({ manual_tags: 1 }),
+      Case.findOne(selector).select({ manual_tags: 1 }),
       MAX_DB_MS
     );
 
@@ -719,12 +1009,13 @@ r.patch('/:id/tags', async (req, res) => {
       return res.status(404).json({ error: 'Case not found' });
     }
 
+    const updateQuery = Case.updateOne(
+      selector,
+      { $set: { manual_tags: normalized, updatedAt: new Date() } }
+    );
+
     await withTimeout(
-      Case.findByIdAndUpdate(
-        req.params.id,
-        { $set: { manual_tags: normalized, updatedAt: new Date() } },
-        { new: false }
-      ),
+      (updateQuery.maxTimeMS ? updateQuery.maxTimeMS(MAX_DB_MS) : updateQuery),
       MAX_DB_MS
     );
 
@@ -742,6 +1033,9 @@ r.patch('/:id/tags', async (req, res) => {
     res.json({ manual_tags: normalized });
   } catch (err) {
     console.error('PATCH /cases/:id/tags error:', err);
+    if (err?.statusCode) {
+      return res.status(err.statusCode).json({ error: err.message || 'Forbidden' });
+    }
     if (err?.name === 'CastError') {
       return res.status(400).json({ error: 'Invalid case id' });
     }
@@ -756,7 +1050,9 @@ r.patch('/:id/tags', async (req, res) => {
 r.get('/:id', async (req, res) => {
   try {
     if (!ensureMongoConnected(res)) return;
-    const qGet = Case.findById(req.params.id).lean();
+    ensurePermission(req, ['cases:read', 'cases:read:department']);
+    const selector = scopedCaseFilter(req, { _id: req.params.id });
+    const qGet = Case.findOne(selector).lean();
     const doc = await withTimeout((qGet.maxTimeMS ? qGet.maxTimeMS(MAX_DB_MS) : qGet), MAX_DB_MS).catch((e) => {
       console.error('GET /cases/:id timed out or failed', e?.message);
       return null;
@@ -765,11 +1061,52 @@ r.get('/:id', async (req, res) => {
 
     if (!Array.isArray(doc.manual_tags)) doc.manual_tags = [];
     if (!doc.crm_stage) doc.crm_stage = 'new';
+    // Build normalized CRM contact fields from any available source keys
+    const sourceAddr = doc.address || doc.address_obj || null;
+    const normalizedCrmAddress = {
+      streetLine1:
+        doc.address_line_1
+        || doc.addressLine1
+        || sourceAddr?.streetLine1
+        || sourceAddr?.street_line_1
+        || sourceAddr?.line1
+        || sourceAddr?.line_1
+        || '',
+      streetLine2:
+        doc.address_line_2
+        || doc.addressLine2
+        || sourceAddr?.streetLine2
+        || sourceAddr?.street_line_2
+        || sourceAddr?.line2
+        || sourceAddr?.line_2
+        || '',
+      city: doc.city || sourceAddr?.city || '',
+      stateCode:
+        doc.state
+        || doc.stateCode
+        || sourceAddr?.state
+        || sourceAddr?.stateCode
+        || sourceAddr?.state_code
+        || '',
+      postalCode:
+        doc.postal_code
+        || doc.postalCode
+        || doc.zip
+        || sourceAddr?.postalCode
+        || sourceAddr?.postal_code
+        || sourceAddr?.zip
+        || '',
+      countryCode: sourceAddr?.countryCode || sourceAddr?.country_code || '',
+    };
+    const normalizedPhone = doc.phone || doc.primary_phone || '';
+
     doc.crm_details = {
       qualificationNotes: doc.crm_details?.qualificationNotes || '',
       documents: normalizeChecklist(doc.crm_details?.documents),
       followUpAt: doc.crm_details?.followUpAt || null,
       assignedTo: doc.crm_details?.assignedTo || '',
+      address: doc.crm_details?.address || normalizedCrmAddress,
+      phone: doc.crm_details?.phone || normalizedPhone,
       attachments: Array.isArray(doc.crm_details?.attachments) ? doc.crm_details.attachments : [],
       acceptance: {
         accepted: Boolean(doc.crm_details?.acceptance?.accepted),
@@ -787,10 +1124,17 @@ r.get('/:id', async (req, res) => {
     const attachmentsRaw = Array.isArray(doc.crm_details.attachments) ? doc.crm_details.attachments : [];
     const normalizedAttachments = normalizeAttachments(attachmentsRaw, attachmentsRaw);
     doc.crm_details.attachments = normalizedAttachments;
-    if (attachmentsRaw.some((att) => att && !att.id)) {
+    const needBackfillAttachments = attachmentsRaw.some((att) => att && !att.id);
+    const needBackfillContact = (!doc.crm_details?.address || !doc.crm_details?.address?.streetLine1) && (normalizedCrmAddress.streetLine1 || normalizedCrmAddress.city || normalizedPhone);
+    if (needBackfillAttachments || needBackfillContact) {
       await Case.updateOne(
         { _id: doc._id },
-        { $set: { 'crm_details.attachments': normalizedAttachments } }
+        {
+          $set: {
+            'crm_details.attachments': normalizedAttachments,
+            ...(needBackfillContact ? { 'crm_details.address': normalizedCrmAddress, 'crm_details.phone': normalizedPhone } : {}),
+          }
+        }
       ).catch((err) => {
         console.warn('Failed to backfill attachment ids for case', doc._id?.toString?.() || doc._id, err?.message);
       });
@@ -804,6 +1148,9 @@ r.get('/:id', async (req, res) => {
     res.json(doc);
   } catch (err) {
     console.error('GET /cases/:id error:', err);
+    if (err?.statusCode) {
+      return res.status(err.statusCode).json({ error: err.message || 'Forbidden' });
+    }
     res.status(500).json({ error: 'Internal server error' });
   }
 });
@@ -818,23 +1165,14 @@ r.get('/:id/messages', async (req, res) => {
       return res.status(400).json({ error: 'Invalid case id' });
     }
 
-    const qMsg = Message.find({ caseId: objectId })
-      .sort({ createdAt: -1 })
-      .limit(100)
-      .select({
-        direction: 1,
-        channel: 1,
-        status: 1,
-        body: 1,
-        createdAt: 1,
-        sentAt: 1,
-        deliveredAt: 1,
-        errorCode: 1,
-        errorMessage: 1,
-      })
-      .lean();
+    ensurePermission(req, ['cases:read', 'cases:read:department']);
+    const selector = scopedCaseFilter(req, { _id: objectId });
+    const accessible = await Case.findOne(selector).select({ _id: 1 }).lean();
+    if (!accessible) {
+      return res.status(404).json({ error: 'Case not found' });
+    }
 
-    const itemsRaw = await withTimeout((qMsg.maxTimeMS ? qMsg.maxTimeMS(MAX_DB_MS) : qMsg), MAX_DB_MS).catch(() => []);
+    const itemsRaw = await listMessages({ caseId: objectId, limit: 100 }).catch(() => []);
 
     let traceIds = [];
     const traceParam = req.query.trace;
@@ -851,6 +1189,9 @@ r.get('/:id/messages', async (req, res) => {
     res.json({ items, traces: traceIds });
   } catch (err) {
     console.error('GET /cases/:id/messages error:', err);
+    if (err?.statusCode) {
+      return res.status(err.statusCode).json({ error: err.message || 'Forbidden' });
+    }
     res.status(500).json({ error: 'Internal server error' });
   }
 });
@@ -867,47 +1208,29 @@ r.post('/:caseId/messages/:messageId/resend', async (req, res) => {
       return res.status(400).json({ error: 'Invalid identifiers provided' });
     }
 
-    const original = await Message.findOne({ _id: messageObjectId, caseId: caseObjectId }).lean();
-    if (!original) {
-      return res.status(404).json({ error: 'Message not found' });
+    ensurePermission(req, ['cases:write', 'cases:write:department']);
+    const selector = scopedCaseFilter(req, { _id: caseObjectId });
+    const accessible = await Case.findOne(selector).select({ _id: 1 }).lean();
+    if (!accessible) {
+      return res.status(404).json({ error: 'Case not found' });
     }
 
-    if (original.direction !== 'out') {
-      return res.status(400).json({ error: 'Only outbound messages can be resent' });
+    try {
+      const doc = await queueResendMessage({
+        caseId: caseObjectId,
+        messageId: messageObjectId,
+        actor: req.user?.email || req.user?.id || 'system',
+      });
+      res.status(201).json({ id: doc._id.toString(), status: doc.status, queuedAt: doc.createdAt });
+    } catch (err) {
+      const status = err?.message === 'Only outbound messages can be resent' ? 400 : 500;
+      return res.status(status).json({ error: err?.message || 'Unable to queue resend' });
     }
-
-    if (!original.to) {
-      return res.status(400).json({ error: 'Original message missing recipient' });
-    }
-    if (!original.body) {
-      return res.status(400).json({ error: 'Original message missing body content' });
-    }
-
-    const doc = await Message.create({
-      caseId: caseObjectId,
-      direction: 'out',
-      channel: original.channel,
-      to: original.to,
-      from: original.from,
-      body: original.body,
-      status: 'queued',
-      provider: original.provider,
-      meta: {
-        ...(original.meta || {}),
-        resendOf: original._id,
-      },
-    });
-
-    await CaseAudit.create({
-      caseId: caseObjectId,
-      type: 'message_resend',
-      actor: req.user?.email || req.user?.id || 'system',
-      details: { messageId: doc._id, originalId: original._id },
-    });
-
-    res.status(201).json({ id: doc._id.toString(), status: doc.status, queuedAt: doc.createdAt });
   } catch (err) {
     console.error('POST /cases/:caseId/messages/:messageId/resend error:', err);
+    if (err?.statusCode) {
+      return res.status(err.statusCode).json({ error: err.message || 'Forbidden' });
+    }
     res.status(500).json({ error: 'Internal server error' });
   }
 });
@@ -915,6 +1238,7 @@ r.post('/:caseId/messages/:messageId/resend', async (req, res) => {
 r.patch('/:id/stage', async (req, res) => {
   try {
     if (!ensureMongoConnected(res)) return;
+    ensurePermission(req, ['cases:write', 'cases:write:department']);
     const stage = String(req.body?.stage || '').toLowerCase();
     const note = req.body?.note ? String(req.body.note) : undefined;
 
@@ -922,8 +1246,9 @@ r.patch('/:id/stage', async (req, res) => {
       return res.status(400).json({ error: 'Invalid stage' });
     }
 
+    const selector = scopedCaseFilter(req, { _id: req.params.id });
     const existing = await withTimeout(
-      Case.findById(req.params.id).select({ crm_stage: 1 }),
+      Case.findOne(selector).select({ crm_stage: 1 }),
       MAX_DB_MS
     );
 
@@ -940,15 +1265,16 @@ r.patch('/:id/stage', async (req, res) => {
       note,
     };
 
+    const updateQuery = Case.updateOne(
+      selector,
+      {
+        $set: { crm_stage: stage, updatedAt: new Date() },
+        $push: { crm_stage_history: historyEntry },
+      }
+    );
+
     await withTimeout(
-      Case.findByIdAndUpdate(
-        req.params.id,
-        {
-          $set: { crm_stage: stage, updatedAt: new Date() },
-          $push: { crm_stage_history: historyEntry },
-        },
-        { new: false }
-      ),
+      (updateQuery.maxTimeMS ? updateQuery.maxTimeMS(MAX_DB_MS) : updateQuery),
       MAX_DB_MS
     );
 
@@ -962,6 +1288,9 @@ r.patch('/:id/stage', async (req, res) => {
     res.json({ crm_stage: stage });
   } catch (err) {
     console.error('PATCH /cases/:id/stage error:', err);
+    if (err?.statusCode) {
+      return res.status(err.statusCode).json({ error: err.message || 'Forbidden' });
+    }
     if (err?.name === 'CastError') {
       return res.status(400).json({ error: 'Invalid case id' });
     }
@@ -972,8 +1301,14 @@ r.patch('/:id/stage', async (req, res) => {
 r.patch('/:id/crm', async (req, res) => {
   try {
     if (!ensureMongoConnected(res)) return;
+    ensurePermission(req, ['cases:write', 'cases:write:department']);
+    const selector = scopedCaseFilter(req, { _id: req.params.id });
+    let qExisting = Case.findOne(selector);
+    if (qExisting && typeof qExisting.lean === 'function') {
+      qExisting = qExisting.lean();
+    }
     const existing = await withTimeout(
-      Case.findById(req.params.id).lean(),
+      qExisting && typeof qExisting.exec === 'function' ? qExisting.exec() : qExisting,
       MAX_DB_MS
     ).catch((err) => {
       console.error('PATCH /cases/:id/crm load error', err?.message);
@@ -999,6 +1334,29 @@ r.patch('/:id/crm', async (req, res) => {
     }
     if (payload.assignedTo !== undefined) {
       update['crm_details.assignedTo'] = String(payload.assignedTo || '');
+    }
+
+    // Optional contact info updates
+    if (payload.address || payload.crm_details?.address) {
+      const addr = payload.address || payload.crm_details.address;
+      if (addr && typeof addr === 'object') {
+        const nextAddr = {
+          streetLine1: String(addr.streetLine1 || addr.addressLine1 || addr.street_line_1 || ''),
+          streetLine2: String(addr.streetLine2 || addr.addressLine2 || addr.street_line_2 || ''),
+          city: String(addr.city || ''),
+          stateCode: String(addr.stateCode || addr.state || addr.state_code || ''),
+          postalCode: String(addr.postalCode || addr.postal_code || addr.zip || ''),
+          countryCode: String(addr.countryCode || addr.country_code || ''),
+        };
+        update['crm_details.address'] = nextAddr;
+      } else if (addr === null) {
+        update['crm_details.address'] = undefined;
+      }
+    }
+
+    if (payload.phone !== undefined || payload.crm_details?.phone !== undefined) {
+      const nextPhone = payload.phone ?? payload.crm_details?.phone ?? '';
+      update['crm_details.phone'] = String(nextPhone || '');
     }
 
     if (payload.acceptance) {
@@ -1036,8 +1394,13 @@ r.patch('/:id/crm', async (req, res) => {
 
     update.updatedAt = new Date();
 
+    let updateQuery = Case.findOneAndUpdate(selector, { $set: update }, { new: true });
+    if (updateQuery && typeof updateQuery.lean === 'function') {
+      updateQuery = updateQuery.lean();
+    }
+    const toAwait = (updateQuery && typeof updateQuery.exec === 'function') ? updateQuery.exec() : updateQuery;
     const doc = await withTimeout(
-      Case.findByIdAndUpdate(req.params.id, { $set: update }, { new: true }).lean(),
+      (toAwait && typeof toAwait.maxTimeMS === 'function') ? toAwait.maxTimeMS(MAX_DB_MS) : toAwait,
       MAX_DB_MS
     ).catch((err) => {
       console.error('PATCH /cases/:id/crm update error', err?.message);
@@ -1060,6 +1423,9 @@ r.patch('/:id/crm', async (req, res) => {
     res.json({ crm_details: doc.crm_details, crm_stage: doc.crm_stage });
   } catch (err) {
     console.error('PATCH /cases/:id/crm error:', err);
+    if (err?.statusCode) {
+      return res.status(err.statusCode).json({ error: err.message || 'Forbidden' });
+    }
     if (err?.name === 'CastError') {
       return res.status(400).json({ error: 'Invalid case id' });
     }
@@ -1075,6 +1441,13 @@ r.post('/:id/activity', async (req, res) => {
       objectId = new mongoose.Types.ObjectId(req.params.id);
     } catch {
       return res.status(400).json({ error: 'Invalid case id' });
+    }
+
+    ensurePermission(req, ['cases:write', 'cases:write:department']);
+    const selector = scopedCaseFilter(req, { _id: objectId });
+    const accessible = await Case.findOne(selector).select({ _id: 1 }).lean();
+    if (!accessible) {
+      return res.status(404).json({ error: 'Case not found' });
     }
 
     const note = typeof req.body?.note === 'string' ? req.body.note.trim() : '';
@@ -1108,7 +1481,7 @@ r.post('/:id/activity', async (req, res) => {
         updatedAt: new Date(),
       };
       await withTimeout(
-        Case.findByIdAndUpdate(objectId, { $set: update }, { new: false }),
+        Case.updateOne(selector, { $set: update }),
         MAX_DB_MS
       ).catch(() => {});
     }
@@ -1124,6 +1497,9 @@ r.post('/:id/activity', async (req, res) => {
     res.status(201).json({ event });
   } catch (err) {
     console.error('POST /cases/:id/activity error:', err);
+    if (err?.statusCode) {
+      return res.status(err.statusCode).json({ error: err.message || 'Forbidden' });
+    }
     res.status(500).json({ error: 'Internal server error' });
   }
 });
@@ -1138,7 +1514,9 @@ r.get('/:id/activity', async (req, res) => {
       return res.status(400).json({ error: 'Invalid case id' });
     }
 
-    const qCase = Case.findById(objectId).lean();
+    ensurePermission(req, ['cases:read', 'cases:read:department']);
+    const selector = scopedCaseFilter(req, { _id: objectId });
+    const qCase = Case.findOne(selector).lean();
     const doc = await withTimeout((qCase.maxTimeMS ? qCase.maxTimeMS(MAX_DB_MS) : qCase), MAX_DB_MS).catch(() => null);
     if (!doc) return res.status(404).json({ error: 'Not found' });
 
@@ -1202,6 +1580,21 @@ r.get('/:id/activity', async (req, res) => {
           details: `Before: ${before.join(', ') || 'none'} | After: ${after.join(', ') || 'none'}`,
           actor: audit.actor || 'system',
         });
+      } else if (audit.type && audit.type.startsWith('enrichment_')) {
+        // Handle enrichment audits with full JSON response and parameters
+        const providerId = String(audit.type.replace(/^enrichment_/, '')).toLowerCase();
+        const details = audit.details;
+        const status = details?.status || 'unknown';
+        const title = `Enrichment: ${providerId} (${status})`;
+        
+        events.push({
+          type: audit.type,
+          title,
+          occurredAt: audit.createdAt,
+          // Pass details object as-is so frontend can parse JSON responses
+          details: details,
+          actor: audit.actor || 'system',
+        });
       } else {
         events.push({
           type: audit.type,
@@ -1222,6 +1615,313 @@ r.get('/:id/activity', async (req, res) => {
     res.json({ events });
   } catch (err) {
     console.error('GET /cases/:id/activity error:', err);
+    if (err?.statusCode) {
+      return res.status(err.statusCode).json({ error: err.message || 'Forbidden' });
+    }
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+r.get('/:caseId/enrichment/:providerId', async (req, res) => {
+  try {
+    if (!ensureMongoConnected(res)) return;
+    ensurePermission(req, ['cases:read', 'cases:read:department']);
+
+  const provider = getEnrichmentProvider(req.params.providerId);
+    if (!provider) {
+      return res.status(404).json({ error: 'Unknown enrichment provider' });
+    }
+
+    const selector = scopedCaseFilter(req, { _id: req.params.caseId });
+    let qCase = Case.findOne(selector);
+    if (qCase && typeof qCase.select === 'function') {
+      qCase = qCase.select({ _id: 1 });
+    }
+    if (qCase && typeof qCase.lean === 'function') {
+      qCase = qCase.lean();
+    }
+    const caseDoc = await withTimeout(
+      qCase && typeof qCase.exec === 'function' ? qCase.exec() : qCase,
+      MAX_DB_MS,
+      `${provider.id}:case`
+    );
+
+    if (!caseDoc) {
+      return res.status(404).json({ error: 'Case not found' });
+    }
+
+    let qEnrichment = CaseEnrichment.findOne({
+      caseId: caseDoc._id,
+      provider: provider.id,
+    });
+    if (qEnrichment && typeof qEnrichment.sort === 'function') {
+      qEnrichment = qEnrichment.sort({ requestedAt: -1, createdAt: -1 });
+    }
+    if (qEnrichment && typeof qEnrichment.lean === 'function') {
+      qEnrichment = qEnrichment.lean();
+    }
+
+    const enrichmentDoc = await withTimeout(
+      qEnrichment && typeof qEnrichment.exec === 'function' ? qEnrichment.exec() : qEnrichment,
+      MAX_DB_MS,
+      `${provider.id}:enrichment`
+    );
+
+    if (!enrichmentDoc) {
+      return res.json({ enrichment: null, cached: false, nextRefreshAt: null });
+    }
+
+    const expiresAt = enrichmentDoc.expiresAt ? new Date(enrichmentDoc.expiresAt) : null;
+    const cached = Boolean(expiresAt && expiresAt > new Date());
+
+    res.json({
+      enrichment: mapEnrichmentDocument(enrichmentDoc, provider),
+      cached,
+      nextRefreshAt: expiresAt,
+    });
+  } catch (err) {
+    console.error(`GET /cases/:caseId/enrichment/${req.params?.providerId} error:`, err);
+    if (err?.statusCode) {
+      return res.status(err.statusCode).json({ error: err.message || 'Forbidden' });
+    }
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+r.post('/:caseId/enrichment/:providerId', async (req, res) => {
+  try {
+    if (!ensureMongoConnected(res)) return;
+    ensurePermission(req, ['cases:enrich', 'cases:enrich:department']);
+
+    const provider = getEnrichmentProvider(req.params.providerId);
+    if (!provider) {
+      return res.status(404).json({ error: 'Unknown enrichment provider' });
+    }
+
+    const selector = scopedCaseFilter(req, { _id: req.params.caseId });
+    let qCase = Case.findOne(selector);
+    if (qCase && typeof qCase.lean === 'function') {
+      qCase = qCase.lean();
+    }
+    const caseDoc = await withTimeout(
+      qCase && typeof qCase.exec === 'function' ? qCase.exec() : qCase,
+      MAX_DB_MS,
+      `${provider.id}:case`
+    );
+
+    if (!caseDoc) {
+      return res.status(404).json({ error: 'Case not found' });
+    }
+
+    let qLatest = CaseEnrichment.findOne({
+      caseId: caseDoc._id,
+      provider: provider.id,
+    });
+    if (qLatest && typeof qLatest.sort === 'function') {
+      qLatest = qLatest.sort({ requestedAt: -1, createdAt: -1 });
+    }
+    if (qLatest && typeof qLatest.lean === 'function') {
+      qLatest = qLatest.lean();
+    }
+
+    const latest = await withTimeout(
+      qLatest && typeof qLatest.exec === 'function' ? qLatest.exec() : qLatest,
+      MAX_DB_MS,
+      `${provider.id}:latest`
+    );
+
+    const ttlMinutesResolved = Number.isFinite(provider.ttlMinutes) && provider.ttlMinutes > 0
+      ? provider.ttlMinutes
+      : DEFAULT_ENRICHMENT_TTL_MINUTES;
+    const errorTtlMinutesResolved = Number.isFinite(provider.errorTtlMinutes) && provider.errorTtlMinutes > 0
+      ? provider.errorTtlMinutes
+      : Math.min(ttlMinutesResolved, DEFAULT_ENRICHMENT_ERROR_TTL_MINUTES);
+
+    const now = new Date();
+    const forceRequested = Boolean(req.body?.force);
+    const supportsForce = Boolean(provider.supportsForce);
+    const allowForce = forceRequested && supportsForce && hasPermission(req, 'cases:enrich');
+    if (!allowForce && latest?.expiresAt && new Date(latest.expiresAt) > now) {
+      return res.json({
+        enrichment: mapEnrichmentDocument(latest, provider),
+        cached: true,
+        nextRefreshAt: latest.expiresAt,
+      });
+    }
+
+    const { force, ...overrideParams } = req.body || {};
+    const params = buildEnrichmentParams(caseDoc, overrideParams);
+
+    if (!params.firstName && !params.lastName && !params.fullName) {
+      return res.status(400).json({ error: 'Provide at least a name to run enrichment.' });
+    }
+
+    let lookupResult = null;
+    let status = 'success';
+    let errorPayload = null;
+
+    try {
+      const preparedParams = provider.prepareParams
+        ? provider.prepareParams(params, { case: caseDoc, overrides: overrideParams })
+        : params;
+      lookupResult = await provider.search(preparedParams, { case: caseDoc, overrides: overrideParams });
+      status = lookupResult?.status || 'success';
+    } catch (serviceError) {
+      status = 'error';
+      errorPayload = {
+        code: serviceError.code || 'ENRICHMENT_ERROR',
+        message: serviceError.message || 'Enrichment request failed',
+      };
+      console.error(`${provider.id} lookup error:`, serviceError);
+    }
+
+    const ttlMinutes = status === 'error' ? errorTtlMinutesResolved : ttlMinutesResolved;
+    const expiresAt = nextExpiry(ttlMinutes);
+
+    const enrichmentDoc = await CaseEnrichment.create({
+      caseId: caseDoc._id,
+      provider: provider.id,
+      status,
+      params,
+      requestedBy: userIdentity(req),
+      requestedAt: now,
+      expiresAt,
+      candidates: status === 'error' ? [] : (lookupResult?.candidates || []),
+      error: errorPayload,
+      meta: lookupResult?.meta || null,
+    });
+
+    // Build comprehensive audit details with full response for debugging
+    const auditDetails = {
+      status,
+      httpStatus: status === 'error' ? 500 : 200,
+      candidateCount: enrichmentDoc.candidates?.length || 0,
+      error: errorPayload,
+      expiresAt,
+      // Include full enrichment result for review and debugging
+      enrichmentResult: lookupResult ? JSON.stringify(lookupResult, null, 2) : null,
+      // Include search parameters that were sent
+      params: JSON.stringify(params, null, 2),
+    };
+
+    await CaseAudit.create({
+      caseId: caseDoc._id,
+      type: `enrichment_${provider.id}`,
+      actor: req.user?.email || req.user?.uid || 'system',
+      details: auditDetails,
+    });
+
+    const responsePayload = mapEnrichmentDocument(enrichmentDoc.toObject({ virtuals: true }), provider);
+
+    res.json({
+      enrichment: responsePayload,
+      cached: false,
+      nextRefreshAt: expiresAt,
+    });
+  } catch (err) {
+    console.error(`POST /cases/:caseId/enrichment/${req.params?.providerId} error:`, err);
+    if (err?.code === 'ENRICHMENT_MISCONFIGURED') {
+      return res.status(500).json({ error: 'Enrichment provider is not configured on the server.' });
+    }
+    if (err?.statusCode) {
+      return res.status(err.statusCode).json({ error: err.message || 'Forbidden' });
+    }
+    if (err?.status) {
+      return res.status(err.status).json({ error: err.message || 'Enrichment request failed' });
+    }
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+r.post('/:caseId/enrichment/:providerId/select', async (req, res) => {
+  try {
+    if (!ensureMongoConnected(res)) return;
+    ensurePermission(req, ['cases:enrich', 'cases:enrich:department']);
+
+    const provider = getEnrichmentProvider(req.params.providerId);
+    if (!provider) {
+      return res.status(404).json({ error: 'Unknown enrichment provider' });
+    }
+
+    const { recordId } = req.body || {};
+    if (!recordId || typeof recordId !== 'string') {
+      return res.status(400).json({ error: 'recordId is required' });
+    }
+
+    const selector = scopedCaseFilter(req, { _id: req.params.caseId });
+    let qCase = Case.findOne(selector);
+    if (qCase && typeof qCase.lean === 'function') {
+      qCase = qCase.lean();
+    }
+    const caseDoc = await withTimeout(
+      qCase && typeof qCase.exec === 'function' ? qCase.exec() : qCase,
+      MAX_DB_MS,
+      `${provider.id}:case`
+    );
+
+    if (!caseDoc) {
+      return res.status(404).json({ error: 'Case not found' });
+    }
+
+    let qSel = CaseEnrichment.findOne({
+      caseId: caseDoc._id,
+      provider: provider.id,
+    });
+    if (qSel && typeof qSel.sort === 'function') {
+      qSel = qSel.sort({ requestedAt: -1, createdAt: -1 });
+    }
+    const enrichmentDoc = await withTimeout(
+      qSel && typeof qSel.exec === 'function' ? qSel.exec() : qSel,
+      MAX_DB_MS,
+      `${provider.id}:selectLatest`
+    );
+
+    if (!enrichmentDoc) {
+      return res.status(404).json({ error: 'No enrichment results available for selection' });
+    }
+
+    const candidates = Array.isArray(enrichmentDoc.candidates) ? enrichmentDoc.candidates : [];
+    const candidate = candidates.find((item) => item?.recordId === recordId);
+    if (!candidate) {
+      return res.status(404).json({ error: 'Candidate not found in the latest enrichment run' });
+    }
+
+    const selection = {
+      recordId,
+      selectedAt: new Date(),
+      selectedBy: userIdentity(req),
+      payload: candidate,
+    };
+
+    const existingIndex = enrichmentDoc.selectedRecords.findIndex((item) => item?.recordId === recordId);
+    if (existingIndex === -1) {
+      enrichmentDoc.selectedRecords.push(selection);
+    } else {
+      enrichmentDoc.selectedRecords[existingIndex] = selection;
+    }
+
+    await enrichmentDoc.save();
+
+    await CaseAudit.create({
+      caseId: caseDoc._id,
+      type: `enrichment_${provider.id}_select`,
+      actor: req.user?.email || req.user?.uid || 'system',
+      details: { recordId },
+    });
+
+    const responsePayload = mapEnrichmentDocument(enrichmentDoc.toObject({ virtuals: true }), provider);
+    const expiresAt = enrichmentDoc.expiresAt ? new Date(enrichmentDoc.expiresAt) : null;
+
+    res.json({
+      enrichment: responsePayload,
+      cached: Boolean(expiresAt && expiresAt > new Date()),
+      nextRefreshAt: expiresAt,
+    });
+  } catch (err) {
+    console.error(`POST /cases/:caseId/enrichment/${req.params?.providerId}/select error:`, err);
+    if (err?.statusCode) {
+      return res.status(err.statusCode).json({ error: err.message || 'Forbidden' });
+    }
     res.status(500).json({ error: 'Internal server error' });
   }
 });

@@ -5,8 +5,6 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { ReactQueryDevtools } from '@tanstack/react-query-devtools'
 import './styles/globals.css'
 import './index.css'
-// Map styles (used by InlineMapEmbed only when iframe is not used). Keeping here for potential future usage
-// If we later adopt Leaflet via CDN, we can add its CSS here as well.
 import ErrorBoundary from './components/ErrorBoundary'
 // Intentionally defer importing App until after optional runtime env is loaded
 
