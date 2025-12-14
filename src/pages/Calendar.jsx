@@ -18,8 +18,16 @@ export default function Calendar() {
   const [view, setView] = useState('list');
 
   const filteredEvents = useMemo(() => {
-    // Placeholder: In a real app this would filter by date; here we return all events for clarity.
-    return MOCK_EVENTS;
+    const days = Number(range);
+    if (!Number.isFinite(days)) return MOCK_EVENTS;
+    const now = Date.now();
+    const windowMs = days * 24 * 60 * 60 * 1000;
+    return MOCK_EVENTS.filter((event) => {
+      const eventDate = new Date(event.start.replace(' ', 'T'));
+      if (Number.isNaN(eventDate.getTime())) return true;
+      const diff = eventDate.getTime() - now;
+      return diff >= 0 && diff <= windowMs;
+    });
   }, [range]);
 
   const remindersPending = filteredEvents.filter((event) => !event.reminderSent).length;

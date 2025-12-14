@@ -80,13 +80,13 @@ export function PaymentForm({ onNavigate }) {
   const methodLabel = useMemo(() => {
     if (hasStripeKey) return 'Stripe Card Entry';
     return selectedMethod ? getMethodLabel(selectedMethod) : 'Select a method';
-  }, [hasStripeKey, selectedMethod]);
+  }, [selectedMethod]);
 
   useEffect(() => {
     if (!hasStripeKey && !selectedMethodId && paymentMethods.length) {
       setSelectedMethodId(paymentMethods[0].id);
     }
-  }, [hasStripeKey, paymentMethods, selectedMethodId]);
+  }, [paymentMethods, selectedMethodId]);
 
   const numericAmount = parseFloat(amount) || 0;
   const processingFee = numericAmount ? numericAmount * 0.029 : 0;

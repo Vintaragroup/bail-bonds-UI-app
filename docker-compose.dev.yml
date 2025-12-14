@@ -21,7 +21,8 @@ services:
       - --appendonly
       - "no"
     ports:
-      - "6379:6379"
+      # Map to 6381 on host to avoid conflicts with any local Redis
+      - "6381:6379"
     volumes:
       - redis-data:/data
   api:
@@ -32,10 +33,11 @@ services:
     environment:
       - PORT=8080
       - NODE_ENV=development
-      - MONGO_URI=${MONGO_URI:-mongodb://mongo:27017}
-      - MONGO_DB=${MONGO_DB:-warrantdb}
+      # Mongo connection comes from server/.env via dotenv; leave unset so local overrides don't stomp Atlas
       - WEB_ORIGIN=${WEB_ORIGIN:-http://localhost:5173}
       - REDIS_URL=${REDIS_URL:-redis://redis:6379/0}
+      # Enrichment proxy target (UI backend forwards /api/enrichment/* to this base)
+      - ENRICHMENT_API_URL=${ENRICHMENT_API_URL:-http://host.docker.internal:4000}
       # SMTP (optional; when set, server will email invite links)
       - SMTP_HOST=${SMTP_HOST}
       - SMTP_PORT=${SMTP_PORT:-587}
@@ -63,10 +65,11 @@ services:
     environment:
       - PORT=8080
       - NODE_ENV=development
-      - MONGO_URI=${MONGO_URI:-mongodb://mongo:27017}
-      - MONGO_DB=${MONGO_DB:-warrantdb}
+      # Mongo connection comes from server/.env via dotenv; leave unset so local overrides don't stomp Atlas
       - WEB_ORIGIN=${WEB_ORIGIN:-http://localhost:5173}
       - REDIS_URL=${REDIS_URL:-redis://redis:6379/0}
+      # Enrichment proxy target (UI backend forwards /api/enrichment/* to this base)
+      - ENRICHMENT_API_URL=${ENRICHMENT_API_URL:-http://host.docker.internal:4000}
       # Default to local MailHog in the compose network
       - SMTP_HOST=${SMTP_HOST:-mailhog}
       - SMTP_PORT=${SMTP_PORT:-1025}
@@ -122,7 +125,7 @@ services:
       - VITE_FIREBASE_MEASUREMENT_ID=${VITE_FIREBASE_MEASUREMENT_ID}
     command: sh -c "npm ci --legacy-peer-deps && npm run dev -- --host --port 5173"
     ports:
-      - "5173:5173"
+      - "5175:5173"
     volumes:
       - ./:/app
       - web_dev_node_modules:/app/node_modules

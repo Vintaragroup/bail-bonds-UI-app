@@ -426,9 +426,10 @@ export default function CaseDetail() {
   const gpsCheckins = caseCheckins.filter((checkin) => Boolean(checkin?.gpsEnabled));
   const triggerPing = useTriggerCheckInPing();
   const { data: enrichmentProvidersData } = useEnrichmentProviders();
-  const providerOptions = Array.isArray(enrichmentProvidersData?.providers)
-    ? enrichmentProvidersData.providers
-    : [];
+  const providerOptions = useMemo(
+    () => (Array.isArray(enrichmentProvidersData?.providers) ? enrichmentProvidersData.providers : []),
+    [enrichmentProvidersData?.providers],
+  );
   const providersLoaded = Boolean(enrichmentProvidersData);
   const [selectedProviderId, setSelectedProviderId] = useState('');
   const defaultProviderId = useMemo(() => {
@@ -667,7 +668,10 @@ export default function CaseDetail() {
     enabled: Boolean(caseId) && Boolean(selectedProviderId) && activeTab === 'enrichment',
   });
 
-  const permittedRoles = Array.isArray(currentUser?.roles) ? currentUser.roles : [];
+  const permittedRoles = useMemo(
+    () => (Array.isArray(currentUser?.roles) ? currentUser.roles : []),
+    [currentUser?.roles],
+  );
   const canRunEnrichment = useMemo(
     () => permittedRoles.some((role) => ['SuperUser', 'Admin', 'DepartmentLead', 'Employee'].includes(role)),
     [permittedRoles]
@@ -723,7 +727,10 @@ export default function CaseDetail() {
 
   const enrichmentDoc = enrichmentData?.enrichment || null;
   const enrichmentCandidates = Array.isArray(enrichmentDoc?.candidates) ? enrichmentDoc.candidates : [];
-  const enrichmentSelected = Array.isArray(enrichmentDoc?.selectedRecords) ? enrichmentDoc.selectedRecords : [];
+  const enrichmentSelected = useMemo(
+    () => (Array.isArray(enrichmentDoc?.selectedRecords) ? enrichmentDoc.selectedRecords : []),
+    [enrichmentDoc?.selectedRecords],
+  );
   const enrichmentSelectedSet = useMemo(
     () => new Set(enrichmentSelected.map((entry) => entry?.recordId).filter(Boolean)),
     [enrichmentSelected]

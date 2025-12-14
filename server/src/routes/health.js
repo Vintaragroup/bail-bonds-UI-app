@@ -110,7 +110,7 @@ r.get('/', async (req, res) => {
           missing: missingCounts,
           anchor_audit: anchorAudit,
         };
-      } catch (e) {
+      } catch {
         details[name] = { count: 0, latest_normalized_at: null, latest_booking_date: null, error: 'unavailable' };
       }
     }
@@ -209,7 +209,6 @@ r.get('/kpis', async (req, res) => {
     const today = dOffset(0);
     const yesterday = dOffset(-1);
     const twoDaysAgo = dOffset(-2);
-    const threeDaysAgo = dOffset(-3);
     const sevenDaysAgo = dOffset(-7);
 
     const matchWindow7d = { booking_date: { $gte: sevenDaysAgo, $lte: today } };
@@ -231,7 +230,6 @@ r.get('/kpis', async (req, res) => {
 
     const todayDocs = bucket(today, today);
     const yDocs = bucket(yesterday, yesterday);
-    const zDocs = bucket(twoDaysAgo, twoDaysAgo);
     const last72Docs = bucket(twoDaysAgo, today); // inclusive 72h (today + prev 2 days)
     const last7Docs = bucket(sevenDaysAgo, today);
 

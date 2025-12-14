@@ -51,6 +51,16 @@ export function useCase(caseId, options = {}) {
   });
 }
 
+export function useCaseByNumber(caseNumber, options = {}) {
+  return useQuery({
+    queryKey: ['caseByNumber', caseNumber],
+    enabled: Boolean(caseNumber),
+    queryFn: () => getJSON(`/cases/by-case-number/${encodeURIComponent(caseNumber)}`),
+    staleTime: 60_000,
+    ...options,
+  });
+}
+
 export function useCaseStats(options = {}) {
   return useQuery({
     queryKey: ['caseStats'],

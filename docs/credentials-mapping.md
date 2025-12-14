@@ -17,6 +17,10 @@ Notes:
   - Add a Secret File in the API service named firebase.json containing the JSON.
   - Env var: GOOGLE_APPLICATION_CREDENTIALS=/opt/render/project/secrets/firebase.json
   - Env var: FIREBASE_PROJECT_ID=<project-id>
+- Local dev:
+  - Keep the JSON in `server/.secrets/` (ignored by git).
+  - `server/.env` points `GOOGLE_APPLICATION_CREDENTIALS=.secrets/<file>.json` so host tooling can read it.
+  - Docker Compose mounts the same file as a secret and injects `GOOGLE_APPLICATION_CREDENTIALS=/run/secrets/firebase`, so no host path escapes the container.
 
 ## Firebase Web (SPA)
 - Input: Web config object (apiKey, authDomain, projectId, appId, measurementId)

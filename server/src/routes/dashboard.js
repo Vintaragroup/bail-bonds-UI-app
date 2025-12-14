@@ -61,7 +61,7 @@ async function withCache(key, compute) {
     try {
       const data = await _inflight.get(key);
       return { fromCache: true, data };
-    } catch (e) {
+    } catch {
       // fall through to recompute
     }
   }
@@ -210,20 +210,6 @@ const rewriteBookingKeys = (value) => {
   });
   return out;
 };
-
-const HOUR_MS = 60 * 60 * 1000;
-
-const bucketWindowConfig = {
-  // Windows are STRICTLY based on booking time now (booking_dt), not recency.
-  '24h': { sinceHours: 24 },
-  '48h': { sinceHours: 48, prevHours: 24 },
-  '72h': { sinceHours: 72, prevHours: 48 },
-  // broader ranges used in KPIs; no upper bound
-  '7d':  { sinceHours: 24 * 7  },
-  '30d': { sinceHours: 24 * 30 },
-};
-
-// No time-bucket based matching now; windows derive from booking_dt only
 
 // Day-anchored window matching: 24h = today, 48h = yesterday, 72h = two days ago, etc.
 // Legacy calendar (pre-contract) window matching (retained as fallback)
@@ -1007,17 +993,20 @@ function attentionStages(attentionOnly = false) {
 
 // ===== KPIs =====
 r.get('/kpis', async (req, res) => {
+  console.log('[KPI] ============ HANDLER CALLED ==============');
+  console.log('[KPI] endpoint called, user=', req.user?.email);
   ensurePermission(req, 'dashboard:read');
   const db = ensureDb(res); if (!db) return;
   const useV2 = !!req.app?.locals?.flags?.USE_TIME_BUCKET_V2;
   const variant = useV2 ? 'buckets-fast' : 'legacy';
   const key = `kpis:v2:${variant}`;
+  console.log('[KPI] starting computation, variant=', variant, ', useV2=', useV2);
   const { fromCache, data } = await withCache(key, async () => {
   let c24, c48, c72, c7, c30, c3to7;
     let pathVariantUsed = variant;
     if (useV2) {
       try {
-        const t0 = Date.now();
+        const _t0 = Date.now();
         const bucketCounts = await computeBucketCounts(db);
         res.locals.perfMark && res.locals.perfMark('kpisBuckets');
         // Map windows using canonical union semantics
@@ -1058,9 +1047,9 @@ r.get('/kpis', async (req, res) => {
             countByWindow(db, '30d', useV2),
           ]);
         }
-        const t1 = Date.now();
+        const _t1 = Date.now();
         res.locals.perfMark && res.locals.perfMark(`kpisBucketsDone`);
-      } catch (e) {
+      } catch {
         // Fallback to legacy per-window counting preserving semantics
         pathVariantUsed = 'fallback-countByWindow';
           [c24, c48, c72, c7, c30, c3to7] = await Promise.all([
@@ -1157,6 +1146,7 @@ r.get('/kpis', async (req, res) => {
   });
   res.set('X-Cache', fromCache ? 'HIT' : 'MISS');
   if (data?.pathVariant) res.set('X-Path-Variant', data.pathVariant);
+  console.log('[KPI] responding with data, cache=', fromCache);
   res.json(data);
 });
 

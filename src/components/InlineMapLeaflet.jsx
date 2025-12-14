@@ -58,7 +58,9 @@ async function tryGeocodeOnce(q) {
         return { lat: Number(first.lat), lon: Number(first.lon) };
       }
     }
-  } catch (_) {}
+  } catch (err) {
+    void err;
+  }
   // 2) US Census fallback
   try {
     const url2 = `https://geocoding.geo.census.gov/geocoder/locations/onelineaddress?address=${encodeURIComponent(q)}&benchmark=2020&format=json`;
@@ -70,7 +72,9 @@ async function tryGeocodeOnce(q) {
         return { lat: Number(match.coordinates.y), lon: Number(match.coordinates.x) };
       }
     }
-  } catch (_) {}
+  } catch (err) {
+    void err;
+  }
   return null;
 }
 
@@ -103,7 +107,6 @@ export default function InlineMapLeaflet({ addressText, height = 180, zoom = 16 
       let found = null;
       for (const v of variants) {
         if (GEO_CACHE.has(v)) { found = GEO_CACHE.get(v); break; }
-        // eslint-disable-next-line no-await-in-loop
         const res = await tryGeocodeOnce(v);
         if (res) { found = res; GEO_CACHE.set(v, res); break; }
         if (cancel) return;

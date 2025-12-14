@@ -6,8 +6,6 @@ import cookieParser from 'cookie-parser';
 import rateLimit from 'express-rate-limit';
 import swaggerUi from 'swagger-ui-express';
 import fs from 'node:fs';
-import path from 'node:path';
-import { fileURLToPath } from 'node:url';
 import YAML from 'yaml';
 import { connectMongo, getMongo } from './db.js';
 import { ensureDashboardIndexes } from './indexes.js';
@@ -23,6 +21,8 @@ import accessRequestRoutes from './routes/accessRequests.js';
 import metadataRoutes from './routes/metadata.js';
 import paymentRoutes, { stripeWebhookHandler } from './routes/payments.js';
 import enrichmentProxy from './routes/enrichmentProxy.js';
+import reportsRoutes from './routes/reports.js';
+import callQueueRoutes from './routes/callQueue.js';
 import { requireAuth } from './middleware/auth.js';
 import { initQueues } from './jobs/index.js';
 
@@ -43,9 +43,59 @@ let openapiDoc = null;
 try {
   const specText = fs.readFileSync(new URL('./openapi.yaml', import.meta.url), 'utf8');
   openapiDoc = YAML.parse(specText);
-  app.use('/api/docs', swaggerUi.serve, swaggerUi.setup(openapiDoc, { explorer: true }));
-  app.get('/api/docs.json', (_req, res) => res.json(openapiDoc));
-  console.log('📚 Swagger UI available at /api/docs');
+  // Serve the primary Bail Bond API spec as JSON (stable path)
+  app.get('/api/docs.json', (_req, res) => {
+    res.set('Cache-Control', 'no-store');
+    res.type('application/json').json(openapiDoc);
+  });
+
+  // Optional: Proxy the Enrichment API OpenAPI spec from the 4000 service to avoid browser/network constraints
+  app.get('/api/enrichment-openapi.json', async (_req, res) => {
+    try {
+      // Prefer explicit override; otherwise derive from ENRICHMENT_API_URL (used by the proxy) and finally fall back to localhost
+      const upstream = process.env.ENRICHMENT_OPENAPI_URL
+        || (process.env.ENRICHMENT_API_URL ? `${process.env.ENRICHMENT_API_URL.replace(/\/$/, '')}/api/openapi.json` : 'http://localhost:4000/api/openapi.json');
+      const r = await fetch(upstream);
+      const text = await r.text();
+      res
+        .status(r.status)
+        .set('Cache-Control', 'no-store')
+        .type(r.headers.get('content-type') || 'application/json')
+        .send(text);
+    } catch (e) {
+      res.status(502).json({ ok: false, error: 'UPSTREAM_UNAVAILABLE', message: String(e) });
+    }
+  });
+
+  // Multi-doc Swagger UI: Bail Bond API + Inmate Enrichment API
+  // Add a no-store cache header to Swagger UI assets to avoid stale single-doc config
+  const noStore = (req, res, next) => {
+    res.set('Cache-Control', 'no-store');
+    next();
+  };
+
+  app.use(
+    '/api/docs',
+    noStore,
+    swaggerUi.serve,
+    swaggerUi.setup(
+      undefined,
+      {
+        explorer: true,
+        swaggerOptions: {
+          urls: [
+            // Add a version query to bust any cached init script
+            { url: '/api/docs.json?v=2', name: 'Bail Bond API' },
+            // Use the local proxy for robustness; set ENRICHMENT_OPENAPI_URL to override source if needed
+            { url: '/api/enrichment-openapi.json?v=2', name: 'Inmate Enrichment API' },
+          ],
+          docExpansion: 'list',
+          deepLinking: true,
+        },
+      }
+    )
+  );
+  console.log('📚 Swagger UI available at /api/docs (multi-doc: Bail Bond API + Enrichment API)');
 } catch (e) {
   console.warn('⚠️  OpenAPI spec not found or invalid; /api/docs disabled:', e.message);
 }
@@ -80,13 +130,15 @@ app.get('/api/health/light', (_req, res) => res.json({ ok: true, pid: process.pi
 app.use('/api/auth', authRoutes);
 app.use('/api/dashboard', requireAuth, dashboard);
 app.use('/api/cases', requireAuth, cases);
-app.use('/api/enrichment', requireAuth, enrichmentProxy);
 app.use('/api/checkins', requireAuth, checkins);
 app.use('/api/messages', requireAuth, messagesRoutes);
 app.use('/api/cases', requireAuth, documents);
 app.use('/api/users', requireAuth, userRoutes);
 app.use('/api/access-requests', requireAuth, accessRequestRoutes);
 app.use('/api/payments', requireAuth, paymentRoutes);
+app.use('/api/enrichment', requireAuth, enrichmentProxy);
+app.use('/api/reports', requireAuth, reportsRoutes);
+app.use('/api/call-queue', requireAuth, callQueueRoutes);
 app.use('/api/metadata', metadataRoutes);
 app.use('/uploads', express.static(new URL('../uploads', import.meta.url).pathname));
 
@@ -120,16 +172,16 @@ const server = app.listen(port, () => {
 server.on('connection', (sock) => {
   try {
     console.log(`🔌 new TCP connection from ${sock.remoteAddress}:${sock.remotePort} (local:${sock.localAddress}:${sock.localPort})`);
-  } catch (e) {}
+  } catch {}
 });
 
-server.on('request', (req, res) => {
+server.on('request', (req, _res) => {
   try {
     console.log(`📰 server request event: ${req.method} ${req.url}`);
-  } catch (e) {}
+  } catch {}
 });
 
-app.use((err, req, res, next) => {
+app.use((err, req, res, _next) => {
   const status = Number(err?.statusCode || err?.status || 500);
   const message =
     status === 401 ? 'Unauthorized'

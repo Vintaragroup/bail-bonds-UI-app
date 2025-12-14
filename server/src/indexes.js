@@ -41,13 +41,15 @@ export async function ensureDashboardIndexes(mongooseConn) {
         for (const { keys, options } of indexDefs) {
           try {
             await coll.createIndex(keys, options);
-          } catch (e) {
+          } catch (err) {
             // ignore individual index failures to avoid blocking startup
-            // console.warn(`Index create failed on ${collName} ${options?.name}:`, e.message);
+            // console.warn(`Index create failed on ${collName} ${options?.name}:`, err.message);
+            void err;
           }
         }
-      } catch (e) {
-        // console.warn(`Skipping index ensure on ${collName}:`, e.message);
+      } catch (err) {
+        // console.warn(`Skipping index ensure on ${collName}:`, err.message);
+        void err;
       }
     }
   } catch {

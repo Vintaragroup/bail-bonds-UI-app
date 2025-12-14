@@ -3,7 +3,7 @@ import { useNavigate } from 'react-router-dom';
 import { PageHeader, SummaryStat, PageToolbar, FilterPills, DataTable, SectionCard } from '../components/PageToolkit';
 import { useProspects } from '../hooks/prospects';
 import { useEnrichmentProxyHealth } from '../hooks/enrichment';
-import { sendJSON } from '../hooks/dashboard';
+import { API_BASE, getAuthHeader } from '../lib/api';
 
 const COUNTIES = ['all', 'harris', 'brazoria', 'galveston', 'fortbend', 'jefferson'];
 const WINDOW_OPTIONS = [
@@ -28,19 +28,6 @@ function formatPhone(value) {
   return v;
 }
 
-function formatRelative(value) {
-  if (!value) return '—';
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) return '—';
-  const diffMs = Date.now() - date.getTime();
-  const minutes = Math.floor(diffMs / 60000);
-  if (minutes < 60) return `${minutes}m`;
-  const hours = Math.floor(minutes / 60);
-  if (hours < 24) return `${hours}h`;
-  const days = Math.floor(hours / 24);
-  return `${days}d ${hours % 24}h`;
-}
-
 export default function Prospects() {
   const navigate = useNavigate();
   const { data: health } = useEnrichmentProxyHealth({
@@ -52,16 +39,6 @@ export default function Prospects() {
   const [minBond, setMinBond] = useState('');
   const [attentionOnly, setAttentionOnly] = useState(false);
 
-  const filters = useMemo(() => ({
-    county: county !== 'all' ? county : undefined,
-    window: windowId,
-    minBond: minBond != null && minBond !== '' ? Number(minBond) : undefined,
-    attention: attentionOnly,
-    sortBy: 'bond_amount',
-    order: 'desc',
-    limit: 100,
-  }), [county, windowId, minBond, attentionOnly]);
-
   const windowHours = windowId === '72h' ? 72 : windowId === '48h' ? 48 : 24;
   const { data, isLoading, isError, error, refetch, isFetching } = useProspects({
     windowHours,
@@ -70,65 +47,63 @@ export default function Prospects() {
     county: county !== 'all' ? county : undefined,
     attention: attentionOnly,
   });
-  const items = Array.isArray(data?.items) ? data.items : [];
 
-  const rows = useMemo(() => items.map((item, idx) => {
-    // Support both dashboard case shape and enrichment prospect shape
-    const id = String(
-      item._id
-      || item.id
-      || item.case_number
-      || item.booking_number
-      || item.subjectId
-      || `${item.full_name || item.name || 'case'}-${idx}`
-    );
-    const contactPhoneValue = item.crm_details?.phone
-      || item.phone
-      || item.primary_phone
-      || item.phone_nbr1
-      || item.phone_nbr2
-      || item.phone_nbr3
-      || '';
-    const name = item.full_name || item.name || (item.subjectId ? `Subject ${item.subjectId}` : 'Unknown');
-    const countyValueRaw = (item.county || '').replace(/^./, (c) => c.toUpperCase());
-    const bookingDate = item.booking_date || item.bookingDate || '—';
-    const bondAmount = item.bond_amount ?? item.bond;
-    const spn = item.spn || item.booking_number || item.subjectId || '—';
-    const needsAttention = Boolean(item.needs_attention ?? item.moreChargesPossible);
-  const enrichmentCount = Number(item.enrichmentCount || 0);
-  const relationsCount = Number(item.relationsCount || 0);
-    const addressCounty = (() => {
-      const base = item.baseAddressSnippet || item.address || '';
-      const selectedCounty = county !== 'all' ? county.charAt(0).toUpperCase() + county.slice(1) : '';
-      const countyValue = countyValueRaw || selectedCounty;
-      const joined = [base, countyValue].filter(Boolean).join(' · ');
-      return joined || countyValue || base || '—';
-    })();
-    const status = (() => {
-      if (item.notBondableStrict || item.notBondable) return 'Not bondable';
-      if (item.moreChargesPossible) return 'Review charges';
-      if (item.dob) return 'DOB found';
-      if (bookingDate && !Number.isNaN(new Date(bookingDate).getTime())) return 'Pending DOB';
-      return 'Not started';
-    })();
-    return {
-      key: id,
-      caseId: String(item._id || item.id || item.case_number || item.subjectId || id),
-      name,
-      county: addressCounty,
-      bookingDate,
-      sinceBooking: bookingDate,
-      bondAmount,
-      spn,
-      dob: item.dob || null,
-      contacted: Boolean(item.contacted),
-      contactPhone: contactPhoneValue,
-      status,
-      needsAttention,
-      enrichmentCount,
-      relationsCount,
-    };
-  }), [items, county]);
+  const rows = useMemo(() => {
+    const items = Array.isArray(data?.items) ? data.items : [];
+    return items.map((item, idx) => {
+      // Support both dashboard case shape and enrichment prospect shape
+      const id = String(
+        item._id
+        || item.id
+        || item.case_number
+        || item.booking_number
+        || item.subjectId
+        || `${item.full_name || item.name || 'case'}-${idx}`
+      );
+      const contactPhoneValue = item.crm_details?.phone
+        || item.phone
+        || item.primary_phone
+        || item.phone_nbr1
+        || item.phone_nbr2
+        || item.phone_nbr3
+        || '';
+      const name = item.full_name || item.name || (item.subjectId ? `Subject ${item.subjectId}` : 'Unknown');
+      const countyValueRaw = (item.county || '').replace(/^./, (c) => c.toUpperCase());
+      const bookingDate = item.booking_date || item.bookingDate || '—';
+      const bondAmount = item.bond_amount ?? item.bond;
+      const spn = item.spn || item.booking_number || item.subjectId || '—';
+      const needsAttention = Boolean(item.needs_attention ?? item.moreChargesPossible);
+      const addressCounty = (() => {
+        const base = item.baseAddressSnippet || item.address || '';
+        const selectedCounty = county !== 'all' ? county.charAt(0).toUpperCase() + county.slice(1) : '';
+        const countyValue = countyValueRaw || selectedCounty;
+        const joined = [base, countyValue].filter(Boolean).join(' · ');
+        return joined || countyValue || base || '—';
+      })();
+      const status = (() => {
+        if (item.notBondableStrict || item.notBondable) return 'Not bondable';
+        if (item.moreChargesPossible) return 'Review charges';
+        if (item.dob) return 'DOB found';
+        if (bookingDate && !Number.isNaN(new Date(bookingDate).getTime())) return 'Pending DOB';
+        return 'Not started';
+      })();
+      return {
+        key: id,
+        caseId: String(item._id || item.id || item.case_number || item.subjectId || id),
+        caseNumber: item.case_number || item.booking_number || item.subjectId,
+        name,
+        county: addressCounty,
+        bookingDate,
+        bondAmount,
+        spn,
+        dob: item.dob || null,
+        contacted: Boolean(item.contacted),
+        contactPhone: contactPhoneValue,
+        status,
+        needsAttention,
+      };
+    }, [data, county]);
+  }, [data, county]);
 
   const activeFilters = [
     county !== 'all' ? `County: ${county}` : null,
@@ -247,7 +222,6 @@ export default function Prospects() {
               { key: 'name', header: 'Person' },
               { key: 'county', header: 'County' },
               { key: 'bookingDate', header: 'Booked' },
-              { key: 'sinceBooking', header: 'Since', render: (v) => formatRelative(v) },
               { key: 'dob', header: 'DOB', render: (value) => {
                 if (!value) return '—';
                 const v = String(value);
@@ -268,20 +242,6 @@ export default function Prospects() {
                 }
                 return _v ? formatPhone(_v) : '—';
               } },
-              { key: 'tags', header: 'Tags', render: (_v, row) => (
-                <div className="flex flex-wrap items-center gap-1">
-                  {row.enrichmentCount > 0 ? (
-                    <span className="inline-flex rounded-full bg-blue-50 px-2 py-0.5 text-xs font-medium text-blue-700" title="Times enriched">
-                      Enriched ×{row.enrichmentCount}
-                    </span>
-                  ) : null}
-                  {row.relationsCount > 0 ? (
-                    <span className="inline-flex rounded-full bg-emerald-50 px-2 py-0.5 text-xs font-medium text-emerald-700" title="Related parties discovered">
-                      Relations {row.relationsCount}
-                    </span>
-                  ) : null}
-                </div>
-              )},
               { key: 'contacted', header: 'Contacted', render: (value) => (
                 <span className={`inline-flex rounded-full px-2 py-0.5 text-xs ${value ? 'bg-emerald-50 text-emerald-700' : 'bg-slate-100 text-slate-500'}`}>
                   {value ? 'Yes' : 'No'}
@@ -290,28 +250,27 @@ export default function Prospects() {
             ]}
             rows={rows}
             empty="No prospects match these filters. Try widening the window (72h), unchecking 'Needs attention', or lowering the minimum bond."
-            onRowClick={async (row) => {
-              try {
-                // Ensure a Case exists for this subject and navigate to its detail
-                const payload = {
-                  subjectId: row.spn || row.caseId || row.key,
-                  county: county !== 'all' ? county : (row.county?.toLowerCase?.().includes('harris') ? 'harris' : 'harris'),
-                  name: row.name,
-                  bookingDate: row.bookingDate,
-                  bondAmount: row.bondAmount,
-                  bondLabel: null,
-                  addressSnippet: row.county,
-                };
-                const res = await sendJSON('/cases/ensure', { method: 'POST', body: payload });
-                if (res?.id) {
-                  navigate(`/cases/${res.id}`);
-                } else {
-                  // Fallback to old behavior if ensure fails silently
-                  navigate(`/cases/${row.caseId}`);
-                }
-              } catch (_err) {
-                // Fallback navigation if the ensure call fails
+            onRowClick={(row) => {
+              // Row contains case_number from prospects data; use it to look up the actual MongoDB _id
+              if (row.caseNumber) {
+                // Use case_number to look up the actual MongoDB ID
+                (async () => {
+                  try {
+                    const auth = await getAuthHeader();
+                    const url = `${API_BASE}/cases/by-case-number/${encodeURIComponent(row.caseNumber)}`;
+                    const r = await fetch(url, { headers: auth ? { ...auth } : {} });
+                    if (!r.ok) throw new Error('Case not found');
+                    const doc = await r.json();
+                    navigate(`/cases/${doc._id}`);
+                  } catch (err) {
+                    console.error('Failed to resolve case:', err);
+                    alert(`Could not find case for ${row.name}`);
+                  }
+                })();
+              } else if (row.caseId) {
                 navigate(`/cases/${row.caseId}`);
+              } else {
+                alert(`No case ID available for ${row.name}`);
               }
             }}
           />

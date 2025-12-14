@@ -9,6 +9,23 @@ import { assertPermission as ensurePermission, filterByDepartment, hasPermission
 import { listProviders as listEnrichmentProviders, getProvider as getEnrichmentProvider, getDefaultProviderId } from '../lib/enrichment/registry.js';
 import { splitName, nextExpiry } from '../lib/enrichment/utils.js';
 
+// County collections mapping (read directly from simple_* collections)
+const COUNTY_COLLECTIONS = [
+  'simple_brazoria',
+  'simple_fortbend',
+  'simple_galveston',
+  'simple_harris',
+  'simple_jefferson',
+];
+
+const COUNTY_MAP = new Map([
+  ['brazoria', 'simple_brazoria'],
+  ['fortbend', 'simple_fortbend'],
+  ['galveston', 'simple_galveston'],
+  ['harris', 'simple_harris'],
+  ['jefferson', 'simple_jefferson'],
+]);
+
 // Per-file DB timeout for potentially expensive queries (env overridable)
 // Bump a bit for wide attention scans to avoid near-miss timeouts
 const MAX_DB_MS = parseInt(process.env.CASES_MAX_DB_MS || process.env.MAX_DB_MS || '12000', 10);
@@ -836,27 +853,90 @@ r.get('/', async (req, res) => {
 
     const scopedFilter = scopedCaseFilter(req, filter);
 
-    const qFind = Case
-      .find(scopedFilter)
-      .select(projection)
-      .sort({ [sortField]: sortDir, booking_date: -1, _id: -1 })
-      .limit(limitNum)
-      .lean();
+    const wantCount = !noCount || !TRUE_SET.has(String(noCount).toLowerCase());
 
-  const wantCount = !noCount || !TRUE_SET.has(String(noCount).toLowerCase());
-  const qCount = wantCount ? Case.countDocuments(scopedFilter) : null;
+    // Query directly from county collections (simple_harris, simple_jefferson, etc.)
+    // instead of a normalized 'cases' collection
+    const db = mongoose.connection.db;
+    if (!db) {
+      return res.status(503).json({ error: 'Database not connected' });
+    }
 
-    // Apply maxTimeMS when the driver/query supports it, and wrap with a timeout
-    let items = await withTimeout((qFind.maxTimeMS ? qFind.maxTimeMS(MAX_DB_MS) : qFind), MAX_DB_MS).catch((e) => {
-      console.warn('cases: find timed out or failed', e?.message);
-      return [];
-    });
-    let count = null;
-    if (qCount) {
-      count = await withTimeout((qCount.maxTimeMS ? qCount.maxTimeMS(MAX_DB_MS) : qCount), MAX_DB_MS).catch((e) => {
-        console.warn('cases: count timed out or failed', e?.message);
-        return 0;
+    // Determine which collection(s) to query
+    let collections = [];
+    if (county) {
+      const collName = COUNTY_MAP.get(String(county).toLowerCase());
+      if (collName) {
+        collections = [collName];
+      } else {
+        return res.status(400).json({ error: `Unknown county: ${county}` });
+      }
+    } else {
+      // Query all county collections if no specific county is provided
+      collections = COUNTY_COLLECTIONS;
+    }
+
+    // Build aggregation pipeline for all collections
+    let items = [];
+    let totalCount = 0;
+
+    for (const collName of collections) {
+      const coll = db.collection(collName);
+      
+      // Build the aggregation pipeline
+      const pipeline = [
+        { $match: scopedFilter },
+      ];
+
+      if (useExprWindow) {
+        pipeline.push({ $match: filter });
+      }
+
+      pipeline.push(
+        { $sort: { [sortField]: sortDir, booking_date: -1, _id: -1 } },
+        { $project: projection }
+      );
+
+      // Apply limit only for single collection queries
+      if (collections.length === 1) {
+        pipeline.push({ $limit: limitNum });
+      }
+
+      try {
+        const collItems = await withTimeout(
+          coll.aggregate(pipeline).maxTimeMS(MAX_DB_MS).toArray(),
+          MAX_DB_MS,
+          `cases aggregate from ${collName}`
+        );
+        items = items.concat(collItems);
+      } catch (e) {
+        console.warn(`cases: aggregate from ${collName} failed`, e?.message);
+      }
+
+      // Get count for this collection
+      if (wantCount) {
+        try {
+          const count = await withTimeout(
+            coll.countDocuments(scopedFilter),
+            MAX_DB_MS,
+            `cases count from ${collName}`
+          );
+          totalCount += count;
+        } catch (e) {
+          console.warn(`cases: count from ${collName} failed`, e?.message);
+        }
+      }
+    }
+
+    // If querying multiple collections, sort and limit combined results
+    if (collections.length > 1) {
+      items.sort((a, b) => {
+        const aVal = a[sortField];
+        const bVal = b[sortField];
+        const cmp = aVal < bVal ? -1 : aVal > bVal ? 1 : 0;
+        return sortDir === 1 ? cmp : -cmp;
       });
+      items = items.slice(0, limitNum);
     }
 
     const caseIds = items.map((item) => item._id).filter(Boolean);
@@ -969,7 +1049,7 @@ r.get('/', async (req, res) => {
 
     const limitedItems = mappedItems.slice(0, limitNum);
 
-  res.json({ items: limitedItems, count: mappedItems.length, total: count });
+  res.json({ items: limitedItems, count: mappedItems.length, total: totalCount });
   } catch (err) {
     console.error('GET /cases error:', err);
     if (err?.statusCode) {
@@ -1044,91 +1124,200 @@ r.patch('/:id/tags', async (req, res) => {
 });
 
 /**
+ * GET /cases/by-case-number/:caseNumber
+ * Looks up a case by case_number (e.g., from enrichment prospects).
+ * Queries county collections directly, returns { _id, case_number, full_name, county } to enable navigation.
+ */
+r.get('/by-case-number/:caseNumber', async (req, res) => {
+  try {
+    if (!ensureMongoConnected(res)) return;
+    ensurePermission(req, ['cases:read', 'cases:read:department']);
+
+    const rawIdentifier = String(req.params.caseNumber || '').trim();
+    if (!rawIdentifier) {
+      return res.status(400).json({ error: 'Case identifier required' });
+    }
+
+    const compact = rawIdentifier.replace(/\s+/g, '');
+    const stripped = compact.replace(/^0+/, '');
+    const normalizedNoZeros = stripped.length ? stripped : (compact ? '0' : '');
+    const stringCandidates = Array.from(new Set(
+      [rawIdentifier, compact, normalizedNoZeros].filter((v) => typeof v === 'string' && v.length)
+    ));
+
+    const numericCandidates = [];
+    if (/^\d+$/.test(normalizedNoZeros)) {
+      const asNumber = Number(normalizedNoZeros);
+      if (Number.isFinite(asNumber)) {
+        numericCandidates.push(asNumber);
+      }
+    }
+
+    const stringFields = [
+      'case_number',
+      'caseNumber',
+      'anchor',
+      'booking_number',
+      'bookingNumber',
+      'booking_id',
+      'bookingId',
+      'spn',
+      'subjectId',
+      'subject_id',
+    ];
+    const numericFields = ['subjectId', 'subject_id', 'spn', 'booking_number', 'booking_id'];
+
+    const orClauses = [];
+    for (const field of stringFields) {
+      if (stringCandidates.length) {
+        orClauses.push({ [field]: { $in: stringCandidates } });
+      }
+    }
+    for (const field of numericFields) {
+      for (const value of numericCandidates) {
+        orClauses.push({ [field]: value });
+      }
+    }
+
+    if (!orClauses.length) {
+      return res.status(400).json({ error: 'Unable to build lookup query' });
+    }
+
+    const query = { $or: orClauses };
+    const db = mongoose.connection.db;
+
+    // Search across all county collections for any identifier match
+    for (const collName of COUNTY_COLLECTIONS) {
+      const coll = db.collection(collName);
+      const doc = await coll.findOne(query);
+      if (doc) {
+        return res.json({
+          _id: doc._id,
+          case_number: doc.case_number,
+          full_name: doc.full_name,
+          county: collName.replace('simple_', '').toUpperCase(),
+        });
+      }
+    }
+
+    return res.status(404).json({ error: 'Case not found' });
+  } catch (err) {
+    console.error('GET /cases/by-case-number/:caseNumber error:', err);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+/**
  * GET /cases/:id
- * Returns a single case document. Fields already normalized.
+ * Returns a single case document from county collections, enriched with metadata.
+ * The :id is an ObjectId from a county collection (simple_harris, etc.).
  */
 r.get('/:id', async (req, res) => {
   try {
     if (!ensureMongoConnected(res)) return;
     ensurePermission(req, ['cases:read', 'cases:read:department']);
-    const selector = scopedCaseFilter(req, { _id: req.params.id });
-    const qGet = Case.findOne(selector).lean();
-    const doc = await withTimeout((qGet.maxTimeMS ? qGet.maxTimeMS(MAX_DB_MS) : qGet), MAX_DB_MS).catch((e) => {
-      console.error('GET /cases/:id timed out or failed', e?.message);
-      return null;
-    });
+    
+    let objectId;
+    try {
+      objectId = new mongoose.Types.ObjectId(req.params.id);
+    } catch {
+      return res.status(400).json({ error: 'Invalid case id' });
+    }
+    
+    const db = mongoose.connection.db;
+    let doc = null;
+    
+    // Search county collections for the case by _id
+    for (const collName of COUNTY_COLLECTIONS) {
+      const coll = db.collection(collName);
+      const found = await withTimeout(
+        coll.findOne({ _id: objectId }),
+        MAX_DB_MS,
+        `cases get from ${collName}`
+      ).catch(() => null);
+      
+      if (found) {
+        doc = found;
+        break;
+      }
+    }
+    
     if (!doc) return res.status(404).json({ error: 'Not found' });
+    
+    // Now enrich with metadata from Case model
+    let caseMetadata = null;
+    try {
+      caseMetadata = await Case.findOne({ _id: objectId }).lean();
+    } catch (e) {
+      console.warn('Failed to fetch case metadata for', objectId.toString(), e?.message);
+    }
 
-    if (!Array.isArray(doc.manual_tags)) doc.manual_tags = [];
-    if (!doc.crm_stage) doc.crm_stage = 'new';
+    // Use metadata if available, otherwise default values
+    const meta = caseMetadata || {};
+    if (!Array.isArray(meta.manual_tags)) meta.manual_tags = [];
+    if (!meta.crm_stage) meta.crm_stage = 'new';
+    
     // Build normalized CRM contact fields from any available source keys
-    const sourceAddr = doc.address || doc.address_obj || null;
+    const sourceAddr = meta.address || meta.address_obj || doc.address || doc.address_obj || null;
     const normalizedCrmAddress = {
       streetLine1:
-        doc.address_line_1
-        || doc.addressLine1
-        || sourceAddr?.streetLine1
-        || sourceAddr?.street_line_1
-        || sourceAddr?.line1
-        || sourceAddr?.line_1
+        meta.address_line_1 || meta.addressLine1 || doc.address_line_1 || doc.addressLine1
+        || sourceAddr?.streetLine1 || sourceAddr?.street_line_1 || sourceAddr?.line1 || sourceAddr?.line_1
         || '',
       streetLine2:
-        doc.address_line_2
-        || doc.addressLine2
-        || sourceAddr?.streetLine2
-        || sourceAddr?.street_line_2
-        || sourceAddr?.line2
-        || sourceAddr?.line_2
+        meta.address_line_2 || meta.addressLine2 || doc.address_line_2 || doc.addressLine2
+        || sourceAddr?.streetLine2 || sourceAddr?.street_line_2 || sourceAddr?.line2 || sourceAddr?.line_2
         || '',
-      city: doc.city || sourceAddr?.city || '',
+      city: meta.city || doc.city || sourceAddr?.city || '',
       stateCode:
-        doc.state
-        || doc.stateCode
-        || sourceAddr?.state
-        || sourceAddr?.stateCode
-        || sourceAddr?.state_code
+        meta.state || meta.stateCode || doc.state || doc.stateCode
+        || sourceAddr?.state || sourceAddr?.stateCode || sourceAddr?.state_code
         || '',
       postalCode:
-        doc.postal_code
-        || doc.postalCode
-        || doc.zip
-        || sourceAddr?.postalCode
-        || sourceAddr?.postal_code
-        || sourceAddr?.zip
+        meta.postal_code || meta.postalCode || meta.zip || doc.postal_code || doc.postalCode || doc.zip
+        || sourceAddr?.postalCode || sourceAddr?.postal_code || sourceAddr?.zip
         || '',
       countryCode: sourceAddr?.countryCode || sourceAddr?.country_code || '',
     };
-    const normalizedPhone = doc.phone || doc.primary_phone || '';
+    const normalizedPhone = meta.phone || meta.primary_phone || doc.phone || doc.primary_phone || '';
 
-    doc.crm_details = {
-      qualificationNotes: doc.crm_details?.qualificationNotes || '',
-      documents: normalizeChecklist(doc.crm_details?.documents),
-      followUpAt: doc.crm_details?.followUpAt || null,
-      assignedTo: doc.crm_details?.assignedTo || '',
-      address: doc.crm_details?.address || normalizedCrmAddress,
-      phone: doc.crm_details?.phone || normalizedPhone,
-      attachments: Array.isArray(doc.crm_details?.attachments) ? doc.crm_details.attachments : [],
-      acceptance: {
-        accepted: Boolean(doc.crm_details?.acceptance?.accepted),
-        acceptedAt: doc.crm_details?.acceptance?.acceptedAt || null,
-        notes: doc.crm_details?.acceptance?.notes || '',
-      },
-      denial: {
-        denied: Boolean(doc.crm_details?.denial?.denied),
-        deniedAt: doc.crm_details?.denial?.deniedAt || null,
-        reason: doc.crm_details?.denial?.reason || '',
-        notes: doc.crm_details?.denial?.notes || '',
+    // Build response with both case data (from county collection) and CRM metadata
+    const response = {
+      ...doc,
+      manual_tags: meta.manual_tags,
+      crm_stage: meta.crm_stage,
+      crm_details: {
+        qualificationNotes: meta.crm_details?.qualificationNotes || '',
+        documents: normalizeChecklist(meta.crm_details?.documents),
+        followUpAt: meta.crm_details?.followUpAt || null,
+        assignedTo: meta.crm_details?.assignedTo || '',
+        address: meta.crm_details?.address || normalizedCrmAddress,
+        phone: meta.crm_details?.phone || normalizedPhone,
+        attachments: Array.isArray(meta.crm_details?.attachments) ? meta.crm_details.attachments : [],
+        acceptance: {
+          accepted: Boolean(meta.crm_details?.acceptance?.accepted),
+          acceptedAt: meta.crm_details?.acceptance?.acceptedAt || null,
+          notes: meta.crm_details?.acceptance?.notes || '',
+        },
+        denial: {
+          denied: Boolean(meta.crm_details?.denial?.denied),
+          deniedAt: meta.crm_details?.denial?.deniedAt || null,
+          reason: meta.crm_details?.denial?.reason || '',
+          notes: meta.crm_details?.denial?.notes || '',
+        },
       },
     };
 
-    const attachmentsRaw = Array.isArray(doc.crm_details.attachments) ? doc.crm_details.attachments : [];
+    const attachmentsRaw = Array.isArray(response.crm_details.attachments) ? response.crm_details.attachments : [];
     const normalizedAttachments = normalizeAttachments(attachmentsRaw, attachmentsRaw);
-    doc.crm_details.attachments = normalizedAttachments;
+    response.crm_details.attachments = normalizedAttachments;
+    
     const needBackfillAttachments = attachmentsRaw.some((att) => att && !att.id);
-    const needBackfillContact = (!doc.crm_details?.address || !doc.crm_details?.address?.streetLine1) && (normalizedCrmAddress.streetLine1 || normalizedCrmAddress.city || normalizedPhone);
-    if (needBackfillAttachments || needBackfillContact) {
+    const needBackfillContact = (!response.crm_details?.address || !response.crm_details?.address?.streetLine1) && (normalizedCrmAddress.streetLine1 || normalizedCrmAddress.city || normalizedPhone);
+    
+    if (caseMetadata && (needBackfillAttachments || needBackfillContact)) {
       await Case.updateOne(
-        { _id: doc._id },
+        { _id: objectId },
         {
           $set: {
             'crm_details.attachments': normalizedAttachments,
@@ -1136,16 +1325,17 @@ r.get('/:id', async (req, res) => {
           }
         }
       ).catch((err) => {
-        console.warn('Failed to backfill attachment ids for case', doc._id?.toString?.() || doc._id, err?.message);
+        console.warn('Failed to backfill attachment ids for case', objectId.toString(), err?.message);
       });
     }
-    const { contactSet, lastMap } = await fetchContactMeta([doc._id]);
-    const idStr = String(doc._id);
-    doc.contacted = contactSet.has(idStr);
+    
+    const { contactSet, lastMap } = await fetchContactMeta([objectId]);
+    const idStr = String(objectId);
+    response.contacted = contactSet.has(idStr);
     const last = lastMap.get(idStr);
-    if (last) doc.last_contact_at = last;
+    if (last) response.last_contact_at = last;
 
-    res.json(doc);
+    res.json(response);
   } catch (err) {
     console.error('GET /cases/:id error:', err);
     if (err?.statusCode) {
@@ -1749,7 +1939,7 @@ r.post('/:caseId/enrichment/:providerId', async (req, res) => {
       });
     }
 
-    const { force, ...overrideParams } = req.body || {};
+    const { force: _force, ...overrideParams } = req.body || {};
     const params = buildEnrichmentParams(caseDoc, overrideParams);
 
     if (!params.firstName && !params.lastName && !params.fullName) {

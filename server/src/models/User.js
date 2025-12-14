@@ -8,7 +8,8 @@ const UserSchema = new Schema(
     email: { type: String, lowercase: true, trim: true, index: true },
     emailVerified: { type: Boolean, default: false },
     displayName: { type: String, default: '' },
-    roles: { type: [String], default: ['BondClient'] },
+    // For development: default to Admin; for production, should be ['BondClient'] or user-assigned
+    roles: { type: [String], default: () => (process.env.NODE_ENV === 'development' ? ['Admin'] : ['BondClient']) },
     departments: { type: [String], default: [] },
     counties: { type: [String], default: [] },
     status: {

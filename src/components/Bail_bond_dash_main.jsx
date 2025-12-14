@@ -888,6 +888,12 @@ export default function DashboardScreen() {
         contacted24: kpiData.contacted24h ?? { contacted: 0, total: 0, rate: 0 },
       }
     : { new24: 0, new48: 0, new72: 0, new3to7: 0, contacted24: { contacted: 0, total: 0, rate: 0 } };
+  
+  // DEBUG: Log KPI data flow
+  if (typeof console !== 'undefined' && kpiData) {
+    console.log('[Dashboard] kpiData:', kpiData);
+    console.log('[Dashboard] kpis (derived):', kpis);
+  }
 
   // Remove global loading gate: render panels with their own lightweight loading states
 

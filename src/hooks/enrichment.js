@@ -10,7 +10,7 @@ export function useEnrichmentProxyHealth(options = {}) {
       try {
         const data = await getJSON('/enrichment/_proxy_health');
         return { ok: Boolean(data?.ok), target: data?.target, status: data?.status };
-      } catch (e) {
+      } catch {
         return { ok: false };
       }
     },
@@ -89,11 +89,11 @@ export function usePiplRaw(subjectId, options = {}) {
   });
 }
 
-// POST /enrichment/related_party_pull { subjectId, maxParties?, partyId?, partyName?, requireUnique?, matchMin?, aggressive?, preferStatewide? }
+// POST /enrichment/related_party_pull { subjectId, maxParties?, partyId?, partyName?, requireUnique?, matchMin? }
 // Triggers enrichment of related parties for a subject; server may enrich top N or a specific party when partyId/partyName is provided.
 export function useRelatedPartyPull(options = {}) {
   return useMutation({
-    mutationFn: ({ subjectId, maxParties, partyId, partyName, requireUnique, matchMin, aggressive, preferStatewide, force }) =>
+    mutationFn: ({ subjectId, maxParties, partyId, partyName, requireUnique, matchMin, aggressive }) =>
       sendJSON('/enrichment/related_party_pull', {
         method: 'POST',
         body: {
@@ -105,8 +105,6 @@ export function useRelatedPartyPull(options = {}) {
           requireUnique: typeof requireUnique === 'boolean' ? requireUnique : undefined,
           matchMin: typeof matchMin === 'number' ? matchMin : undefined,
           aggressive: aggressive ? true : undefined,
-          preferStatewide: typeof preferStatewide === 'boolean' ? preferStatewide : undefined,
-          force: force ? true : undefined,
         },
       }),
     ...options,
@@ -141,41 +139,6 @@ export function useRelatedParties(subjectId, options = {}) {
     queryFn: () => getJSON(`/enrichment/related_parties?subjectId=${encodeURIComponent(subjectId)}`),
     staleTime: 15_000,
     ...rest,
-  });
-}
-
-// POST /enrichment/related_party_validate_phones { subjectId, maxPerParty? }
-// Validates stored related-party phones via Whitepages for the subject
-export function useValidateRelatedPartyPhones(options = {}) {
-  return useMutation({
-    mutationFn: ({ subjectId, maxPerParty }) =>
-      sendJSON('/enrichment/related_party_validate_phones', {
-        method: 'POST',
-        body: {
-          subjectId,
-          maxPerParty: typeof maxPerParty === 'number' ? maxPerParty : undefined,
-        },
-      }),
-    ...options,
-  });
-}
-
-// POST /enrichment/related_party_override { subjectId, partyId, relationType?, relationLabel?, confidence? }
-// Admin override to correct a party's relationship classification
-export function useRelatedPartyOverride(options = {}) {
-  return useMutation({
-    mutationFn: ({ subjectId, partyId, relationType, relationLabel, confidence }) =>
-      sendJSON('/enrichment/related_party_override', {
-        method: 'POST',
-        body: {
-          subjectId,
-          partyId,
-          relationType: relationType || undefined,
-          relationLabel: relationLabel || undefined,
-          confidence: typeof confidence === 'number' ? confidence : undefined,
-        },
-      }),
-    ...options,
   });
 }
 

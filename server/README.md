@@ -4,6 +4,7 @@ Express + Mongoose API powering the dashboard. Ships with:
 - Swagger UI at /api/docs
 - Resilient DB timeouts and safe fallbacks
 - Liveness endpoint that works without Mongo
+ - Enrichment proxy at /api/enrichment/* forwarding to external enrichment service
 
 ## Requirements
 - Node.js >= 18.17 (tested with Node 20/22/24)
@@ -31,6 +32,8 @@ Recognized variables:
 - ENRICHMENT_PROVIDERS — comma-separated list of enabled enrichment providers (e.g., `pipl,whitepages`)
 - PIPL_API_KEY — API key used for Pipl enrichment lookups
  - APP_NAME — App name used in invite subject/body (optional)
+ - ENRICHMENT_API_URL — Base URL of the external enrichment service (proxy target), e.g., http://localhost:4000
+ - ENRICHMENT_PROXY_TIMEOUT_MS — Timeout in ms when proxying to the enrichment service (default 10000)
 
 Notes:
 - The server also reads environment from the repo root .env (for convenience), but server/.env takes precedence during development.
@@ -105,6 +108,21 @@ If SMTP is not configured, the API will still generate an invite link and return
 ```
 VITE_API_URL=http://localhost:8080/api
 ```
+
+### Enrichment proxy
+
+The API exposes a proxy at `/api/enrichment/*` that forwards requests to an external enrichment service defined by `ENRICHMENT_API_URL`.
+
+- Local development: if you run the enrichment service on your host at `http://localhost:4000`, with Docker for Mac/Windows you can set
+	`ENRICHMENT_API_URL=http://host.docker.internal:4000` for the `api`/`api-dev` service in `docker-compose.dev.yml` (already defaulted).
+- Non-Docker local: if running the server directly on your machine, set `ENRICHMENT_API_URL=http://localhost:4000` in `server/.env`.
+- Staging/Production: set `ENRICHMENT_API_URL` to your deployed enrichment service base (no trailing slash). The proxy appends `/api/enrichment`.
+
+Example target mapping:
+
+- Browser calls: `/api/enrichment/prospects_window?windowHours=72`
+- Server proxies to: `${ENRICHMENT_API_URL}/api/enrichment/prospects_window?windowHours=72`
+
 
 ## Troubleshooting
 - Port in use (EADDRINUSE):

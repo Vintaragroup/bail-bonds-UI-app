@@ -40,7 +40,9 @@ function writeToStorage(q, coords) {
     const key = lsKeyFor(q);
     const payload = { lat: Number(coords.lat), lon: Number(coords.lon), ts: Date.now() };
     localStorage.setItem(key, JSON.stringify(payload));
-  } catch {}
+  } catch (err) {
+    void err;
+  }
 }
 
 export default function InlineMapEmbed({ addressText, height = 180, zoom = 16, onResolvedAddress }) {
@@ -51,6 +53,11 @@ export default function InlineMapEmbed({ addressText, height = 180, zoom = 16, o
   const lastTriedRef = useRef([]); // debug: the list of variants tried
   const [refreshKey, setRefreshKey] = useState(0); // force reload of iframe to recenter
   const lastReportedRef = useRef({ q: '', postalCode: '' });
+  const resolvedCallbackRef = useRef(onResolvedAddress);
+
+  useEffect(() => {
+    resolvedCallbackRef.current = onResolvedAddress;
+  }, [onResolvedAddress]);
 
   const query = useMemo(() => {
     const raw = String(addressText || '').trim();
@@ -113,7 +120,9 @@ export default function InlineMapEmbed({ addressText, height = 180, zoom = 16, o
             return { lat: Number(first.lat), lon: Number(first.lon), components };
           }
         }
-      } catch (_) { /* no-op */ }
+      } catch (err) {
+        void err;
+      }
       // 2) Fallback: US Census Geocoder (US-only)
       try {
         const url2 = `https://geocoding.geo.census.gov/geocoder/locations/onelineaddress?address=${encodeURIComponent(q)}&benchmark=2020&format=json`;
@@ -131,7 +140,9 @@ export default function InlineMapEmbed({ addressText, height = 180, zoom = 16, o
             return { lat: Number(match.coordinates.y), lon: Number(match.coordinates.x), components };
           }
         }
-      } catch (_) { /* no-op */ }
+      } catch (err) {
+        void err;
+      }
       return null;
     }
 
@@ -141,7 +152,7 @@ export default function InlineMapEmbed({ addressText, height = 180, zoom = 16, o
         setError('');
         return;
       }
-      if (q === lastQueryRef.current && coords) return; // basic memo guard
+      if (q === lastQueryRef.current) return; // basic memo guard
       // Build progressive variants and try cache for any of them first
       const variants = buildVariants(q);
       lastTriedRef.current = variants;
@@ -168,7 +179,6 @@ export default function InlineMapEmbed({ addressText, height = 180, zoom = 16, o
         // Try each variant in order until one returns a coordinate
         let found = null;
         for (const v of variants) {
-          // eslint-disable-next-line no-await-in-loop
           const res = await tryGeocodeOnce(v);
           if (res) {
             found = { ...res, _variant: v };
@@ -184,12 +194,13 @@ export default function InlineMapEmbed({ addressText, height = 180, zoom = 16, o
             try {
               const postal = String(found?.components?.postalCode || '').trim();
               const currentQ = found._variant || q;
-              if (typeof onResolvedAddress === 'function') {
+              const callback = resolvedCallbackRef.current;
+              if (typeof callback === 'function') {
                 // Avoid spamming the same report for the same query+zip
                 const last = lastReportedRef.current || {};
                 if (last.q !== currentQ || last.postalCode !== postal) {
                   lastReportedRef.current = { q: currentQ, postalCode: postal };
-                  onResolvedAddress({
+                  callback({
                     coords: { lat: found.lat, lon: found.lon },
                     components: {
                       city: found?.components?.city || '',
@@ -202,7 +213,9 @@ export default function InlineMapEmbed({ addressText, height = 180, zoom = 16, o
                   });
                 }
               }
-            } catch { /* noop */ }
+            } catch (err) {
+              void err;
+            }
           } else {
             setCoords(null);
             setError('No results');

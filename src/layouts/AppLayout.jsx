@@ -7,14 +7,11 @@ import BottomNav from "../components/BottomNav";
 
 const tabs = [
   { to: "/", label: "Dashboard", end: true },
-  { to: "/cases", label: "Cases" },
   { to: "/prospects", label: "Prospects" },
-  { to: "/check-ins", label: "Check-ins" },
-  { to: "/calendar", label: "Calendar" },
-  { to: "/payments", label: "Payments" },
-  { to: "/messages", label: "Messages" },
+  { to: "/crm", label: "CRM" },
+  { to: "/call-queue", label: "Call Queue" },
   { to: "/reports", label: "Reports" },
-  { to: "/admin", label: "Admin" },
+  { to: "/admin", label: "Admin", requiresAdmin: true },
 ];
 
 export default function AppLayout() {
@@ -37,19 +34,25 @@ export default function AppLayout() {
         <div className="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8 h-14 flex items-center justify-between">
           <span className="font-semibold tracking-tight">Bail Bonds Dashboard</span>
           <nav className="hidden md:flex gap-4">
-            {tabs.map(t => (
-              <NavLink
-                key={t.to}
-                to={t.to}
-                end={t.end}
-                className={({ isActive }) =>
-                  "text-sm px-2 py-1 rounded-md " +
-                  (isActive ? "bg-gray-100 font-semibold" : "text-gray-600 hover:text-gray-900")
-                }
-              >
-                {t.label}
-              </NavLink>
-            ))}
+            {tabs.map(t => {
+              // Hide Admin tab if user doesn't have Admin role
+              if (t.requiresAdmin && !currentUser?.roles?.includes('Admin')) {
+                return null;
+              }
+              return (
+                <NavLink
+                  key={t.to}
+                  to={t.to}
+                  end={t.end}
+                  className={({ isActive }) =>
+                    "text-sm px-2 py-1 rounded-md " +
+                    (isActive ? "bg-gray-100 font-semibold" : "text-gray-600 hover:text-gray-900")
+                  }
+                >
+                  {t.label}
+                </NavLink>
+              );
+            })}
           </nav>
           <div className="flex items-center gap-3">
             {currentUser && (
@@ -70,19 +73,25 @@ export default function AppLayout() {
       {/* Mobile tabs */}
       <div className="md:hidden border-b bg-white">
         <div className="mx-auto max-w-7xl px-2 py-2 flex gap-2 overflow-x-auto">
-          {tabs.map(t => (
-            <NavLink
-              key={t.to}
-              to={t.to}
-              end={t.end}
-              className={({ isActive }) =>
-                "text-xs whitespace-nowrap px-2 py-1 rounded-md " +
-                (isActive ? "bg-gray-100 font-semibold" : "text-gray-600 hover:text-gray-900")
-              }
-            >
-              {t.label}
-            </NavLink>
-          ))}
+          {tabs.map(t => {
+            // Hide Admin tab if user doesn't have Admin role
+            if (t.requiresAdmin && !currentUser?.roles?.includes('Admin')) {
+              return null;
+            }
+            return (
+              <NavLink
+                key={t.to}
+                to={t.to}
+                end={t.end}
+                className={({ isActive }) =>
+                  "text-xs whitespace-nowrap px-2 py-1 rounded-md " +
+                  (isActive ? "bg-gray-100 font-semibold" : "text-gray-600 hover:text-gray-900")
+                }
+              >
+                {t.label}
+              </NavLink>
+            );
+          })}
         </div>
       </div>
 

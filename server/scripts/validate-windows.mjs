@@ -14,7 +14,6 @@
    PASS/FAIL lines with delta counts and % diff; exits non-zero if any FAIL found.
 */
 import process from 'node:process';
-import assert from 'node:assert/strict';
 import mongoose from 'mongoose';
 
 // ---------- CLI / Args ----------

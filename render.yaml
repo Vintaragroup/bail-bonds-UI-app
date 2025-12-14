@@ -42,12 +42,11 @@ services:
       - key: FIREBASE_PROJECT_ID
         sync: false
 
+staticSites:
   - name: warrantdb-web
-    type: web
-    runtime: static
     plan: starter
     buildCommand: npm ci && npm run build
-    staticPublishPath: ./dist
+    publishPath: ./dist
     # Restrict auto-deploys to a stable branch
     autoDeploy: false
     branch: deploy/production

@@ -53,7 +53,7 @@ export function PaymentHistory({ onNavigate }) {
   });
 
   const currency = metricsData?.summary?.totalRevenue?.currency || 'USD';
-  const transactions = paymentsData?.items ?? [];
+  const transactions = useMemo(() => paymentsData?.items ?? [], [paymentsData]);
 
   const monthlyStats = useMemo(() => {
     const totalRevenue = transactions

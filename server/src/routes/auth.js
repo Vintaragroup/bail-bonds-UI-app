@@ -24,7 +24,7 @@ async function recordAuthEvent(event, payload = {}) {
   }
   try {
     console.info(`[auth] ${event}`, { ...payload, ts: new Date().toISOString() });
-  } catch (err) { /* noop */ }
+  } catch { /* noop */ }
 }
 
 function sanitizeUser(user) {

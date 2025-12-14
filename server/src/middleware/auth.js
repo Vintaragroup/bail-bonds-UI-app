@@ -67,26 +67,35 @@ async function upsertUserProfile(decoded) {
 }
 
 export async function requireAuth(req, res, next) {
+  console.log('[AUTH] ============ requireAuth middleware called ==============');
   try {
+    console.log('[AUTH] attempting verifyFirebaseSession');
     let decoded = await verifyFirebaseSession(req);
+    console.log('[AUTH] verifyFirebaseSession result:', !!decoded);
     if (!decoded) {
       const bearer = extractBearerToken(req);
+      console.log('[AUTH] no session cookie, bearer token present:', !!bearer);
       if (!bearer) {
         return res.status(401).json({ message: 'Authentication required' });
       }
+      console.log('[AUTH] attempting verifyIdToken');
       decoded = await verifyIdToken(bearer);
+      console.log('[AUTH] verifyIdToken result:', !!decoded);
       if (!decoded) {
         return res.status(401).json({ message: 'Invalid token' });
       }
     }
 
+    console.log('[AUTH] attempting upsertUserProfile');
     const profile = await upsertUserProfile(decoded);
+    console.log('[AUTH] upsertUserProfile result:', !!profile);
     if (!profile) {
       return res.status(403).json({ message: 'Access denied' });
     }
 
     req.user = serializeUser(profile, decoded);
     req.firebase = { decoded };
+    console.log('[AUTH] auth success, calling next()');
     return next();
   } catch (err) {
     console.error('Auth middleware error:', err);

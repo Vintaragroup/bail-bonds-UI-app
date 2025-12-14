@@ -149,6 +149,10 @@ export function useSerializedPolling(endpoints, { enabled = true, align = true, 
         setErrors(prev => { const { [key]: _, ...rest } = prev; return rest; });
         meta.last = Date.now();
         meta.backoff = 0;
+        // DEBUG
+        if (typeof console !== 'undefined') {
+          console.log(`[polling] ${key}: success, data=`, json);
+        }
         // Push into React Query cache (optional consumption) if there's a watcher
         try { queryClient.setQueryData([key], json); } catch { /* noop */ }
         // Optionally record variant header for debugging
@@ -160,6 +164,10 @@ export function useSerializedPolling(endpoints, { enabled = true, align = true, 
         meta.last = Date.now();
         meta.backoff = Math.min(meta.backoff ? meta.backoff * 2 : 2000, 60000); // up to 60s
         setErrors(prev => ({ ...prev, [key]: err }));
+        // DEBUG
+        if (typeof console !== 'undefined') {
+          console.log(`[polling] ${key}: error`, err);
+        }
       }
       // Respect backoff delay before moving on if error occurred (yielding event loop)
       if (meta.backoff) await new Promise(res => setTimeout(res, 50));
@@ -176,7 +184,7 @@ export function useSerializedPolling(endpoints, { enabled = true, align = true, 
     const soonest = Math.min(...nextTimes);
     const delay = Math.max(align ? soonest - Date.now() : 1000, 500); // at least 0.5s
     scheduleRef.current = setTimeout(runLoop, delay);
-  }, [endpoints, enabled, align, queryClient]);
+  }, [endpoints, enabled, align, adaptive, queryClient]);
 
   useEffect(() => {
     if (!enabled) return;

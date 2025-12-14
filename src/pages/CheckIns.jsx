@@ -44,8 +44,8 @@ export default function CheckIns() {
   const { pushToast } = useToast();
 
   const optionsQuery = useCheckInOptions();
-  const clientOptions = optionsQuery.data?.clients ?? [];
-  const officerOptions = optionsQuery.data?.officers ?? [];
+  const clientOptions = useMemo(() => optionsQuery.data?.clients ?? [], [optionsQuery.data]);
+  const officerOptions = useMemo(() => optionsQuery.data?.officers ?? [], [optionsQuery.data]);
 
   const clientLookup = useMemo(() => {
     const map = new Map();

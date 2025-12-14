@@ -131,8 +131,8 @@ async function attachChargeDetails(paymentDoc, charge) {
   paymentDoc.stripeChargeId = charge.id;
   if (charge.balance_transaction && typeof charge.balance_transaction === 'string') {
     try {
-      const stripe = getStripe();
-      const balance = await stripe.balanceTransactions.retrieve(charge.balance_transaction);
+      const stripeClient = getStripe();
+      const balance = await stripeClient.balanceTransactions.retrieve(charge.balance_transaction);
       paymentDoc.fees = typeof balance.fee === 'number' ? balance.fee / 100 : paymentDoc.fees;
       paymentDoc.netAmount = typeof balance.net === 'number' ? balance.net / 100 : paymentDoc.netAmount;
     } catch (err) {
@@ -397,7 +397,7 @@ export async function stripeWebhookHandler(req, res) {
   }
 
   try {
-    const stripe = getStripe();
+    getStripe();
     switch (event.type) {
       case 'payment_intent.succeeded': {
         const pi = event.data.object;

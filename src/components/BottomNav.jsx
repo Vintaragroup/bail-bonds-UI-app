@@ -1,10 +1,11 @@
 import React from 'react';
 import { NavLink } from 'react-router-dom';
-import { Home, Files, BarChart3, Settings } from 'lucide-react';
+import { Home, Files, BarChart3, Settings, PhoneCall } from 'lucide-react';
 
 const items = [
   { to: '/', label: 'Home', Icon: Home, end: true },
   { to: '/cases', label: 'Cases', Icon: Files },
+  { to: '/call-queue', label: 'Queue', Icon: PhoneCall },
   { to: '/reports', label: 'Reports', Icon: BarChart3 },
   { to: '/auth/profile-settings', label: 'Settings', Icon: Settings },
 ];

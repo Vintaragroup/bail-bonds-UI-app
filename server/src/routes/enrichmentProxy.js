@@ -140,7 +140,7 @@ async function fetchSubjectName(subjectId) {
     const name = data?.summary?.name || null;
     setCachedName(subjectId, name);
     return name;
-  } catch (_err) {
+  } catch {
     setCachedName(subjectId, null);
     return null;
   } finally {
