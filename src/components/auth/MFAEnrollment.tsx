@@ -18,10 +18,11 @@ export function MFAEnrollment({ onNavigate }: MFAEnrollmentProps) {
   const [code, setCode] = useState('');
   const [secretCopied, setSecretCopied] = useState(false);
   
-  const secret = 'JBSWY3DPEHPK3PXP';
-  const qrCodeUrl = `otpauth://totp/BailBonds%20Dashboard:agent@example.com?secret=${secret}&issuer=BailBonds%20Dashboard`;
+  // MFA secret must be fetched from the server during enrollment — never hardcoded.
+  const secret: string | null = null;
 
   const copySecret = () => {
+    if (!secret) return;
     navigator.clipboard.writeText(secret);
     setSecretCopied(true);
     setTimeout(() => setSecretCopied(false), 2000);
@@ -139,12 +140,13 @@ export function MFAEnrollment({ onNavigate }: MFAEnrollmentProps) {
                       Can't scan? Enter this code manually:
                     </p>
                     <div className="flex items-center justify-center space-x-2">
-                      <code className="bg-muted px-2 py-1 rounded text-sm font-mono">
-                        {secret}
+                      <code className="bg-muted px-2 py-1 rounded text-sm font-mono text-muted-foreground">
+                        {secret ?? 'Not available — server setup required'}
                       </code>
                       <button
                         onClick={copySecret}
-                        className="p-1 hover:bg-muted rounded"
+                        disabled={!secret}
+                        className="p-1 hover:bg-muted rounded disabled:opacity-40 disabled:cursor-not-allowed"
                       >
                         {secretCopied ? (
                           <CheckCircle className="h-4 w-4 text-success" />
@@ -198,6 +200,7 @@ export function MFAEnrollment({ onNavigate }: MFAEnrollmentProps) {
               <PillButton 
                 className="w-full h-12"
                 onClick={() => setStep('verify')}
+                disabled={!secret}
               >
                 Continue to verification
               </PillButton>
